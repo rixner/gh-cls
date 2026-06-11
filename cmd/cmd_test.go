@@ -72,11 +72,18 @@ func TestLocalFlagMatrix(t *testing.T) {
 }
 
 func TestSetupRequiresOrg(t *testing.T) {
+	// Isolate config discovery so dry-run reads nothing from the environment.
+	t.Setenv("GH_CLS_CONFIG", "")
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Chdir(t.TempDir())
+
 	if _, err := execute("setup"); err == nil {
 		t.Fatal("setup without --org should error")
 	}
-	if _, err := execute("setup", "--org", "cs101-spring26"); err != nil {
-		t.Fatalf("setup --org should succeed, got %v", err)
+	// The success path with hardening is covered in setup_test.go with an
+	// injected fake client; here --dry-run keeps the flag check offline.
+	if _, err := execute("setup", "--org", "cs101-spring26", "--dry-run"); err != nil {
+		t.Fatalf("setup --org --dry-run should succeed, got %v", err)
 	}
 }
 

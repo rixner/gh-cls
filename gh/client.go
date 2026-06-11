@@ -7,7 +7,9 @@ package gh
 import "context"
 
 // Client is the set of GitHub operations the commands use. It grows as
-// commands need more endpoints.
+// commands need more endpoints. Commands depend on narrow subsets of it (see
+// each command's own interface), so this full surface exists to document the
+// implementation's contract and as the type New returns.
 type Client interface {
 	// OrgRole returns the authenticated user's membership role in org; "admin"
 	// for owners. Used to guard org-mutating commands.
@@ -16,6 +18,22 @@ type Client interface {
 	// GetRepo fetches a repository. The bool is false (with a nil error) when
 	// the repo does not exist.
 	GetRepo(ctx context.Context, owner, name string) (*Repo, bool, error)
+
+	// GetOrg reads current organization settings.
+	GetOrg(ctx context.Context, org string) (*OrgSettings, error)
+	// PatchOrg updates organization settings with the given fields.
+	PatchOrg(ctx context.Context, org string, fields map[string]any) error
+	// GetActionsPermissions reads the org-wide Actions policy.
+	GetActionsPermissions(ctx context.Context, org string) (*ActionsPermissions, error)
+	// SetActionsEnabledRepositories sets which repositories may run Actions org-wide.
+	SetActionsEnabledRepositories(ctx context.Context, org, value string) error
+	// CopilotSeatCount reports purchased Copilot seats; present is false on a
+	// free org with no subscription.
+	CopilotSeatCount(ctx context.Context, org string) (count int, present bool, err error)
+	// GetTeam fetches a team by slug; the bool reports existence.
+	GetTeam(ctx context.Context, org, slug string) (*Team, bool, error)
+	// CreateTeam creates a closed team.
+	CreateTeam(ctx context.Context, org, name string) (*Team, error)
 }
 
 // Repo is the subset of a repository's fields the tool inspects.
