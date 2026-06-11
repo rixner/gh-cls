@@ -102,12 +102,8 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 		return err
 	}
 
-	role, err := client.OrgRole(ctx, org)
-	if err != nil {
-		return fmt.Errorf("checking your role in %s: %w", org, err)
-	}
-	if role != "admin" {
-		return fmt.Errorf("you must be an organization owner to harden %s (your role is %q)", org, role)
+	if err := requireOwner(ctx, client, org); err != nil {
+		return err
 	}
 
 	results, err := hardenOrg(ctx, client, org, staffTeam)

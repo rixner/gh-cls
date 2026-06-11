@@ -19,3 +19,29 @@ func (c *restClient) GetRepo(ctx context.Context, owner, name string) (*Repo, bo
 	}
 	return &repo, true, nil
 }
+
+// CreateOrgRepo creates an empty (no auto-init) repository in the org and
+// returns it, including its clone URL.
+func (c *restClient) CreateOrgRepo(ctx context.Context, org, name string, private bool) (*Repo, error) {
+	var repo Repo
+	path := fmt.Sprintf("orgs/%s/repos", url.PathEscape(org))
+	body := map[string]any{"name": name, "private": private, "auto_init": false}
+	if _, err := c.do(ctx, "POST", path, body, &repo); err != nil {
+		return nil, err
+	}
+	return &repo, nil
+}
+
+// SetRepoTemplate marks a repository as a template repository.
+func (c *restClient) SetRepoTemplate(ctx context.Context, org, name string) error {
+	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(name))
+	_, err := c.do(ctx, "PATCH", path, map[string]any{"is_template": true}, nil)
+	return err
+}
+
+// DeleteRepo deletes a repository.
+func (c *restClient) DeleteRepo(ctx context.Context, org, name string) error {
+	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(name))
+	_, err := c.do(ctx, "DELETE", path, nil, nil)
+	return err
+}
