@@ -62,6 +62,11 @@ type Client interface {
 	EnableIssues(ctx context.Context, owner, repo string) error
 	// CreateIssue opens an issue.
 	CreateIssue(ctx context.Context, owner, repo, title, body string) error
+
+	// ListOrgReposByPrefix returns org repos whose name starts with prefix.
+	ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]Repo, error)
+	// ListDirectCollaborators returns a repo's direct collaborators.
+	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]Collaborator, error)
 }
 
 // Repo is the subset of a repository's fields the tool inspects.
