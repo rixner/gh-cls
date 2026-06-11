@@ -88,26 +88,24 @@ func TestSetupRequiresOrg(t *testing.T) {
 }
 
 func TestAssignRequiresRoster(t *testing.T) {
+	// The full run is covered in assign_test.go with config and a fake client;
+	// here we only assert the required-flag enforcement.
 	if _, err := execute("assign", "hw1"); err == nil {
 		t.Fatal("assign without --roster should error")
-	}
-	if _, err := execute("assign", "hw1", "--roster", "roster.csv"); err != nil {
-		t.Fatalf("assign with --roster should succeed, got %v", err)
 	}
 }
 
 func TestAssignFeedbackEnum(t *testing.T) {
-	for _, mode := range []string{"pr", "issue"} {
-		if _, err := execute("assign", "hw1", "-r", "roster.csv", "-f", mode); err != nil {
-			t.Errorf("feedback %q should be accepted, got %v", mode, err)
-		}
-	}
+	// Invalid value is rejected in PreRunE, before any work.
 	_, err := execute("assign", "hw1", "-r", "roster.csv", "-f", "bogus")
-	if err == nil {
-		t.Fatal("invalid feedback mode should error")
+	if err == nil || !strings.Contains(err.Error(), "invalid --feedback") {
+		t.Fatalf("invalid feedback mode should be rejected, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "invalid --feedback") {
-		t.Errorf("unexpected error: %v", err)
+	// Valid values pass validation.
+	for _, mode := range []string{"", "pr", "issue"} {
+		if err := (&assignOpts{feedback: mode}).validate(); err != nil {
+			t.Errorf("feedback %q should validate, got %v", mode, err)
+		}
 	}
 }
 

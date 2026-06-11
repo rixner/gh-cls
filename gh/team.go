@@ -37,3 +37,11 @@ func (c *restClient) CreateTeam(ctx context.Context, org, name string) (*Team, e
 	}
 	return &t, nil
 }
+
+// AddTeamRepo grants a team the given permission on a repository.
+func (c *restClient) AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error {
+	path := fmt.Sprintf("orgs/%s/teams/%s/repos/%s/%s",
+		url.PathEscape(org), url.PathEscape(teamSlug), url.PathEscape(owner), url.PathEscape(repo))
+	_, err := c.do(ctx, "PUT", path, map[string]any{"permission": permission}, nil)
+	return err
+}

@@ -40,6 +40,15 @@ type Client interface {
 	GetTeam(ctx context.Context, org, slug string) (*Team, bool, error)
 	// CreateTeam creates a closed team.
 	CreateTeam(ctx context.Context, org, name string) (*Team, error)
+	// AddTeamRepo grants a team the given permission on a repository.
+	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
+
+	// ListBranchesWithCommitCount returns every branch with its exact commit count.
+	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]BranchCount, error)
+	// GenerateFromTemplate creates owner/name from a template repository.
+	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
+	// AddCollaborator grants a user the given permission on a repository.
+	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 }
 
 // Repo is the subset of a repository's fields the tool inspects.
