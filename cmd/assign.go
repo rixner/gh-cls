@@ -28,14 +28,29 @@ const (
 	readyDelay    = 2 * time.Second
 )
 
+// Feedback artifact constants.
+const (
+	feedbackBranch    = "feedback"
+	feedbackTitle     = "Feedback"
+	feedbackPRBody    = "This pull request is where the course staff leaves feedback on your work. Please do not close it. As you push commits to the default branch, your changes against the starter code appear in the diff here."
+	feedbackIssueBody = "This issue is where the course staff leaves feedback on your work. Please do not close it."
+)
+
 // assignClient is the narrow set of GitHub operations assign needs.
 type assignClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
+	GetTeam(ctx context.Context, org, slug string) (*gh.Team, bool, error)
 	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]gh.BranchCount, error)
 	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
+	ApplyRuleset(ctx context.Context, org, repo string, staffTeamID int64) error
+	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
+	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
+	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
+	EnableIssues(ctx context.Context, owner, repo string) error
+	CreateIssue(ctx context.Context, owner, repo, title, body string) error
 }
 
 // assignOpts carries the resolved flags and dependencies for `gh cls assign`.
@@ -179,6 +194,9 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		}
 		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
 		fmt.Fprintf(out, "Would create %d %s repo(s) in %s from %s/%s:\n", len(units), visibility, org, org, derived)
+		if extras := planExtras(policy); extras != "" {
+			fmt.Fprintf(out, "  with %s\n", extras)
+		}
 		for _, u := range units {
 			fmt.Fprintf(out, "  %s-%s  ->  push: %s\n", name, u.Key, strings.Join(u.Members, ", "))
 		}
@@ -205,10 +223,37 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
+	// Resolve the staff team's ID once, for the ruleset bypass list.
+	var staffTeamID int64
+	if policy.BranchProtection && staffTeam != "" {
+		if team, exists, err := client.GetTeam(ctx, org, staffTeam); err != nil {
+			return fmt.Errorf("resolving staff team %q: %w", staffTeam, err)
+		} else if exists {
+			staffTeamID = team.ID
+		} else {
+			fmt.Fprintf(out, "warning: staff team %q not found; branch protection will bypass org admins only\n", staffTeam)
+		}
+	}
+
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) unitResult {
-		return o.provision(ctx, client, org, name, derived, staffTeam, policy, u)
+		return o.provision(ctx, client, org, name, derived, staffTeam, staffTeamID, policy, u)
 	})
 	return reportResults(out, results)
+}
+
+// planExtras describes the per-repo protection/feedback a run would add.
+func planExtras(policy config.Policy) string {
+	var parts []string
+	if policy.BranchProtection {
+		parts = append(parts, "an all-branches protection ruleset")
+	}
+	switch policy.Feedback {
+	case feedbackPR:
+		parts = append(parts, "a feedback pull request")
+	case feedbackIssue:
+		parts = append(parts, "a feedback issue")
+	}
+	return strings.Join(parts, " and ")
 }
 
 // checkSquashed verifies every branch of the derived template has exactly one
@@ -241,12 +286,13 @@ func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, org
 	return errors.New(sb.String())
 }
 
-// provision creates (or reuses) one repository and asserts its access grants.
-func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, derived, staffTeam string, policy config.Policy, u unit.Unit) unitResult {
+// provision creates (or reuses) one repository, asserts its access grants, and
+// on a freshly created repo applies branch protection and the feedback artifact.
+func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, derived, staffTeam string, staffTeamID int64, policy config.Policy, u unit.Unit) unitResult {
 	repo := name + "-" + u.Key
 	res := unitResult{repo: repo}
 
-	_, exists, err := client.GetRepo(ctx, org, repo)
+	info, exists, err := client.GetRepo(ctx, org, repo)
 	if err != nil {
 		res.err = fmt.Errorf("checking %s: %w", repo, err)
 		return res
@@ -258,7 +304,7 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 			res.err = fmt.Errorf("generating %s: %w", repo, err)
 			return res
 		}
-		if err := o.pollReady(ctx, client, org, repo); err != nil {
+		if info, err = o.pollReady(ctx, client, org, repo); err != nil {
 			res.err = err
 			return res
 		}
@@ -278,18 +324,62 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 			return res
 		}
 	}
+
+	// Protection and feedback are created with the repo, not re-applied on reuse.
+	if res.status == "created" {
+		if policy.BranchProtection {
+			if err := client.ApplyRuleset(ctx, org, repo, staffTeamID); err != nil {
+				res.err = fmt.Errorf("applying branch protection to %s: %w", repo, err)
+				return res
+			}
+		}
+		if err := o.addFeedback(ctx, client, org, repo, info, policy.Feedback); err != nil {
+			res.err = err
+			return res
+		}
+	}
 	return res
 }
 
-// pollReady waits for an asynchronously-generated repository to appear.
-func (o *assignOpts) pollReady(ctx context.Context, client assignClient, org, repo string) error {
+// addFeedback creates the chosen feedback artifact in a newly created repo.
+func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, repo string, info *gh.Repo, mode string) error {
+	switch mode {
+	case feedbackPR:
+		// A PR needs two distinct refs sharing history; pin a feedback branch at
+		// the starter commit so the student's later pushes diff against it.
+		sha, err := client.GetRef(ctx, org, repo, "heads/"+info.DefaultBranch)
+		if err != nil {
+			return fmt.Errorf("reading starter commit of %s: %w", repo, err)
+		}
+		if err := client.CreateRef(ctx, org, repo, "refs/heads/"+feedbackBranch, sha); err != nil {
+			return fmt.Errorf("creating feedback branch on %s: %w", repo, err)
+		}
+		if err := client.CreatePR(ctx, org, repo, feedbackTitle, info.DefaultBranch, feedbackBranch, feedbackPRBody); err != nil {
+			return fmt.Errorf("opening feedback PR on %s: %w", repo, err)
+		}
+	case feedbackIssue:
+		if !info.HasIssues {
+			if err := client.EnableIssues(ctx, org, repo); err != nil {
+				return fmt.Errorf("enabling issues on %s: %w", repo, err)
+			}
+		}
+		if err := client.CreateIssue(ctx, org, repo, feedbackTitle, feedbackIssueBody); err != nil {
+			return fmt.Errorf("opening feedback issue on %s: %w", repo, err)
+		}
+	}
+	return nil
+}
+
+// pollReady waits for an asynchronously-generated repository to appear and
+// returns it.
+func (o *assignOpts) pollReady(ctx context.Context, client assignClient, org, repo string) (*gh.Repo, error) {
 	for i := 0; i < readyAttempts; i++ {
-		if _, exists, err := client.GetRepo(ctx, org, repo); err == nil && exists {
-			return nil
+		if r, exists, err := client.GetRepo(ctx, org, repo); err == nil && exists {
+			return r, nil
 		}
 		o.sleep(readyDelay)
 	}
-	return fmt.Errorf("repository %s/%s did not become ready after generation", org, repo)
+	return nil, fmt.Errorf("repository %s/%s did not become ready after generation", org, repo)
 }
 
 // reportResults summarizes the run and returns an error if any unit failed.

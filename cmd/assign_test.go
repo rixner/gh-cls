@@ -39,11 +39,18 @@ team-beta: [student-002]
 type fakeAssignClient struct {
 	mu        sync.Mutex
 	role      string
+	teamID    int64
+	hasIssues bool
 	exists    map[string]bool
 	branches  []gh.BranchCount
 	generated []string
 	collabs   []string
 	teamRepos []string
+	rulesets  map[string]int64 // repo -> staff team ID used in bypass
+	refs      []string         // "repo:ref"
+	prs       []string         // "repo:head->base"
+	issues    []string         // repo
+	enabled   []string         // repos where issues were enabled
 }
 
 func (f *fakeAssignClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -52,9 +59,13 @@ func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.R
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.exists[owner+"/"+name] {
-		return &gh.Repo{Name: name}, true, nil
+		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues}, true, nil
 	}
 	return nil, false, nil
+}
+
+func (f *fakeAssignClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
+	return &gh.Team{Slug: "staff", ID: f.teamID}, true, nil
 }
 
 func (f *fakeAssignClient) ListBranchesWithCommitCount(context.Context, string, string) ([]gh.BranchCount, error) {
@@ -83,13 +94,59 @@ func (f *fakeAssignClient) AddTeamRepo(_ context.Context, _, _, _, repo, _ strin
 	return nil
 }
 
+func (f *fakeAssignClient) ApplyRuleset(_ context.Context, _, repo string, staffTeamID int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.rulesets == nil {
+		f.rulesets = map[string]int64{}
+	}
+	f.rulesets[repo] = staffTeamID
+	return nil
+}
+
+func (f *fakeAssignClient) GetRef(_ context.Context, _, _, _ string) (string, error) {
+	return "starter-sha", nil
+}
+
+func (f *fakeAssignClient) CreateRef(_ context.Context, _, repo, ref, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.refs = append(f.refs, repo+":"+ref)
+	return nil
+}
+
+func (f *fakeAssignClient) CreatePR(_ context.Context, _, repo, _, head, base, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.prs = append(f.prs, repo+":"+head+"->"+base)
+	return nil
+}
+
+func (f *fakeAssignClient) EnableIssues(_ context.Context, _, repo string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.enabled = append(f.enabled, repo)
+	return nil
+}
+
+func (f *fakeAssignClient) CreateIssue(_ context.Context, _, repo, _, _ string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.issues = append(f.issues, repo)
+	return nil
+}
+
 func newFakeAssign(role string) *fakeAssignClient {
 	return &fakeAssignClient{
 		role:     role,
+		teamID:   42,
 		exists:   map[string]bool{"cs101-spring26/hw1-template": true, "cs101-spring26/project-template": true},
 		branches: []gh.BranchCount{{Name: "main", Commits: 1}},
 	}
 }
+
+func boolp(b bool) *bool    { return &b }
+func strp(s string) *string { return &s }
 
 // newAssignOpts wires assignOpts to a fake, isolating config to a temp file.
 func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, teamsYML string) *assignOpts {
@@ -263,6 +320,97 @@ func TestAssignOwnerGuard(t *testing.T) {
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
 	if err == nil || !strings.Contains(err.Error(), "owner") {
 		t.Fatalf("non-owner should be rejected, got %v", err)
+	}
+}
+
+func TestAssignBranchProtection(t *testing.T) {
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{BranchProtection: boolp(true)}); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := fake.rulesets["hw1-ada"]; !ok || id != 42 {
+		t.Errorf("ruleset not applied with resolved staff team ID: %v", fake.rulesets)
+	}
+	if len(fake.rulesets) != 3 {
+		t.Errorf("expected a ruleset on each of 3 repos, got %d", len(fake.rulesets))
+	}
+}
+
+func TestAssignFeedbackPR(t *testing.T) {
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{Feedback: strp("pr")}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.refs, "hw1-ada:refs/heads/feedback") {
+		t.Errorf("feedback branch not created: %v", fake.refs)
+	}
+	if !contains(fake.prs, "hw1-ada:main->feedback") {
+		t.Errorf("feedback PR not opened with base feedback: %v", fake.prs)
+	}
+	if len(fake.issues) != 0 {
+		t.Error("pr mode should not open issues")
+	}
+}
+
+func TestAssignFeedbackIssueEnablesWhenNeeded(t *testing.T) {
+	// Template has issues disabled: assign must enable them first.
+	fake := newFakeAssign("admin")
+	fake.hasIssues = false
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{Feedback: strp("issue")}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.enabled, "hw1-ada") {
+		t.Errorf("issues should be enabled when the template has them off: %v", fake.enabled)
+	}
+	if !contains(fake.issues, "hw1-ada") {
+		t.Errorf("feedback issue not opened: %v", fake.issues)
+	}
+	if len(fake.prs) != 0 {
+		t.Error("issue mode should not open PRs")
+	}
+}
+
+func TestAssignFeedbackIssueSkipsEnableWhenOn(t *testing.T) {
+	fake := newFakeAssign("admin")
+	fake.hasIssues = true
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{Feedback: strp("issue")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.enabled) != 0 {
+		t.Errorf("issues already on: should not re-enable, got %v", fake.enabled)
+	}
+	if !contains(fake.issues, "hw1-ada") {
+		t.Error("feedback issue should still be opened")
+	}
+}
+
+func TestAssignExtrasOnlyOnNewRepos(t *testing.T) {
+	// An existing repo is reused; protection and feedback are not re-applied.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	ov := config.Overrides{BranchProtection: boolp(true), Feedback: strp("issue")}
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", ov); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := fake.rulesets["hw1-ada"]; ok {
+		t.Error("ruleset should not be applied to a reused repo")
+	}
+	if contains(fake.issues, "hw1-ada") {
+		t.Error("feedback should not be created on a reused repo")
+	}
+	// But brand-new repos in the same run do get them.
+	if _, ok := fake.rulesets["hw1-alan"]; !ok {
+		t.Error("new repos should still get protection")
 	}
 }
 

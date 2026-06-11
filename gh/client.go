@@ -49,6 +49,19 @@ type Client interface {
 	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
 	// AddCollaborator grants a user the given permission on a repository.
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
+
+	// ApplyRuleset applies the all-branches force-push/deletion-blocking ruleset.
+	ApplyRuleset(ctx context.Context, org, repo string, staffTeamID int64) error
+	// GetRef returns the SHA a ref (e.g. "heads/main") points at.
+	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
+	// CreateRef creates a fully-qualified ref (e.g. "refs/heads/feedback").
+	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
+	// CreatePR opens a pull request.
+	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
+	// EnableIssues turns on the Issues feature for a repository.
+	EnableIssues(ctx context.Context, owner, repo string) error
+	// CreateIssue opens an issue.
+	CreateIssue(ctx context.Context, owner, repo, title, body string) error
 }
 
 // Repo is the subset of a repository's fields the tool inspects.
