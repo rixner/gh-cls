@@ -50,25 +50,23 @@ func (c *restClient) branchCommitCount(ctx context.Context, owner, repo, branch 
 
 // lastPage extracts the rel="last" page number from a Link header, which (for a
 // one-per-page listing) equals the total count. No such link means a single
-// page, i.e. one item.
+// page, i.e. one item. The page value is read from the URL's query so it is not
+// confused by the per_page parameter, which also contains "page=".
 func lastPage(link string) int {
-	if link == "" {
-		return 1
-	}
 	for _, part := range strings.Split(link, ",") {
 		if !strings.Contains(part, `rel="last"`) {
 			continue
 		}
-		i := strings.Index(part, "page=")
-		if i < 0 {
+		start := strings.Index(part, "<")
+		end := strings.Index(part, ">")
+		if start < 0 || end < start {
 			continue
 		}
-		digits := part[i+len("page="):]
-		end := 0
-		for end < len(digits) && digits[end] >= '0' && digits[end] <= '9' {
-			end++
+		u, err := url.Parse(part[start+1 : end])
+		if err != nil {
+			continue
 		}
-		if n, err := strconv.Atoi(digits[:end]); err == nil {
+		if n, err := strconv.Atoi(u.Query().Get("page")); err == nil {
 			return n
 		}
 	}
