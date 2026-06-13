@@ -2,8 +2,94 @@ package gh
 
 import (
 	"context"
+	"strings"
 	"testing"
 )
+
+func TestGetRef(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{"object":{"sha":"starter-sha"}}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	sha, err := c.GetRef(context.Background(), "org", "hw1-ada", "heads/main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "starter-sha" {
+		t.Errorf("sha = %q", sha)
+	}
+	// ref segments are part of the path and must not be escaped.
+	if f.methods[0] != "GET" || f.paths[0] != "repos/org/hw1-ada/git/ref/heads/main" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+}
+
+func TestCreateRef(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	err := c.CreateRef(context.Background(), "org", "hw1-ada", "refs/heads/feedback", "starter-sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/git/refs" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	for _, want := range []string{`"ref":"refs/heads/feedback"`, `"sha":"starter-sha"`} {
+		if !strings.Contains(f.bodies[0], want) {
+			t.Errorf("body %s missing %s", f.bodies[0], want)
+		}
+	}
+}
+
+func TestCreatePR(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	err := c.CreatePR(context.Background(), "org", "hw1-ada", "Feedback", "main", "feedback", "body text")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/pulls" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	for _, want := range []string{`"title":"Feedback"`, `"head":"main"`, `"base":"feedback"`, `"body":"body text"`} {
+		if !strings.Contains(f.bodies[0], want) {
+			t.Errorf("body %s missing %s", f.bodies[0], want)
+		}
+	}
+}
+
+func TestEnableIssues(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	if err := c.EnableIssues(context.Background(), "org", "hw1-ada"); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "PATCH" || f.paths[0] != "repos/org/hw1-ada" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	if !strings.Contains(f.bodies[0], `"has_issues":true`) {
+		t.Errorf("body %s missing has_issues", f.bodies[0])
+	}
+}
+
+func TestCreateIssue(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	if err := c.CreateIssue(context.Background(), "org", "hw1-ada", "Feedback", "body text"); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/issues" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	for _, want := range []string{`"title":"Feedback"`, `"body":"body text"`} {
+		if !strings.Contains(f.bodies[0], want) {
+			t.Errorf("body %s missing %s", f.bodies[0], want)
+		}
+	}
+}
 
 func TestBranchExists(t *testing.T) {
 	t.Run("present", func(t *testing.T) {
