@@ -15,15 +15,19 @@ type step struct {
 	err  error
 }
 
-// fakeRequester returns programmed responses in order, recording the request
-// bodies it received.
+// fakeRequester returns programmed responses in order, recording the method,
+// path, and body of each request it received.
 type fakeRequester struct {
-	steps  []step
-	calls  int
-	bodies []string
+	steps   []step
+	calls   int
+	bodies  []string
+	methods []string
+	paths   []string
 }
 
-func (f *fakeRequester) fn(_ context.Context, _, _ string, body io.Reader) (*http.Response, error) {
+func (f *fakeRequester) fn(_ context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	f.methods = append(f.methods, method)
+	f.paths = append(f.paths, path)
 	if body != nil {
 		b, _ := io.ReadAll(body)
 		f.bodies = append(f.bodies, string(b))

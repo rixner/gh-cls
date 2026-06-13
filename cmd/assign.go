@@ -48,9 +48,12 @@ type assignClient interface {
 	ApplyRuleset(ctx context.Context, org, repo string, staffTeamID int64) error
 	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
+	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
+	PRExists(ctx context.Context, owner, repo, base string) (bool, error)
 	EnableIssues(ctx context.Context, owner, repo string) error
 	CreateIssue(ctx context.Context, owner, repo, title, body string) error
+	IssueExists(ctx context.Context, owner, repo, title string) (bool, error)
 }
 
 // assignOpts carries the resolved flags and dependencies for `gh cls assign`.
@@ -286,8 +289,10 @@ func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, org
 	return errors.New(sb.String())
 }
 
-// provision creates (or reuses) one repository, asserts its access grants, and
-// on a freshly created repo applies branch protection and the feedback artifact.
+// provision creates (or reuses) one repository and asserts its access grants.
+// Branch protection is applied once, when the repo is first created; the
+// feedback artifact is reconciled on every run so a partial failure is repaired
+// on re-run without reopening a closed PR or issue.
 func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, derived, staffTeam string, staffTeamID int64, policy config.Policy, u unit.Unit) unitResult {
 	repo := name + "-" + u.Key
 	res := unitResult{repo: repo}
@@ -325,37 +330,51 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 		}
 	}
 
-	// Protection and feedback are created with the repo, not re-applied on reuse.
-	if res.status == "created" {
-		if policy.BranchProtection {
-			if err := client.ApplyRuleset(ctx, org, repo, staffTeamID); err != nil {
-				res.err = fmt.Errorf("applying branch protection to %s: %w", repo, err)
-				return res
-			}
-		}
-		if err := o.addFeedback(ctx, client, org, repo, info, policy.Feedback); err != nil {
-			res.err = err
+	// Branch protection is applied once, with the repo, not re-applied on reuse.
+	if res.status == "created" && policy.BranchProtection {
+		if err := client.ApplyRuleset(ctx, org, repo, staffTeamID); err != nil {
+			res.err = fmt.Errorf("applying branch protection to %s: %w", repo, err)
 			return res
 		}
+	}
+	// Feedback is reconciled on every run: each piece is created only if missing,
+	// so a partial failure on a prior run is repaired here.
+	if err := o.addFeedback(ctx, client, org, repo, info, policy.Feedback); err != nil {
+		res.err = err
+		return res
 	}
 	return res
 }
 
-// addFeedback creates the chosen feedback artifact in a newly created repo.
+// addFeedback ensures the chosen feedback artifact exists, creating only the
+// pieces that are missing. This makes it safe to call on every run: a partial
+// failure is repaired, while an existing (even closed) PR or issue is left be.
 func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, repo string, info *gh.Repo, mode string) error {
 	switch mode {
 	case feedbackPR:
 		// A PR needs two distinct refs sharing history; pin a feedback branch at
 		// the starter commit so the student's later pushes diff against it.
-		sha, err := client.GetRef(ctx, org, repo, "heads/"+info.DefaultBranch)
+		branchExists, err := client.BranchExists(ctx, org, repo, feedbackBranch)
 		if err != nil {
-			return fmt.Errorf("reading starter commit of %s: %w", repo, err)
+			return fmt.Errorf("checking feedback branch on %s: %w", repo, err)
 		}
-		if err := client.CreateRef(ctx, org, repo, "refs/heads/"+feedbackBranch, sha); err != nil {
-			return fmt.Errorf("creating feedback branch on %s: %w", repo, err)
+		if !branchExists {
+			sha, err := client.GetRef(ctx, org, repo, "heads/"+info.DefaultBranch)
+			if err != nil {
+				return fmt.Errorf("reading starter commit of %s: %w", repo, err)
+			}
+			if err := client.CreateRef(ctx, org, repo, "refs/heads/"+feedbackBranch, sha); err != nil {
+				return fmt.Errorf("creating feedback branch on %s: %w", repo, err)
+			}
 		}
-		if err := client.CreatePR(ctx, org, repo, feedbackTitle, info.DefaultBranch, feedbackBranch, feedbackPRBody); err != nil {
-			return fmt.Errorf("opening feedback PR on %s: %w", repo, err)
+		prExists, err := client.PRExists(ctx, org, repo, feedbackBranch)
+		if err != nil {
+			return fmt.Errorf("checking feedback PR on %s: %w", repo, err)
+		}
+		if !prExists {
+			if err := client.CreatePR(ctx, org, repo, feedbackTitle, info.DefaultBranch, feedbackBranch, feedbackPRBody); err != nil {
+				return fmt.Errorf("opening feedback PR on %s: %w", repo, err)
+			}
 		}
 	case feedbackIssue:
 		if !info.HasIssues {
@@ -363,8 +382,14 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 				return fmt.Errorf("enabling issues on %s: %w", repo, err)
 			}
 		}
-		if err := client.CreateIssue(ctx, org, repo, feedbackTitle, feedbackIssueBody); err != nil {
-			return fmt.Errorf("opening feedback issue on %s: %w", repo, err)
+		issueExists, err := client.IssueExists(ctx, org, repo, feedbackTitle)
+		if err != nil {
+			return fmt.Errorf("checking feedback issue on %s: %w", repo, err)
+		}
+		if !issueExists {
+			if err := client.CreateIssue(ctx, org, repo, feedbackTitle, feedbackIssueBody); err != nil {
+				return fmt.Errorf("opening feedback issue on %s: %w", repo, err)
+			}
 		}
 	}
 	return nil

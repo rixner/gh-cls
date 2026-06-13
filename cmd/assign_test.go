@@ -115,11 +115,28 @@ func (f *fakeAssignClient) CreateRef(_ context.Context, _, repo, ref, _ string) 
 	return nil
 }
 
+func (f *fakeAssignClient) BranchExists(_ context.Context, _, repo, branch string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return contains(f.refs, repo+":refs/heads/"+branch), nil
+}
+
 func (f *fakeAssignClient) CreatePR(_ context.Context, _, repo, _, head, base, _ string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.prs = append(f.prs, repo+":"+head+"->"+base)
 	return nil
+}
+
+func (f *fakeAssignClient) PRExists(_ context.Context, _, repo, base string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.prs {
+		if strings.HasPrefix(p, repo+":") && strings.HasSuffix(p, "->"+base) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fakeAssignClient) EnableIssues(_ context.Context, _, repo string) error {
@@ -134,6 +151,12 @@ func (f *fakeAssignClient) CreateIssue(_ context.Context, _, repo, _, _ string) 
 	defer f.mu.Unlock()
 	f.issues = append(f.issues, repo)
 	return nil
+}
+
+func (f *fakeAssignClient) IssueExists(_ context.Context, _, repo, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return contains(f.issues, repo), nil
 }
 
 func newFakeAssign(role string) *fakeAssignClient {
@@ -180,12 +203,17 @@ func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, teamsYML str
 }
 
 func contains(haystack []string, needle string) bool {
+	return count(haystack, needle) > 0
+}
+
+func count(haystack []string, needle string) int {
+	n := 0
 	for _, h := range haystack {
 		if h == needle {
-			return true
+			n++
 		}
 	}
-	return false
+	return n
 }
 
 func TestAssignIndividual(t *testing.T) {
@@ -392,8 +420,9 @@ func TestAssignFeedbackIssueSkipsEnableWhenOn(t *testing.T) {
 	}
 }
 
-func TestAssignExtrasOnlyOnNewRepos(t *testing.T) {
-	// An existing repo is reused; protection and feedback are not re-applied.
+func TestAssignProtectionNewOnlyFeedbackReconciled(t *testing.T) {
+	// An existing repo is reused: branch protection is not re-applied, but the
+	// feedback artifact is reconciled (a missing one is created).
 	fake := newFakeAssign("admin")
 	fake.exists["cs101-spring26/hw1-ada"] = true
 	o := newAssignOpts(t, fake, assignRoster, "")
@@ -405,12 +434,70 @@ func TestAssignExtrasOnlyOnNewRepos(t *testing.T) {
 	if _, ok := fake.rulesets["hw1-ada"]; ok {
 		t.Error("ruleset should not be applied to a reused repo")
 	}
-	if contains(fake.issues, "hw1-ada") {
-		t.Error("feedback should not be created on a reused repo")
+	if !contains(fake.issues, "hw1-ada") {
+		t.Error("feedback should be reconciled on a reused repo that lacks it")
 	}
-	// But brand-new repos in the same run do get them.
+	// Brand-new repos in the same run get both protection and feedback.
 	if _, ok := fake.rulesets["hw1-alan"]; !ok {
 		t.Error("new repos should still get protection")
+	}
+	if !contains(fake.issues, "hw1-alan") {
+		t.Error("new repos should get feedback")
+	}
+}
+
+func TestAssignFeedbackPRIdempotent(t *testing.T) {
+	// A reused repo already has its feedback branch and PR: neither is recreated,
+	// so a closed PR is never reopened.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.refs = []string{"hw1-ada:refs/heads/feedback"}
+	fake.prs = []string{"hw1-ada:main->feedback"}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{Feedback: strp("pr")}); err != nil {
+		t.Fatal(err)
+	}
+	if count(fake.refs, "hw1-ada:refs/heads/feedback") != 1 {
+		t.Errorf("existing feedback branch should not be recreated: %v", fake.refs)
+	}
+	if count(fake.prs, "hw1-ada:main->feedback") != 1 {
+		t.Errorf("existing feedback PR should not be reopened: %v", fake.prs)
+	}
+}
+
+func TestAssignFeedbackPRRecoversMissingPR(t *testing.T) {
+	// A prior run created the feedback branch but failed before opening the PR;
+	// the re-run opens only the missing PR.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.refs = []string{"hw1-ada:refs/heads/feedback"} // branch present, no PR
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{Feedback: strp("pr")}); err != nil {
+		t.Fatal(err)
+	}
+	if count(fake.refs, "hw1-ada:refs/heads/feedback") != 1 {
+		t.Errorf("branch should not be recreated: %v", fake.refs)
+	}
+	if !contains(fake.prs, "hw1-ada:main->feedback") {
+		t.Errorf("missing feedback PR should be opened on re-run: %v", fake.prs)
+	}
+}
+
+func TestAssignFeedbackIssueIdempotent(t *testing.T) {
+	// A reused repo already has its feedback issue: no duplicate is opened.
+	fake := newFakeAssign("admin")
+	fake.hasIssues = true
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.issues = []string{"hw1-ada"}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{Feedback: strp("issue")}); err != nil {
+		t.Fatal(err)
+	}
+	if count(fake.issues, "hw1-ada") != 1 {
+		t.Errorf("existing feedback issue should not be duplicated: %v", fake.issues)
 	}
 }
 

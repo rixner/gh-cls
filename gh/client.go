@@ -56,12 +56,18 @@ type Client interface {
 	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
 	// CreateRef creates a fully-qualified ref (e.g. "refs/heads/feedback").
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
+	// BranchExists reports whether a branch (short name) exists.
+	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	// CreatePR opens a pull request.
 	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
+	// PRExists reports whether any pull request (any state) targets base.
+	PRExists(ctx context.Context, owner, repo, base string) (bool, error)
 	// EnableIssues turns on the Issues feature for a repository.
 	EnableIssues(ctx context.Context, owner, repo string) error
 	// CreateIssue opens an issue.
 	CreateIssue(ctx context.Context, owner, repo, title, body string) error
+	// IssueExists reports whether an issue (any state) with title exists.
+	IssueExists(ctx context.Context, owner, repo, title string) (bool, error)
 
 	// ListOrgReposByPrefix returns org repos whose name starts with prefix.
 	ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]Repo, error)
