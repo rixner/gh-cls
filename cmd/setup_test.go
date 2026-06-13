@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 )
 
@@ -87,9 +86,10 @@ func TestSetupOwnerGuard(t *testing.T) {
 	if fake.patched != nil || fake.actionsSet != "" {
 		t.Error("no org mutations should occur when the owner guard fails")
 	}
-	// The org write is the deliberate always-performed act and precedes the guard.
-	if c, _, _ := config.LoadFile(path); c.Org != "cs101-spring26" {
-		t.Errorf("org should still be recorded in config, got %q", c.Org)
+	// The org is persisted only after the owner check passes, so a rejected
+	// non-owner run must not record it.
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Error("org must not be written to config when the owner guard fails")
 	}
 }
 

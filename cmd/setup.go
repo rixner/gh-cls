@@ -88,23 +88,23 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 		return nil
 	}
 
-	// The org write is the deliberate, always-performed act that establishes the
-	// semester; it is announced loudly and happens before the org-setting
-	// hardening that the owner guard protects.
+	// Verify the org exists and we own it before persisting it, so a typo or an
+	// org we don't control can never poison the config that later commands read.
+	client, err := o.newClient(ctx)
+	if err != nil {
+		return err
+	}
+	if err := requireOwner(ctx, client, org); err != nil {
+		return err
+	}
+
+	// The org write is the deliberate act that establishes the semester; it is
+	// announced loudly, and happens only once the ownership check has passed.
 	prev, err := config.WriteOrg(writePath, org)
 	if err != nil {
 		return err
 	}
 	printOrgWarning(out, org, prev)
-
-	client, err := o.newClient(ctx)
-	if err != nil {
-		return err
-	}
-
-	if err := requireOwner(ctx, client, org); err != nil {
-		return err
-	}
 
 	results, err := hardenOrg(ctx, client, org, staffTeam)
 	if err != nil {
