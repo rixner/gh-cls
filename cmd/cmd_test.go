@@ -109,6 +109,31 @@ func TestAssignFeedbackEnum(t *testing.T) {
 	}
 }
 
+func TestVersionFlag(t *testing.T) {
+	out, err := execute("--version")
+	if err != nil {
+		t.Fatalf("--version should succeed, got %v", err)
+	}
+	if !strings.Contains(out, resolveVersion()) {
+		t.Errorf("--version output %q should contain the resolved version %q", out, resolveVersion())
+	}
+}
+
+func TestResolveVersionPrefersStamp(t *testing.T) {
+	orig := version
+	t.Cleanup(func() { version = orig })
+
+	version = "v1.2.3"
+	if got := resolveVersion(); got != "v1.2.3" {
+		t.Errorf("stamped version should win, got %q", got)
+	}
+	// Without a stamp it must still yield a non-empty value (build info or "dev").
+	version = "dev"
+	if got := resolveVersion(); got == "" {
+		t.Error("resolveVersion must never be empty")
+	}
+}
+
 func TestConcurrencyDefault(t *testing.T) {
 	j, err := NewRootCmd().PersistentFlags().GetInt("concurrency")
 	if err != nil {

@@ -6,6 +6,7 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"runtime/debug"
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/spf13/cobra"
@@ -13,6 +14,52 @@ import (
 
 // defaultConcurrency bounds parallel GitHub operations unless -j overrides it.
 const defaultConcurrency = 8
+
+// version may be stamped at build time with
+//
+//	-ldflags "-X github.com/rixner/gh-cls/cmd.version=v1.2.3"
+//
+// but is normally left as "dev"; resolveVersion derives a meaningful value from
+// the binary's embedded build information instead. The gh-extension-precompile
+// action embeds no version, so released binaries report their commit revision;
+// `gh extension list` is what shows users the release tag.
+var version = "dev"
+
+// resolveVersion reports the build version: an explicit ldflags stamp if set,
+// else the module version (e.g. from `go install ...@v1.2.3`), else the VCS
+// revision Go embeds at build time, else "dev".
+func resolveVersion() string {
+	if version != "dev" {
+		return version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return version
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	var rev string
+	var dirty bool
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			rev = s.Value
+		case "vcs.modified":
+			dirty = s.Value == "true"
+		}
+	}
+	if rev == "" {
+		return version
+	}
+	if len(rev) > 12 {
+		rev = rev[:12]
+	}
+	if dirty {
+		rev += "-dirty"
+	}
+	return "dev (" + rev + ")"
+}
 
 // globalOpts holds the flags shared by every subcommand. A single instance is
 // bound to the root's persistent flags and handed to each subcommand, so a
@@ -36,6 +83,7 @@ student and team repositories, and freezing them at a deadline.`,
 		// Errors are returned to main for reporting; cobra should not also dump
 		// usage text on every operational failure.
 		SilenceUsage: true,
+		Version:      resolveVersion(),
 	}
 
 	pf := root.PersistentFlags()
