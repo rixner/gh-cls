@@ -120,6 +120,7 @@ The org and staff team come from a user-authored config file, located with
 
 	root.AddCommand(
 		newSetupCmd(g),
+		newStaffCmd(g),
 		newTemplateCmd(g),
 		newAssignCmd(g),
 		newFreezeCmd(g),

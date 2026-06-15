@@ -69,6 +69,9 @@ team-alpha: [student-001, student-003]
 team-beta:  [student-002]
 ```
 
+A **TA** file (for `gh cls staff`) is a CSV in the same `identifier,username`
+format as the roster, listing the staff team's GitHub usernames.
+
 ## Commands
 
 Every command reads the org and staff team from the config (`-c/--config` or
@@ -80,6 +83,10 @@ Persistent flags: `-c/--config`, `-j/--concurrency`. The examples below assume
 ```sh
 # 1. Per-semester: harden the org named in the config.
 gh cls setup
+
+# 1b. Whenever the TA staff changes: add (and optionally prune) the staff team.
+gh cls staff --tas tas.csv             # add-only; warns about unlisted members
+gh cls staff --tas tas.csv --prune     # also remove members not in the file
 
 # 2. Optional: build a squashed, single-commit template repo from a source.
 gh cls template hw1-template --source cs101-staff/hw1-dev
@@ -104,6 +111,14 @@ gh cls freeze hw1 --undo
   only in the web UI (installing apps, changing repository visibility, deleting or
   transferring repositories, creating teams) — these are the instructor's to
   apply or leave open, at their discretion.
+- **staff** adds the GitHub usernames in a `--tas` CSV (the same
+  `identifier,username` format as the roster) to the staff team. By default it
+  only **adds**: members not in the file are left alone but reported with a
+  warning pointing at `--prune`, so an incomplete file can never silently remove a
+  TA. `--prune` also removes members not in the file, naming each removal so a
+  mistake is easy to undo; `--dry-run` previews either. A TA who is not yet an org
+  member is invited and joins on acceptance. The team must already exist (from
+  setup), and the file must list at least one TA (an empty file is rejected).
 - **template** builds `<repo>` as a single-commit, history-free copy of
   `--source` (via GitHub's template generation) and marks it a template
   repository so assign can clone it. It is optional: assign clones whatever

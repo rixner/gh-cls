@@ -119,6 +119,13 @@ Run each step **with `--dry-run` first**, then for real.
    verify: base permission *None*, member repo/Pages creation off, Actions
    disabled, a `staff` team exists.
 
+   **1b. staff (optional)** — write a `tas.csv` (`identifier,username` with a TA
+   login, e.g. `ta-1,<TA>`) and run `gh cls staff --tas tas.csv`. Verify `<TA>` is
+   added to the `staff` team (or invited, if not yet an org member). Re-run → it
+   reports `already in sync`. Replace `<TA>` with a different login → the run adds
+   the new one and **warns** that `<TA>` is still on the team (not removed); re-run
+   with `--prune` → `<TA>` is removed and named in the output.
+
 2. **Seed a source.** Create a repo with at least one commit to squash from —
    e.g. a new repo initialized with a README named `hw1-src`.
 

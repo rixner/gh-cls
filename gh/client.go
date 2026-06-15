@@ -40,6 +40,13 @@ type Client interface {
 	CreateTeam(ctx context.Context, org, name string) (*Team, error)
 	// AddTeamRepo grants a team the given permission on a repository.
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
+	// ListTeamMembers returns the logins of a team's current members.
+	ListTeamMembers(ctx context.Context, org, slug string) ([]string, error)
+	// AddTeamMembership adds or invites a user to a team as a member, returning
+	// the resulting state ("active" or "pending").
+	AddTeamMembership(ctx context.Context, org, slug, username string) (string, error)
+	// RemoveTeamMembership removes a user from a team.
+	RemoveTeamMembership(ctx context.Context, org, slug, username string) error
 
 	// ListBranchesWithCommitCount returns every branch with its exact commit count.
 	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]BranchCount, error)

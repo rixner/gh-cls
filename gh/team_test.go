@@ -2,6 +2,7 @@ package gh
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -66,5 +67,64 @@ func TestAddTeamRepo(t *testing.T) {
 	}
 	if !strings.Contains(f.bodies[0], `"permission":"push"`) {
 		t.Errorf("body %s missing permission", f.bodies[0])
+	}
+}
+
+func TestListTeamMembers(t *testing.T) {
+	// A full first page forces a second request; a short second page ends paging.
+	page1 := "["
+	for i := 0; i < 100; i++ {
+		if i > 0 {
+			page1 += ","
+		}
+		page1 += fmt.Sprintf(`{"login":"ta%d"}`, i)
+	}
+	page1 += "]"
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(page1)},
+		{resp: okResp(`[{"login":"ta-last"}]`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	members, err := c.ListTeamMembers(context.Background(), "org", "staff")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) != 101 || members[0] != "ta0" || members[100] != "ta-last" {
+		t.Errorf("got %d members; first=%q last=%q", len(members), members[0], members[len(members)-1])
+	}
+	if f.paths[0] != "orgs/org/teams/staff/members?per_page=100&page=1" {
+		t.Errorf("path = %q", f.paths[0])
+	}
+}
+
+func TestAddTeamMembership(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{"state":"pending","role":"member"}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	state, err := c.AddTeamMembership(context.Background(), "org", "staff", "ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state != "pending" {
+		t.Errorf("state = %q, want pending", state)
+	}
+	if f.methods[0] != "PUT" || f.paths[0] != "orgs/org/teams/staff/memberships/ada" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	if !strings.Contains(f.bodies[0], `"role":"member"`) {
+		t.Errorf("body %s should request the member role", f.bodies[0])
+	}
+}
+
+func TestRemoveTeamMembership(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(``)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	if err := c.RemoveTeamMembership(context.Background(), "org", "staff", "ada"); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "DELETE" || f.paths[0] != "orgs/org/teams/staff/memberships/ada" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
 	}
 }

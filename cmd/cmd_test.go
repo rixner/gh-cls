@@ -69,7 +69,7 @@ func TestOrgIsConfigOnly(t *testing.T) {
 	if NewRootCmd().PersistentFlags().Lookup("org") != nil {
 		t.Error("--org must not be a flag")
 	}
-	for _, name := range []string{"setup", "template", "assign", "freeze", "audit"} {
+	for _, name := range []string{"setup", "staff", "template", "assign", "freeze", "audit"} {
 		withConfig(t, "org: cs101-spring26\n")
 		if _, err := execute(name, "x", "--org", "foo"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 			t.Errorf("%s should reject --org as an unknown flag, got %v", name, err)
@@ -82,6 +82,7 @@ func TestOrgIsConfigOnly(t *testing.T) {
 func TestLocalFlagMatrix(t *testing.T) {
 	cases := map[string]map[string]string{
 		"setup":    {"n": "dry-run"},
+		"staff":    {"t": "tas", "n": "dry-run"},
 		"template": {"s": "source", "F": "force", "n": "dry-run"},
 		"assign":   {"r": "roster", "T": "teams", "p": "public", "b": "branch-protection", "a": "all-branches", "f": "feedback", "U": "allow-unsquashed", "n": "dry-run"},
 		"freeze":   {"u": "undo", "n": "dry-run"},
