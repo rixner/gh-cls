@@ -43,6 +43,7 @@ type assignClient interface {
 	GetTeam(ctx context.Context, org, slug string) (*gh.Team, bool, error)
 	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]gh.BranchCount, error)
 	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
+	DeleteRepo(ctx context.Context, org, name string) error
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
 	ApplyRuleset(ctx context.Context, org, repo string, staffTeamID int64) error
@@ -327,6 +328,18 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 	// assignment that came out (or has since drifted) public would expose student
 	// work, so abort this repo rather than (re-)assert access on a leaky one.
 	if err := checkVisibility(repo, info, policy.Public); err != nil {
+		// A repo we just generated with the wrong visibility is our own leaky
+		// artifact: no access has been granted yet, so roll it back rather than
+		// leave a wrongly-public repo behind. A reused repo is never deleted — it
+		// may already hold student work — so it is only reported.
+		if res.status == "created" {
+			if delErr := client.DeleteRepo(ctx, org, repo); delErr != nil {
+				res.err = fmt.Errorf("%w; additionally, rolling back the leaked repo failed — delete %s/%s manually: %v", err, org, repo, delErr)
+				return res
+			}
+			res.err = fmt.Errorf("%w (rolled back the just-created repo)", err)
+			return res
+		}
 		res.err = err
 		return res
 	}

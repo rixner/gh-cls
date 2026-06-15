@@ -18,8 +18,6 @@ type Client interface {
 	// GetRepo fetches a repository. The bool is false (with a nil error) when
 	// the repo does not exist.
 	GetRepo(ctx context.Context, owner, name string) (*Repo, bool, error)
-	// CreateOrgRepo creates an empty repository in the org.
-	CreateOrgRepo(ctx context.Context, org, name string, private bool) (*Repo, error)
 	// SetRepoTemplate marks a repository as a template repository.
 	SetRepoTemplate(ctx context.Context, owner, name string) error
 	// DeleteRepo deletes a repository.
@@ -85,7 +83,6 @@ type Repo struct {
 	DefaultBranch string `json:"default_branch"`
 	IsTemplate    bool   `json:"is_template"`
 	HasIssues     bool   `json:"has_issues"`
-	CloneURL      string `json:"clone_url"`
 }
 
 // restClient must satisfy Client.

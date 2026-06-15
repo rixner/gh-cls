@@ -41,27 +41,6 @@ func TestGetRepo(t *testing.T) {
 	})
 }
 
-func TestCreateOrgRepo(t *testing.T) {
-	f := &fakeRequester{steps: []step{{resp: okResp(`{"name":"hw1-template","private":true}`)}}}
-	var waits int
-	c := newTestClient(f, &waits)
-	repo, err := c.CreateOrgRepo(context.Background(), "org", "hw1-template", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if repo.Name != "hw1-template" {
-		t.Errorf("decoded %+v", repo)
-	}
-	if f.methods[0] != "POST" || f.paths[0] != "orgs/org/repos" {
-		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
-	}
-	for _, want := range []string{`"auto_init":false`, `"name":"hw1-template"`, `"private":true`} {
-		if !strings.Contains(f.bodies[0], want) {
-			t.Errorf("body %s missing %s", f.bodies[0], want)
-		}
-	}
-}
-
 func TestSetRepoTemplate(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
 	var waits int

@@ -57,7 +57,7 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 		resp, err := c.request(ctx, method, path, r)
 		if err != nil {
 			lastErr = err
-			delay, retry := c.policy.retryDelay(err, attempt)
+			delay, retry := c.policy.retryDelay(method, err, attempt)
 			if !retry || attempt == c.policy.maxAttempts {
 				return nil, err
 			}

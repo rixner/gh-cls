@@ -34,10 +34,13 @@ func defaultPolicy() retryPolicy {
 }
 
 // retryDelay reports the wait before retrying a failed request and whether the
-// failure is retryable at all. Transient HTTP statuses (429, a secondary
-// rate-limit 403, any 5xx) and transport-level errors are retryable; a definite
-// client error (404, 422, an ordinary 403, ...) is not.
-func (p retryPolicy) retryDelay(err error, attempt int) (time.Duration, bool) {
+// failure is retryable at all. A rate-limit response (429 or a secondary
+// rate-limit 403) is always retryable: the server rejected the request outright,
+// so retrying cannot duplicate work. A 5xx or transport-level error is ambiguous
+// — the request may already have been applied — so it is retried only for
+// idempotent methods. A definite client error (404, 422, an ordinary 403, ...)
+// is never retried.
+func (p retryPolicy) retryDelay(method string, err error, attempt int) (time.Duration, bool) {
 	var he *api.HTTPError
 	if errors.As(err, &he) {
 		switch {
@@ -46,15 +49,27 @@ func (p retryPolicy) retryDelay(err error, attempt int) (time.Duration, bool) {
 		case he.StatusCode == http.StatusForbidden && rateLimited(he.Headers):
 			return p.limitDelay(he.Headers, attempt), true
 		case he.StatusCode >= 500:
-			return backoff(attempt), true
+			return backoff(attempt), idempotent(method)
 		}
 		return 0, false
 	}
 	if err != nil {
-		// A transport-level error (timeout, reset connection) is worth a retry.
-		return backoff(attempt), true
+		// A transport-level error (timeout, reset connection) is ambiguous: the
+		// request may have reached the server and taken effect, so only an
+		// idempotent method is safe to retry.
+		return backoff(attempt), idempotent(method)
 	}
 	return 0, false
+}
+
+// idempotent reports whether a method is safe to retry after an ambiguous failure
+// — one where the request may already have taken effect server-side. POST is the
+// only non-idempotent method this tool issues (repo, PR, issue, team, ref, and
+// ruleset creation), so retrying it after a 5xx or dropped connection could
+// duplicate the resource. Re-running the command is the safe recovery instead,
+// since every create is guarded by an existence check.
+func idempotent(method string) bool {
+	return method != http.MethodPost
 }
 
 // limitDelay derives a wait from rate-limit headers, preferring an explicit

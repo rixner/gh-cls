@@ -49,6 +49,7 @@ type fakeAssignClient struct {
 	dropGrants     map[string]bool // usernames whose grant silently evaporates
 	branches       []gh.BranchCount
 	generated      []string
+	deleted        []string
 	collabs        []string
 	teamRepos      []string
 	rulesets       map[string]int64 // repo -> staff team ID used in bypass
@@ -94,6 +95,15 @@ func (f *fakeAssignClient) GenerateFromTemplate(_ context.Context, _, _, owner, 
 	if !f.withholdBranch {
 		f.refs = append(f.refs, name+":refs/heads/main")
 	}
+	return nil
+}
+
+func (f *fakeAssignClient) DeleteRepo(_ context.Context, owner, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.exists, owner+"/"+name)
+	delete(f.public, owner+"/"+name)
+	f.deleted = append(f.deleted, name)
 	return nil
 }
 
@@ -590,6 +600,10 @@ func TestAssignVerifiesVisibility(t *testing.T) {
 	if len(fake.collabs) != 0 {
 		t.Errorf("no access should be granted on a wrongly-public repo: %v", fake.collabs)
 	}
+	// Each leaked repo we just created is rolled back rather than left behind.
+	if len(fake.deleted) != 3 {
+		t.Errorf("wrongly-public just-created repos should be deleted, got %v", fake.deleted)
+	}
 }
 
 func TestAssignRejectsExistingPublicRepo(t *testing.T) {
@@ -610,6 +624,10 @@ func TestAssignRejectsExistingPublicRepo(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "is public but private was requested") {
 		t.Errorf("visibility mismatch should be reported clearly: %s", buf.String())
+	}
+	// A reused repo must never be deleted: it may already hold student work.
+	if contains(fake.deleted, "hw1-ada") || !fake.exists["cs101-spring26/hw1-ada"] {
+		t.Errorf("a reused public repo must not be deleted, got deleted=%v", fake.deleted)
 	}
 }
 

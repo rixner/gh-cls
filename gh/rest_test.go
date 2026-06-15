@@ -119,6 +119,21 @@ func TestDoExhaustsRetriesOn5xx(t *testing.T) {
 	}
 }
 
+func TestDoDoesNotRetryPostOn5xx(t *testing.T) {
+	// A create that 5xxes may already have committed; retrying would duplicate it,
+	// so do must fail fast and let the command's existence checks make a re-run safe.
+	f := &fakeRequester{steps: []step{{err: httpErr(500, nil)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	if _, err := c.do(context.Background(), "POST", "repos/o/x/issues", map[string]any{"title": "t"}, nil); err == nil {
+		t.Fatal("a POST 5xx should fail without retry")
+	}
+	if f.calls != 1 || waits != 0 {
+		t.Errorf("a non-idempotent POST should not be retried: calls=%d waits=%d", f.calls, waits)
+	}
+}
+
 func TestDoDoesNotRetryClientError(t *testing.T) {
 	f := &fakeRequester{steps: []step{{err: httpErr(404, nil)}}}
 	var waits int

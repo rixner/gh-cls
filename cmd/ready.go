@@ -23,8 +23,20 @@ type repoReady interface {
 // generating student repos from a freshly built template.
 func waitRepoReady(ctx context.Context, c repoReady, sleep func(time.Duration), owner, repo string) (*gh.Repo, error) {
 	for i := 0; i < readyAttempts; i++ {
-		if r, exists, err := c.GetRepo(ctx, owner, repo); err == nil && exists && r.DefaultBranch != "" {
-			if ok, err := c.BranchExists(ctx, owner, repo, r.DefaultBranch); err == nil && ok {
+		// A real API error (auth, permissions, a 5xx that outlived its retries) is
+		// surfaced immediately rather than swallowed: polling through it would hide
+		// the actual cause behind a generic "did not become ready" timeout. Only a
+		// not-yet-populated repo (no error, just no default branch) keeps polling.
+		r, exists, err := c.GetRepo(ctx, owner, repo)
+		if err != nil {
+			return nil, fmt.Errorf("waiting for %s/%s to become ready: %w", owner, repo, err)
+		}
+		if exists && r.DefaultBranch != "" {
+			ok, err := c.BranchExists(ctx, owner, repo, r.DefaultBranch)
+			if err != nil {
+				return nil, fmt.Errorf("waiting for %s/%s to become ready: %w", owner, repo, err)
+			}
+			if ok {
 				return r, nil
 			}
 		}
