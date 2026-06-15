@@ -68,15 +68,24 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string) error 
 		return err
 	}
 
-	repos, err := client.ListOrgReposByPrefix(ctx, org, name+"-")
+	all, err := client.ListOrgReposByPrefix(ctx, org, name+"-")
 	if err != nil {
 		return fmt.Errorf("listing %s-* repositories: %w", name, err)
 	}
+	// A template repository can match the <name>-* prefix (e.g. hw1-template) but
+	// is not student work — never freeze it. Skipping every template repo keeps
+	// freeze decoupled from which template an assignment names.
+	var repos []gh.Repo
+	for _, r := range all {
+		if !r.IsTemplate {
+			repos = append(repos, r)
+		}
+	}
 	if len(repos) == 0 {
 		// At a deadline, zero matches almost always means a mistyped assignment
-		// name or the wrong org — not "nothing to do". Fail loudly so a freeze is
-		// never silently a no-op.
-		return fmt.Errorf("no repositories named %s-* found in %s; check the assignment name and that -o/--org is correct", name, org)
+		// name or the wrong config — not "nothing to do". Fail loudly so a freeze
+		// is never silently a no-op.
+		return fmt.Errorf("no student repositories named %s-* found in %s; check the assignment name and your config's org", name, org)
 	}
 
 	verb := "Freezing"

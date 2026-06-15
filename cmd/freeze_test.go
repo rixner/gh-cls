@@ -185,10 +185,28 @@ func TestFreezeNoMatchingReposIsAnError(t *testing.T) {
 	fake := freezeFake("admin")
 	o := newFreezeOpts(t, fake, false, false)
 	err := o.run(context.Background(), &bytes.Buffer{}, "midterm")
-	if err == nil || !strings.Contains(err.Error(), "no repositories named midterm-*") {
+	if err == nil || !strings.Contains(err.Error(), "no student repositories named midterm-*") {
 		t.Fatalf("zero matches should be an error, got %v", err)
 	}
 	if len(fake.changes) != 0 {
 		t.Error("nothing should change when no repos match")
+	}
+}
+
+func TestFreezeSkipsTemplateRepo(t *testing.T) {
+	// hw1-template matches the hw1-* prefix but is a template repository, not
+	// student work — freeze must never touch it.
+	fake := freezeFake("admin")
+	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-template", IsTemplate: true})
+	fake.collabs["hw1-template"] = []gh.Collaborator{collab("ada", "push")}
+	o := newFreezeOpts(t, fake, false, false)
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range fake.changes {
+		if strings.HasPrefix(ch, "hw1-template:") {
+			t.Errorf("freeze must not touch the template repo: %v", fake.changes)
+		}
 	}
 }

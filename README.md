@@ -117,7 +117,9 @@ gh cls freeze hw1 --undo
   everyone whose invitation expired or who is missing entirely (it never removes
   access). `--all` lists everyone, not just those needing attention.
 - **freeze** operates purely on each repo's current direct collaborators, never
-  the roster, so a drifted roster cannot let anyone escape the freeze.
+  the roster, so a drifted roster cannot let anyone escape the freeze. It skips
+  template repositories, so a `<name>-template` that matches the `<name>-*` prefix
+  is never frozen.
 
 ## First run against a live org
 
