@@ -67,11 +67,11 @@ team-beta:  [student-002]
 
 Every mutating command requires you to be an organization **owner** and accepts
 `-n/--dry-run`. Persistent flags: `-o/--org` (override the config org),
-`-s/--staff-team`, `-j/--concurrency`.
+`-s/--staff`, `-j/--concurrency`.
 
 ```sh
 # 1. Per-semester: harden the org and record it in config (requires --org).
-gh cls setup --org cs101-spring26 --staff-team staff
+gh cls setup --org cs101-spring26 --staff staff
 
 # 2. Per-assignment: generate a single-commit <name>-template in the org.
 gh cls template hw1

@@ -88,7 +88,7 @@ student and team repositories, and freezing them at a deadline.`,
 
 	pf := root.PersistentFlags()
 	pf.StringVarP(&g.org, "org", "o", "", "semester GitHub organization")
-	pf.StringVarP(&g.staffTeam, "staff-team", "s", "", "staff/TA team slug")
+	pf.StringVarP(&g.staffTeam, "staff", "s", "", "staff/TA team slug")
 	pf.IntVarP(&g.concurrency, "concurrency", "j", defaultConcurrency, "max concurrent GitHub operations")
 
 	root.AddCommand(

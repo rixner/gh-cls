@@ -36,7 +36,7 @@ func subcommand(t *testing.T, name string) *cobra.Command {
 // shorthands on the root command.
 func TestPersistentFlagMatrix(t *testing.T) {
 	pf := NewRootCmd().PersistentFlags()
-	for short, long := range map[string]string{"o": "org", "s": "staff-team", "j": "concurrency"} {
+	for short, long := range map[string]string{"o": "org", "s": "staff", "j": "concurrency"} {
 		f := pf.ShorthandLookup(short)
 		if f == nil {
 			t.Fatalf("persistent shorthand -%s not defined", short)

@@ -43,7 +43,7 @@ into the config so later commands target it.
 --org is required and is never read from config: stating it explicitly each
 semester is the single deliberate act that establishes (or changes) the org.
 All hardening actions are idempotent, so setup is always safe to re-run.`,
-		Example: "  gh cls setup --org cs101-spring26 --staff-team staff",
+		Example: "  gh cls setup --org cs101-spring26 --staff staff",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout())
