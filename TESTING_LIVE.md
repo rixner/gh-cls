@@ -144,10 +144,11 @@ Run each step **with `--dry-run` first**, then for real.
    <STU>,<STU>
    ```
 
-5. **`gh cls assign hw1 -o $ORG -s staff -r roster.csv --public --branch-protection --feedback issue`**
-   — verify `hw1-<STU>` is created, `<STU>` is a direct collaborator with **push**,
-   the staff team has push, a protection ruleset is present (public repo), and a
-   *Feedback* issue is open. Re-run → it should report the repo `skipped`.
+5. **`gh cls assign hw1 -o $ORG -r roster.csv --public --branch-protection --feedback issue`**
+   (no `-s` — `assign` inherits `staff_team` from config) — verify `hw1-<STU>` is
+   created, `<STU>` is a direct collaborator with **push**, the staff team has
+   push, a protection ruleset is present (public repo), and a *Feedback* issue is
+   open. Re-run → it should report the repo `skipped`.
 
 6. **`gh cls freeze hw1 -o $ORG`** — `<STU>` drops to **read**. (Single-account
    fallback: reports `0` changed because you are admin-skipped.)
@@ -156,7 +157,7 @@ Run each step **with `--dry-run` first**, then for real.
 
 8. **Group assignment (optional)** — add a `group` assignment to the config,
    write a `teams.yml` (`alpha: [<STU>]`), and
-   `gh cls assign <name> -o $ORG -s staff -r roster.csv --teams teams.yml --public`.
+   `gh cls assign <name> -o $ORG -r roster.csv --teams teams.yml --public`.
    Verify `<name>-alpha` is created with the team's members granted push.
 
 9. **Cleanup** — delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
