@@ -26,6 +26,7 @@ type fakeTemplateClient struct {
 	templated    []string
 	markWontTake bool            // SetRepoTemplate "succeeds" but the is_template flag never sticks
 	noContent    map[string]bool // "owner/name" repos whose branches do not resolve (empty repo)
+	forcePublic  bool            // generation produces a public repo regardless of the request
 }
 
 func (f *fakeTemplateClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -49,7 +50,7 @@ func (f *fakeTemplateClient) GenerateFromTemplate(_ context.Context, tmplOwner, 
 		f.repos = map[string]*gh.Repo{}
 	}
 	key := owner + "/" + name
-	f.repos[key] = &gh.Repo{Name: name, Private: private, DefaultBranch: "main"}
+	f.repos[key] = &gh.Repo{Name: name, Private: private && !f.forcePublic, DefaultBranch: "main"}
 	f.generated = append(f.generated, generateCall{tmpl: tmplOwner + "/" + tmplRepo, dst: key, private: private})
 	return nil
 }
@@ -231,6 +232,21 @@ func TestTemplateRejectsEmptySource(t *testing.T) {
 	}
 	if len(fake.generated) != 0 {
 		t.Errorf("nothing should be generated from an empty source: %v", fake.generated)
+	}
+}
+
+func TestTemplateRollsBackWhenNotPrivate(t *testing.T) {
+	// Generation yields a public repo despite the private request. Starter code
+	// must not be world-readable, so the command must catch it and roll back.
+	fake := &fakeTemplateClient{role: "admin", repos: withSource(), forcePublic: true}
+	o := newTemplateOpts(t, fake, "cs101-templates/hw1-starter", false, false)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "must be private") {
+		t.Fatalf("a public template should be rejected, got %v", err)
+	}
+	if !contains(fake.deleted, "cs101-spring26/hw1-template") {
+		t.Errorf("the public template should be rolled back: %v", fake.deleted)
 	}
 }
 

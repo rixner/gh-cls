@@ -187,15 +187,14 @@ func TestFreezeOwnerGuard(t *testing.T) {
 	}
 }
 
-func TestFreezeNoMatchingRepos(t *testing.T) {
+func TestFreezeNoMatchingReposIsAnError(t *testing.T) {
+	// Zero matches at a deadline is almost always a wrong name/org, so freeze must
+	// fail loudly rather than report a silent no-op success.
 	fake := freezeFake("admin")
 	o := newFreezeOpts(t, fake, false, false)
-	var buf bytes.Buffer
-	if err := o.run(context.Background(), &buf, "midterm"); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(buf.String(), "no repositories named midterm-*") {
-		t.Errorf("expected no-repos message: %s", buf.String())
+	err := o.run(context.Background(), &bytes.Buffer{}, "midterm")
+	if err == nil || !strings.Contains(err.Error(), "no repositories named midterm-*") {
+		t.Fatalf("zero matches should be an error, got %v", err)
 	}
 	if len(fake.changes) != 0 {
 		t.Error("nothing should change when no repos match")

@@ -42,7 +42,9 @@ type fakeAssignClient struct {
 	teamID         int64
 	hasIssues      bool
 	withholdBranch bool // simulate generation that never lands the default branch
+	forcePublic    bool // generation produces public repos regardless of the request
 	exists         map[string]bool
+	private        map[string]bool // "owner/name" -> visibility recorded at generation
 	branches       []gh.BranchCount
 	generated      []string
 	collabs        []string
@@ -60,7 +62,7 @@ func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.R
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.exists[owner+"/"+name] {
-		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues}, true, nil
+		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: f.private[owner+"/"+name]}, true, nil
 	}
 	return nil, false, nil
 }
@@ -73,10 +75,14 @@ func (f *fakeAssignClient) ListBranchesWithCommitCount(context.Context, string, 
 	return f.branches, nil
 }
 
-func (f *fakeAssignClient) GenerateFromTemplate(_ context.Context, _, _, owner, name string, _, _ bool) error {
+func (f *fakeAssignClient) GenerateFromTemplate(_ context.Context, _, _, owner, name string, private, _ bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exists[owner+"/"+name] = true
+	if f.private == nil {
+		f.private = map[string]bool{}
+	}
+	f.private[owner+"/"+name] = private && !f.forcePublic
 	f.generated = append(f.generated, name)
 	// Generation lands the default branch; record it so the readiness check
 	// (waitRepoReady -> BranchExists) sees a populated repo. withholdBranch
@@ -525,6 +531,22 @@ func TestAssignWaitsForContent(t *testing.T) {
 	// No grants should be asserted on a repo that never became ready.
 	if len(fake.collabs) != 0 {
 		t.Errorf("no access should be granted before the repo is ready: %v", fake.collabs)
+	}
+}
+
+func TestAssignVerifiesVisibility(t *testing.T) {
+	// A private assignment whose repos come out public would expose student work.
+	// assign must catch the mismatch and fail before granting any access.
+	fake := newFakeAssign("admin")
+	fake.forcePublic = true
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("a visibility mismatch should fail the run, got %v", err)
+	}
+	if len(fake.collabs) != 0 {
+		t.Errorf("no access should be granted on a wrongly-public repo: %v", fake.collabs)
 	}
 }
 

@@ -190,6 +190,9 @@ func (o *templateOpts) finishTemplate(ctx context.Context, client templateClient
 	if !exists {
 		return fmt.Errorf("%s/%s disappeared right after it was created", org, derived)
 	}
+	if !repo.Private {
+		return fmt.Errorf("%s/%s was created public but must be private (starter code must not be world-readable)", org, derived)
+	}
 	if !repo.IsTemplate {
 		return fmt.Errorf("%s/%s was not marked a template repository (the change did not take effect)", org, derived)
 	}

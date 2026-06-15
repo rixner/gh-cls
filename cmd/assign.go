@@ -313,6 +313,20 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 			res.err = err
 			return res
 		}
+		// Confirm the new repo actually got the requested visibility before granting
+		// anyone access: a private assignment that came out public would expose
+		// student work, so abort this repo rather than populate a leaky one.
+		if info.Private == policy.Public {
+			actual, want := "private", "private"
+			if !info.Private {
+				actual = "public"
+			}
+			if policy.Public {
+				want = "public"
+			}
+			res.err = fmt.Errorf("repository %s was created %s but %s was requested; aborting before granting access", repo, actual, want)
+			return res
+		}
 		res.status = "created"
 	}
 
