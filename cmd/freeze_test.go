@@ -3,8 +3,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -78,14 +76,8 @@ func (f *fakeFreezeClient) AddCollaborator(_ context.Context, _, repo, username,
 
 func newFreezeOpts(t *testing.T, fake *fakeFreezeClient, undo, dryRun bool) *freezeOpts {
 	t.Helper()
-	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yml")
-	if err := os.WriteFile(cfgPath, []byte("org: cs101-spring26\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GH_CLS_CONFIG", cfgPath)
 	return &freezeOpts{
-		g:         &globalOpts{concurrency: 4},
+		g:         &globalOpts{org: "cs101-spring26", concurrency: 4},
 		undo:      undo,
 		dryRun:    dryRun,
 		newClient: func(context.Context) (freezeClient, error) { return fake, nil },

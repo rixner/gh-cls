@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 	"github.com/spf13/cobra"
 )
@@ -62,21 +61,10 @@ the GitHub API — no local clone, no git binary, and no separate git credential
 }
 
 func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) error {
-	cfg, _, err := config.Load()
-	if err != nil {
-		return err
-	}
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	org, err := resolveOrg(o.g, cfg)
-	if err != nil {
-		return err
-	}
-
+	org := o.g.org
 	source := o.source
 	if source == "" {
-		if a, ok := cfg.Assignments[name]; ok {
+		if a, ok := o.g.cfg.Assignments[name]; ok {
 			source = a.Template
 		}
 	}

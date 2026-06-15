@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 	"github.com/spf13/cobra"
 )
@@ -59,17 +58,7 @@ type freezeResult struct {
 }
 
 func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string) error {
-	cfg, _, err := config.Load()
-	if err != nil {
-		return err
-	}
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	org, err := resolveOrg(o.g, cfg)
-	if err != nil {
-		return err
-	}
+	org := o.g.org
 
 	client, err := o.newClient(ctx)
 	if err != nil {

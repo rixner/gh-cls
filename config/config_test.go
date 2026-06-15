@@ -9,77 +9,67 @@ import (
 
 func ptr[T any](v T) *T { return &v }
 
-func TestSearchPrecedence(t *testing.T) {
-	// Isolate the environment and working directory for each case.
-	t.Run("env wins", func(t *testing.T) {
-		t.Setenv(envVar, "/explicit/path.yml")
-		if got := Search(); got != "/explicit/path.yml" {
-			t.Errorf("Search() = %q, want the env path", got)
+func TestResolvePath(t *testing.T) {
+	t.Run("flag wins over env", func(t *testing.T) {
+		t.Setenv(envVar, "/from/env.yml")
+		got, err := ResolvePath("/from/flag.yml")
+		if err != nil || got != "/from/flag.yml" {
+			t.Fatalf("ResolvePath = (%q, %v), want the flag path", got, err)
 		}
 	})
-
-	t.Run("working dir file", func(t *testing.T) {
-		t.Setenv(envVar, "")
-		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-		dir := t.TempDir()
-		t.Chdir(dir)
-		if err := os.WriteFile(workingDirFile, []byte("org: x\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if got := Search(); got != workingDirFile {
-			t.Errorf("Search() = %q, want %q", got, workingDirFile)
+	t.Run("env when no flag", func(t *testing.T) {
+		t.Setenv(envVar, "/from/env.yml")
+		got, err := ResolvePath("")
+		if err != nil || got != "/from/env.yml" {
+			t.Fatalf("ResolvePath = (%q, %v), want the env path", got, err)
 		}
 	})
-
-	t.Run("xdg fallback", func(t *testing.T) {
+	t.Run("error when neither is set", func(t *testing.T) {
 		t.Setenv(envVar, "")
-		xdg := t.TempDir()
-		t.Setenv("XDG_CONFIG_HOME", xdg)
-		t.Chdir(t.TempDir()) // no working-dir file here
-		want := filepath.Join(xdg, "gh-cls", "config.yml")
-		if err := os.MkdirAll(filepath.Dir(want), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(want, []byte("org: x\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if got := Search(); got != want {
-			t.Errorf("Search() = %q, want %q", got, want)
-		}
-	})
-
-	t.Run("none found", func(t *testing.T) {
-		t.Setenv(envVar, "")
-		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-		t.Chdir(t.TempDir())
-		if got := Search(); got != "" {
-			t.Errorf("Search() = %q, want empty", got)
+		if _, err := ResolvePath(""); err == nil {
+			t.Fatal("ResolvePath should error when neither -c nor the env var is set")
 		}
 	})
 }
 
-func TestLoadMissingIsNotError(t *testing.T) {
-	t.Setenv(envVar, "")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Chdir(t.TempDir())
-	c, path, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v, want nil", err)
+func TestLoad(t *testing.T) {
+	write := func(t *testing.T, body string) string {
+		t.Helper()
+		p := filepath.Join(t.TempDir(), "config.yml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
 	}
-	if path != "" || c == nil || c.Org != "" {
-		t.Errorf("Load() = (%+v, %q), want empty config and path", c, path)
-	}
-}
 
-func TestLoadValidates(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
-	if err := os.WriteFile(path, []byte("assignments:\n  hw1:\n    type: bogus\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if _, _, err := LoadFile(path); err == nil {
-		t.Fatal("LoadFile should reject an invalid assignment type")
-	}
+	t.Run("valid", func(t *testing.T) {
+		c, err := Load(write(t, "org: cs101-spring26\nstaff_team: staff\nassignments:\n  hw1:\n    type: individual\n    template: o/t\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c.Org != "cs101-spring26" || c.StaffTeam != "staff" || len(c.Assignments) != 1 {
+			t.Errorf("parsed config wrong: %+v", c)
+		}
+	})
+
+	t.Run("missing org is rejected", func(t *testing.T) {
+		_, err := Load(write(t, "staff_team: staff\n"))
+		if err == nil || !strings.Contains(err.Error(), "org") {
+			t.Fatalf("a config without org should error mentioning org, got %v", err)
+		}
+	})
+
+	t.Run("invalid assignment type is rejected", func(t *testing.T) {
+		if _, err := Load(write(t, "org: x\nassignments:\n  hw1:\n    type: bogus\n")); err == nil {
+			t.Fatal("Load should reject an invalid assignment type")
+		}
+	})
+
+	t.Run("missing file is an error", func(t *testing.T) {
+		if _, err := Load(filepath.Join(t.TempDir(), "nope.yml")); err == nil {
+			t.Fatal("Load should error on a missing file")
+		}
+	})
 }
 
 func TestResolvePrecedence(t *testing.T) {
@@ -130,91 +120,4 @@ func TestResolvePrecedence(t *testing.T) {
 			t.Error("want error when no template configured or overridden")
 		}
 	})
-}
-
-func TestWriteOrgPreservesFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
-	original := `# course structure
-org: cs101-fall25
-staff_team: staff
-
-assignments:
-  hw1:
-    type: individual
-    template: cs101-templates/hw1-starter
-`
-	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	prev, err := WriteSetup(path, "cs101-spring26", "staff")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prev != "cs101-fall25" {
-		t.Errorf("previous org = %q, want cs101-fall25", prev)
-	}
-
-	out, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(out)
-	if !strings.Contains(text, "org: cs101-spring26") {
-		t.Errorf("new org not written:\n%s", text)
-	}
-	for _, want := range []string{"# course structure", "staff_team: staff", "template: cs101-templates/hw1-starter"} {
-		if !strings.Contains(text, want) {
-			t.Errorf("WriteOrg dropped %q:\n%s", want, text)
-		}
-	}
-
-	// The rewritten file must still parse and reflect only the org change.
-	c, _, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Org != "cs101-spring26" || c.StaffTeam != "staff" || len(c.Assignments) != 1 {
-		t.Errorf("reloaded config wrong: %+v", c)
-	}
-}
-
-func TestWriteOrgCreatesFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "nested", "config.yml")
-	prev, err := WriteSetup(path, "brand-new-org", "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if prev != "" {
-		t.Errorf("previous = %q, want empty for a new file", prev)
-	}
-	c, _, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Org != "brand-new-org" {
-		t.Errorf("org = %q, want brand-new-org", c.Org)
-	}
-	if c.StaffTeam != "" {
-		t.Errorf("staff_team = %q, want empty when not provided", c.StaffTeam)
-	}
-}
-
-func TestWriteSetupRecordsStaffTeam(t *testing.T) {
-	// setup persists the staff team so later commands inherit it from config and
-	// need not be told it again on every assign.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
-	if _, err := WriteSetup(path, "cs101-spring26", "staff"); err != nil {
-		t.Fatal(err)
-	}
-	c, _, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if c.Org != "cs101-spring26" || c.StaffTeam != "staff" {
-		t.Errorf("recorded config wrong: org=%q staff_team=%q", c.Org, c.StaffTeam)
-	}
 }

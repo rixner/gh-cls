@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 	"github.com/spf13/cobra"
 )
@@ -36,14 +35,15 @@ func newSetupCmd(g *globalOpts) *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "setup",
-		Short: "Harden the semester organization and record it in config",
-		Long: `Set up and harden the semester organization, and write the chosen org
-into the config so later commands target it.
+		Short: "Harden the semester organization named in the config",
+		Long: `Harden the semester organization named in the config: lock down base
+permissions, member repository/Pages creation, and Actions, and ensure the
+staff team exists.
 
---org is required and is never read from config: stating it explicitly each
-semester is the single deliberate act that establishes (or changes) the org.
-All hardening actions are idempotent, so setup is always safe to re-run.`,
-		Example: "  gh cls setup --org cs101-spring26 --staff staff",
+The org and staff team are read from the config file (-c/--config or
+$GH_CLS_CONFIG); setup never writes the config. All hardening actions are
+idempotent, so setup is always safe to re-run.`,
+		Example: "  gh cls setup -c gh-cls.yml",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout())
@@ -54,59 +54,32 @@ All hardening actions are idempotent, so setup is always safe to re-run.`,
 }
 
 func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
+	// The org and staff team come from the config, already loaded and validated
+	// (org is required) before this runs.
 	org := o.g.org
-	if org == "" {
-		// --org has no default and is not read from config; it must be stated
-		// each time so the semester org can never be inherited stale.
-		return fmt.Errorf("setup requires --org (it is never read from config)")
-	}
-
-	// Read any existing config for the staff team and the previous org. A
-	// missing or unreadable file is fine here: setup is about to (re)write it,
-	// and WriteOrg surfaces a genuinely malformed file.
-	cfg, _, _ := config.Load()
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
 	staffTeam := o.g.staffTeam
-	if staffTeam == "" {
-		staffTeam = cfg.StaffTeam
-	}
-	writePath := config.DefaultPath()
 
 	if o.dryRun {
 		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
-		printOrgWarning(out, org, cfg.Org)
-		fmt.Fprintf(out, "\nWould harden %s:\n", org)
+		fmt.Fprintf(out, "Would harden %s:\n", org)
 		fmt.Fprintln(out, "  - set base repository permission to none")
 		fmt.Fprintln(out, "  - disable members creating repositories and Pages")
 		fmt.Fprintln(out, "  - disable GitHub Actions org-wide")
 		fmt.Fprintln(out, "  - report Copilot seat status")
 		if staffTeam != "" {
-			fmt.Fprintf(out, "  - ensure staff team %q exists and record it in config\n", staffTeam)
+			fmt.Fprintf(out, "  - ensure staff team %q exists\n", staffTeam)
 		}
 		return nil
 	}
 
-	// Verify the org exists and we own it before persisting it, so a typo or an
-	// org we don't control can never poison the config that later commands read.
+	// Verify we own the org before mutating it, so a typo in the config or an org
+	// we don't control fails fast rather than partway through hardening.
 	client, err := o.newClient(ctx)
 	if err != nil {
 		return err
 	}
 	if err := requireOwner(ctx, client, org); err != nil {
 		return err
-	}
-
-	// The org write is the deliberate act that establishes the semester; it is
-	// announced loudly, and happens only once the ownership check has passed.
-	prev, err := config.WriteSetup(writePath, org, staffTeam)
-	if err != nil {
-		return err
-	}
-	printOrgWarning(out, org, prev)
-	if staffTeam != "" {
-		fmt.Fprintf(out, "    Recorded staff_team: %s (assign inherits it; no -s needed).\n", staffTeam)
 	}
 
 	results, err := hardenOrg(ctx, client, org, staffTeam)
@@ -258,14 +231,4 @@ func toggleOff(ctx context.Context, client setupClient, org, field, label string
 		}
 		return result{label, statusChanged, "disabled"}, nil
 	}
-}
-
-// printOrgWarning loudly announces the org value written to config.
-func printOrgWarning(w io.Writer, org, previous string) {
-	if previous == "" {
-		previous = "none"
-	}
-	fmt.Fprintf(w, "⚠️  CONFIG ORG SET → %s\n", org)
-	fmt.Fprintf(w, "    (previous: %s)\n", previous)
-	fmt.Fprintf(w, "    All subsequent template/assign/freeze commands will target %s.\n", org)
 }

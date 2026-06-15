@@ -1,6 +1,7 @@
 // Package config loads the reusable course-structure file: course-wide settings
-// plus a per-assignment policy dictionary. It holds no student PII; the only
-// per-semester value is org, which is written solely by `gh cls setup --org`.
+// (the org and staff team) plus a per-assignment policy dictionary. The file is
+// user-authored and located explicitly (-c/--config or $GH_CLS_CONFIG); the tool
+// only reads it, never writes it. It holds no student PII.
 package config
 
 import "fmt"
@@ -39,10 +40,14 @@ type Config struct {
 	Assignments map[string]Assignment `yaml:"assignments"`
 }
 
-// Validate rejects malformed assignment entries. It is intentionally lenient
-// about an empty template (a --template flag can supply it at run time); that is
-// enforced when an assignment is actually resolved.
+// Validate rejects a config that lacks the required org and any malformed
+// assignment entries. It is intentionally lenient about an empty template (a
+// --template flag can supply it at run time); that is enforced when an
+// assignment is actually resolved.
 func (c *Config) Validate() error {
+	if c.Org == "" {
+		return fmt.Errorf("missing required \"org\" key; the config must set at least:\n\n  org: your-semester-org\n  staff_team: your-staff-team\n")
+	}
 	for name, a := range c.Assignments {
 		switch a.Type {
 		case TypeIndividual, TypeGroup:

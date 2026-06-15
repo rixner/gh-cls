@@ -7,30 +7,35 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// Load reads the config from the first location in the search order. A missing
-// config is not an error: it returns an empty Config and an empty path so
-// commands can still run (setup writes one; others report a missing org).
-func Load() (*Config, string, error) {
-	path := Search()
-	if path == "" {
-		return &Config{}, "", nil
+// envVar names the environment variable that points at the config file when the
+// -c/--config flag is not given.
+const envVar = "GH_CLS_CONFIG"
+
+// ResolvePath returns the config file path from an explicit value (the -c/--config
+// flag) or, failing that, $GH_CLS_CONFIG. The config is user-authored and the
+// tool never guesses its location, so it is an error for neither to be set.
+func ResolvePath(flagPath string) (string, error) {
+	if flagPath != "" {
+		return flagPath, nil
 	}
-	return LoadFile(path)
+	if p := os.Getenv(envVar); p != "" {
+		return p, nil
+	}
+	return "", fmt.Errorf("no config file: pass -c <file> or set %s to your course config", envVar)
 }
 
-// LoadFile parses the config at an explicit path. It returns the path alongside
-// the parsed config so callers can report where settings came from.
-func LoadFile(path string) (*Config, string, error) {
+// Load reads, parses, and validates the config at path.
+func Load(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, path, fmt.Errorf("reading config %s: %w", path, err)
+		return nil, fmt.Errorf("reading config %s: %w", path, err)
 	}
 	var c Config
 	if err := yaml.Unmarshal(data, &c); err != nil {
-		return nil, path, fmt.Errorf("parsing config %s: %w", path, err)
+		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	if err := c.Validate(); err != nil {
-		return nil, path, fmt.Errorf("config %s: %w", path, err)
+		return nil, fmt.Errorf("config %s: %w", path, err)
 	}
-	return &c, path, nil
+	return &c, nil
 }

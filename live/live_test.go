@@ -97,12 +97,14 @@ func TestLive(t *testing.T) {
 		// primitive, and setup is idempotent so its presence never breaks a re-run.
 	})
 
-	// Hermetic config: GH_CLS_CONFIG is the first location config.Search checks,
-	// so it fully shadows the developer's real config on any OS. The filename is
-	// arbitrary because it is referenced by path.
+	// Hermetic, user-authored config: GH_CLS_CONFIG points the CLI at a throwaway
+	// file so the developer's real config is never touched. It is written before
+	// any command runs, since every command (setup included) reads the org and
+	// staff team from it.
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "gh-cls-test.yml")
 	t.Setenv("GH_CLS_CONFIG", cfgPath)
+	writeConfig(t, cfgPath, org, srcName, name, grp)
 
 	// 0. Seed a source template with content: a repo with at least one commit for
 	// `template` to generate from. Created with auto_init via the raw client so it
@@ -110,38 +112,34 @@ func TestLive(t *testing.T) {
 	seedSource(t, rc, org, srcName)
 
 	// 1. setup — harden the org, then verify, then prove idempotency.
-	mustRunCLI(t, ctx, "setup", "-o", org, "-s", "staff")
+	mustRunCLI(t, ctx, "setup")
 	assertOrgHardened(t, ctx, client, org)
-	out := mustRunCLI(t, ctx, "setup", "-o", org, "-s", "staff")
+	out := mustRunCLI(t, ctx, "setup")
 	if !strings.Contains(out, "already") {
 		t.Errorf("re-running setup should report 'already' for hardened settings, got:\n%s", out)
 	}
 
-	// Write the course config after setup (setup writes only the org line; we
-	// replace the file wholesale with the assignment entries the run needs).
-	writeConfig(t, cfgPath, org, srcName, name, grp)
-
 	// 2. template — generate the single-commit template, verify, then confirm the
 	// overwrite guard (no -F errors; -F recreates).
-	mustRunCLI(t, ctx, "template", "-o", org, "-t", org+"/"+srcName, name)
+	mustRunCLI(t, ctx, "template", "-t", org+"/"+srcName, name)
 	assertTemplate(t, ctx, client, org, name+"-template")
-	if _, err := runCLI(ctx, "template", "-o", org, "-t", org+"/"+srcName, name); err == nil {
+	if _, err := runCLI(ctx, "template", "-t", org+"/"+srcName, name); err == nil {
 		t.Error("re-running template without -F should error (template already exists)")
 	} else if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("template re-run error = %v, want it to mention 'already exists'", err)
 	}
-	mustRunCLI(t, ctx, "template", "-o", org, "-t", org+"/"+srcName, "-F", name)
+	mustRunCLI(t, ctx, "template", "-t", org+"/"+srcName, "-F", name)
 	assertTemplate(t, ctx, client, org, name+"-template")
 
 	// 3. assign (individual) — create the student repo, verify the push grant,
 	// then prove idempotency (existing repo skipped).
 	rosterInd := filepath.Join(dir, "roster-individual.csv")
 	writeRoster(t, rosterInd, student1)
-	mustRunCLI(t, ctx, "assign", "-o", org, "-s", "staff", "-r", rosterInd, "-p", "-f", "issue", name)
+	mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "-f", "issue", name)
 	repo := name + "-" + student1
 	assertRepoExists(t, ctx, client, org, repo)
 	studentIsCollaborator := assertPushGranted(t, ctx, client, org, repo, student1)
-	out = mustRunCLI(t, ctx, "assign", "-o", org, "-s", "staff", "-r", rosterInd, "-p", "-f", "issue", name)
+	out = mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "-f", "issue", name)
 	if !strings.Contains(out, "1 skipped") {
 		t.Errorf("re-running assign should skip the existing repo (want '1 skipped'), got:\n%s", out)
 	}
@@ -150,11 +148,11 @@ func TestLive(t *testing.T) {
 	// student is a real direct collaborator (an accepted org member); otherwise
 	// run the commands to prove they don't error, and skip the assertions.
 	if studentIsCollaborator {
-		mustRunCLI(t, ctx, "freeze", "-o", org, name)
+		mustRunCLI(t, ctx, "freeze", name)
 		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
-		mustRunCLI(t, ctx, "freeze", "-o", org, "-u", name)
+		mustRunCLI(t, ctx, "freeze", "-u", name)
 		assertPushGranted(t, ctx, client, org, repo, student1)
-		out = mustRunCLI(t, ctx, "freeze", "-o", org, "-u", name)
+		out = mustRunCLI(t, ctx, "freeze", "-u", name)
 		if !strings.Contains(out, "0 collaborator grant(s)") {
 			t.Errorf("a second --undo should change nothing, got:\n%s", out)
 		}
@@ -162,12 +160,12 @@ func TestLive(t *testing.T) {
 		t.Logf("student %q is not a direct collaborator on %s — likely a pending invite; "+
 			"make the account a member of %s to exercise the freeze downgrade. "+
 			"Running freeze/undo without downgrade assertions.", student1, repo, org)
-		mustRunCLI(t, ctx, "freeze", "-o", org, name)
-		mustRunCLI(t, ctx, "freeze", "-o", org, "-u", name)
+		mustRunCLI(t, ctx, "freeze", name)
+		mustRunCLI(t, ctx, "freeze", "-u", name)
 	}
 
 	// 6. group flow — exercises the teams resolution and multi-member grants.
-	mustRunCLI(t, ctx, "template", "-o", org, "-t", org+"/"+srcName, grp)
+	mustRunCLI(t, ctx, "template", "-t", org+"/"+srcName, grp)
 	assertTemplate(t, ctx, client, org, grp+"-template")
 	rosterGrp := filepath.Join(dir, "roster-group.csv")
 	teamsPath := filepath.Join(dir, "teams.yml")
@@ -177,7 +175,7 @@ func TestLive(t *testing.T) {
 	}
 	writeRoster(t, rosterGrp, members...)
 	writeTeams(t, teamsPath, "alpha", members)
-	mustRunCLI(t, ctx, "assign", "-o", org, "-s", "staff", "-r", rosterGrp, "-T", teamsPath, "-p", grp)
+	mustRunCLI(t, ctx, "assign", "-r", rosterGrp, "-T", teamsPath, "-p", grp)
 	grpRepo := grp + "-alpha"
 	assertRepoExists(t, ctx, client, org, grpRepo)
 	assertPushGranted(t, ctx, client, org, grpRepo, student1)

@@ -121,16 +121,11 @@ func expiredInvite(id int64, login string) gh.Invitation {
 	return i
 }
 
-// newAuditOpts wires auditOpts to a fake, isolating config to a temp file.
+// newAuditOpts wires auditOpts to a fake; the roster/teams files live in a temp
+// dir and the config comes from assignGlobals.
 func newAuditOpts(t *testing.T, fake *fakeAuditClient, rosterCSV, teamsYML string) *auditOpts {
 	t.Helper()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yml")
-	if err := os.WriteFile(cfgPath, []byte(assignConfig), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GH_CLS_CONFIG", cfgPath)
-
 	rosterPath := filepath.Join(dir, "roster.csv")
 	if err := os.WriteFile(rosterPath, []byte(rosterCSV), 0o644); err != nil {
 		t.Fatal(err)
@@ -143,7 +138,7 @@ func newAuditOpts(t *testing.T, fake *fakeAuditClient, rosterCSV, teamsYML strin
 		}
 	}
 	return &auditOpts{
-		g:         &globalOpts{concurrency: 4},
+		g:         assignGlobals(),
 		roster:    rosterPath,
 		teams:     teamsPath,
 		newClient: func(context.Context) (auditClient, error) { return fake, nil },

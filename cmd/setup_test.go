@@ -3,8 +3,6 @@ package cmd
 import (
 	"bytes"
 	"context"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -79,24 +77,20 @@ func (f *fakeSetupClient) CreateTeam(_ context.Context, _, name string) (*gh.Tea
 	return &gh.Team{ID: 2}, nil
 }
 
-// newSetupOpts builds setupOpts wired to a fake, writing config into a temp dir.
-func newSetupOpts(t *testing.T, fake *fakeSetupClient, org, staffTeam string, dryRun bool) (*setupOpts, string) {
+// newSetupOpts builds setupOpts wired to a fake. The org and staff team stand in
+// for what the root loads from config before setup runs.
+func newSetupOpts(t *testing.T, fake *fakeSetupClient, org, staffTeam string, dryRun bool) *setupOpts {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "config.yml")
-	t.Setenv("GH_CLS_CONFIG", path)
-
-	o := &setupOpts{
+	return &setupOpts{
 		g:         &globalOpts{org: org, staffTeam: staffTeam},
 		dryRun:    dryRun,
 		newClient: func(context.Context) (setupClient, error) { return fake, nil },
 	}
-	return o, path
 }
 
 func TestSetupOwnerGuard(t *testing.T) {
 	fake := &fakeSetupClient{role: "member"}
-	o, path := newSetupOpts(t, fake, "cs101-spring26", "", false)
+	o := newSetupOpts(t, fake, "cs101-spring26", "", false)
 
 	err := o.run(context.Background(), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "owner") {
@@ -104,11 +98,6 @@ func TestSetupOwnerGuard(t *testing.T) {
 	}
 	if fake.patched != nil || fake.actionsSet != "" {
 		t.Error("no org mutations should occur when the owner guard fails")
-	}
-	// The org is persisted only after the owner check passes, so a rejected
-	// non-owner run must not record it.
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("org must not be written to config when the owner guard fails")
 	}
 }
 
@@ -121,7 +110,7 @@ func TestSetupChangesAndReports(t *testing.T) {
 		copilotPresent: false,
 		teamExists:     false,
 	}
-	o, _ := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
+	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
@@ -141,7 +130,7 @@ func TestSetupChangesAndReports(t *testing.T) {
 	if fake.createdTeam != "staff" {
 		t.Error("staff team should be created when absent")
 	}
-	for _, want := range []string{"CONFIG ORG SET → cs101-spring26", "changed", "none present", "created staff",
+	for _, want := range []string{"Hardening cs101-spring26", "changed", "none present", "created staff",
 		"Optional hardening", "creating teams", "deleting or transferring"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
@@ -157,7 +146,7 @@ func TestSetupAlreadyHardened(t *testing.T) {
 		actions:    "none",
 		teamExists: true,
 	}
-	o, _ := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
+	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
@@ -185,7 +174,7 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 		actions:       "all",
 		ignorePatches: true,
 	}
-	o, _ := newSetupOpts(t, fake, "cs101-spring26", "", false)
+	o := newSetupOpts(t, fake, "cs101-spring26", "", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
@@ -205,14 +194,11 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 
 func TestSetupDryRunMakesNoChanges(t *testing.T) {
 	fake := &fakeSetupClient{role: "admin"}
-	o, path := newSetupOpts(t, fake, "cs101-spring26", "staff", true)
+	o := newSetupOpts(t, fake, "cs101-spring26", "staff", true)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
 		t.Fatal(err)
-	}
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Error("dry-run must not write the config file")
 	}
 	if fake.patched != nil || fake.actionsSet != "" || fake.createdTeam != "" {
 		t.Error("dry-run must not mutate the org")

@@ -122,18 +122,8 @@ type extraAccess struct {
 }
 
 func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
-	cfg, _, err := config.Load()
-	if err != nil {
-		return err
-	}
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	org, err := resolveOrg(o.g, cfg)
-	if err != nil {
-		return err
-	}
-	policy, err := cfg.Resolve(name, config.Overrides{})
+	org := o.g.org
+	policy, err := o.g.cfg.Resolve(name, config.Overrides{})
 	if err != nil {
 		return err
 	}

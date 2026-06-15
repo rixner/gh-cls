@@ -27,12 +27,12 @@ writes into any repository. Keep these files off version control.
 
 ## Configuration
 
-Reusable, no-PII course structure, found (first match wins) at `$GH_CLS_CONFIG`,
-`./gh-cls.yml`, or `$XDG_CONFIG_HOME/gh-cls/config.yml`. Set `$GH_CLS_CONFIG` to
-use any other path or name:
+Reusable, no-PII course structure that **you author**; the tool only reads it,
+never writes it. Point every command at it with `-c/--config <file>` or by
+setting `$GH_CLS_CONFIG`; there is no search path or hidden config directory. The
+file must set `org` (and usually `staff_team`):
 
 ```yaml
-# `org` and `staff_team` are written by `gh cls setup`, not by hand.
 org: cs101-spring26
 staff_team: staff
 
@@ -65,13 +65,15 @@ team-beta:  [student-002]
 
 ## Commands
 
-Every mutating command requires you to be an organization **owner** and accepts
-`-n/--dry-run`. Persistent flags: `-o/--org` (override the config org),
-`-s/--staff`, `-j/--concurrency`.
+Every command reads the org and staff team from the config (`-c/--config` or
+`$GH_CLS_CONFIG`); neither is a command-line flag. Every mutating command
+requires you to be an organization **owner** and accepts `-n/--dry-run`.
+Persistent flags: `-c/--config`, `-j/--concurrency`. The examples below assume
+`export GH_CLS_CONFIG=gh-cls.yml` (otherwise add `-c gh-cls.yml` to each).
 
 ```sh
-# 1. Per-semester: harden the org and record it in config (requires --org).
-gh cls setup --org cs101-spring26 --staff staff
+# 1. Per-semester: harden the org named in the config.
+gh cls setup
 
 # 2. Per-assignment: generate a single-commit <name>-template in the org.
 gh cls template hw1
@@ -91,8 +93,7 @@ gh cls freeze hw1 --undo
 
 - **setup** sets base permission to none, disables member repo/Pages creation
   and Actions org-wide, reports Copilot status, and ensures the staff team
-  (recording it as `staff_team` in config so later commands inherit it). All
-  actions are idempotent and report changed vs already-in-desired-state. It also
+  exists. All actions are idempotent and report changed vs already-in-desired-state. It also
   prints an optional-hardening checklist for member-privilege toggles that exist
   only in the web UI (installing apps, changing repository visibility, deleting or
   transferring repositories, creating teams) — these are the instructor's to

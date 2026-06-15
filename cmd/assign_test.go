@@ -14,16 +14,20 @@ import (
 	"github.com/rixner/gh-cls/gh"
 )
 
-const assignConfig = `org: cs101-spring26
-staff_team: staff
-assignments:
-  hw1:
-    type: individual
-    template: cs101-templates/hw1-starter
-  project:
-    type: group
-    template: cs101-templates/project-starter
-`
+// assignGlobals is the loaded-config state assign and audit tests run against:
+// the configured org and staff team, plus the two assignments under test. It
+// stands in for what the root's PersistentPreRunE would load from a config file.
+func assignGlobals() *globalOpts {
+	cfg := &config.Config{
+		Org:       "cs101-spring26",
+		StaffTeam: "staff",
+		Assignments: map[string]config.Assignment{
+			"hw1":     {Type: config.TypeIndividual, Template: "cs101-templates/hw1-starter"},
+			"project": {Type: config.TypeGroup, Template: "cs101-templates/project-starter"},
+		},
+	}
+	return &globalOpts{cfg: cfg, org: cfg.Org, staffTeam: cfg.StaffTeam, concurrency: 4}
+}
 
 const assignRoster = `identifier,username
 student-001,ada
@@ -52,10 +56,10 @@ type fakeAssignClient struct {
 	collabs        []string
 	teamRepos      []string
 	rulesets       map[string]bool // repos a protection ruleset was applied to
-	refs           []string         // "repo:ref"
-	prs            []string         // "repo:head->base"
-	issues         []string         // repo
-	enabled        []string         // repos where issues were enabled
+	refs           []string        // "repo:ref"
+	prs            []string        // "repo:head->base"
+	issues         []string        // repo
+	enabled        []string        // repos where issues were enabled
 }
 
 func (f *fakeAssignClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -230,16 +234,11 @@ func newFakeAssign(role string) *fakeAssignClient {
 func boolp(b bool) *bool    { return &b }
 func strp(s string) *string { return &s }
 
-// newAssignOpts wires assignOpts to a fake, isolating config to a temp file.
+// newAssignOpts wires assignOpts to a fake; the roster/teams files live in a
+// temp dir and the config comes from assignGlobals.
 func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, teamsYML string) *assignOpts {
 	t.Helper()
 	dir := t.TempDir()
-	cfgPath := filepath.Join(dir, "config.yml")
-	if err := os.WriteFile(cfgPath, []byte(assignConfig), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("GH_CLS_CONFIG", cfgPath)
-
 	rosterPath := filepath.Join(dir, "roster.csv")
 	if err := os.WriteFile(rosterPath, []byte(rosterCSV), 0o644); err != nil {
 		t.Fatal(err)
@@ -253,7 +252,7 @@ func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, teamsYML str
 	}
 
 	return &assignOpts{
-		g:         &globalOpts{concurrency: 4},
+		g:         assignGlobals(),
 		roster:    rosterPath,
 		teams:     teamsPath,
 		newClient: func(context.Context) (assignClient, error) { return fake, nil },

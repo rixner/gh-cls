@@ -2,6 +2,8 @@ package cmd
 
 import (
 	"bytes"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,6 +22,18 @@ func execute(args ...string) (string, error) {
 	return buf.String(), err
 }
 
+// withConfig writes a config file and points $GH_CLS_CONFIG at it, so an
+// execute()-based test exercises the real root config load. It returns the path.
+func withConfig(t *testing.T, body string) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "gh-cls.yml")
+	if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GH_CLS_CONFIG", p)
+	return p
+}
+
 // subcommand returns the named child of a fresh root command.
 func subcommand(t *testing.T, name string) *cobra.Command {
 	t.Helper()
@@ -33,16 +47,32 @@ func subcommand(t *testing.T, name string) *cobra.Command {
 }
 
 // TestPersistentFlagMatrix checks the shared flags exist with the expected
-// shorthands on the root command.
+// shorthands on the root command. The org and staff team are not flags anywhere:
+// they come from the config file (see TestOrgIsConfigOnly).
 func TestPersistentFlagMatrix(t *testing.T) {
 	pf := NewRootCmd().PersistentFlags()
-	for short, long := range map[string]string{"o": "org", "s": "staff", "j": "concurrency"} {
+	for short, long := range map[string]string{"c": "config", "j": "concurrency"} {
 		f := pf.ShorthandLookup(short)
 		if f == nil {
 			t.Fatalf("persistent shorthand -%s not defined", short)
 		}
 		if f.Name != long {
 			t.Errorf("persistent -%s maps to %q, want %q", short, f.Name, long)
+		}
+	}
+}
+
+// TestOrgIsConfigOnly guards the design that the org and staff team are read
+// only from the config file: no command — not even setup — accepts them as
+// flags, so a stray -o/--org can never target an unconfigured org.
+func TestOrgIsConfigOnly(t *testing.T) {
+	if NewRootCmd().PersistentFlags().Lookup("org") != nil {
+		t.Error("--org must not be a flag")
+	}
+	for _, name := range []string{"setup", "template", "assign", "freeze", "audit"} {
+		withConfig(t, "org: cs101-spring26\n")
+		if _, err := execute(name, "x", "--org", "foo"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
+			t.Errorf("%s should reject --org as an unknown flag, got %v", name, err)
 		}
 	}
 }
@@ -72,25 +102,28 @@ func TestLocalFlagMatrix(t *testing.T) {
 	}
 }
 
-func TestSetupRequiresOrg(t *testing.T) {
-	// Isolate config discovery so dry-run reads nothing from the environment.
+func TestSetupRequiresConfig(t *testing.T) {
+	// No config at all: setup fails fast asking for one.
 	t.Setenv("GH_CLS_CONFIG", "")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Chdir(t.TempDir())
-
 	if _, err := execute("setup"); err == nil {
-		t.Fatal("setup without --org should error")
+		t.Fatal("setup without a config should error")
 	}
-	// The success path with hardening is covered in setup_test.go with an
-	// injected fake client; here --dry-run keeps the flag check offline.
-	if _, err := execute("setup", "--org", "cs101-spring26", "--dry-run"); err != nil {
-		t.Fatalf("setup --org --dry-run should succeed, got %v", err)
+	// A config with an org hardens in dry-run without touching GitHub.
+	withConfig(t, "org: cs101-spring26\nstaff_team: staff\n")
+	if _, err := execute("setup", "--dry-run"); err != nil {
+		t.Fatalf("setup --dry-run with a valid config should succeed, got %v", err)
+	}
+	// A config that omits org is rejected with guidance to add it.
+	withConfig(t, "staff_team: staff\n")
+	if _, err := execute("setup", "--dry-run"); err == nil || !strings.Contains(err.Error(), "org") {
+		t.Fatalf("a config without org should error mentioning org, got %v", err)
 	}
 }
 
 func TestAssignRequiresRoster(t *testing.T) {
 	// The full run is covered in assign_test.go with config and a fake client;
 	// here we only assert the required-flag enforcement.
+	withConfig(t, "org: cs101-spring26\n")
 	if _, err := execute("assign", "hw1"); err == nil {
 		t.Fatal("assign without --roster should error")
 	}
@@ -98,6 +131,7 @@ func TestAssignRequiresRoster(t *testing.T) {
 
 func TestAssignFeedbackEnum(t *testing.T) {
 	// Invalid value is rejected in PreRunE, before any work.
+	withConfig(t, "org: cs101-spring26\n")
 	_, err := execute("assign", "hw1", "-r", "roster.csv", "-f", "bogus")
 	if err == nil || !strings.Contains(err.Error(), "invalid --feedback") {
 		t.Fatalf("invalid feedback mode should be rejected, got %v", err)

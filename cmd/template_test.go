@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 )
 
@@ -72,11 +73,8 @@ func (f *fakeTemplateClient) DeleteRepo(_ context.Context, org, name string) err
 
 func newTemplateOpts(t *testing.T, fake *fakeTemplateClient, source string, force, dryRun bool) *templateOpts {
 	t.Helper()
-	t.Setenv("GH_CLS_CONFIG", "")
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Chdir(t.TempDir())
 	return &templateOpts{
-		g:         &globalOpts{org: "cs101-spring26"},
+		g:         &globalOpts{org: "cs101-spring26", cfg: &config.Config{Org: "cs101-spring26"}},
 		source:    source,
 		force:     force,
 		dryRun:    dryRun,

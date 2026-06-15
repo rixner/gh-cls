@@ -142,18 +142,8 @@ type unitResult struct {
 }
 
 func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov config.Overrides) error {
-	cfg, _, err := config.Load()
-	if err != nil {
-		return err
-	}
-	if cfg == nil {
-		cfg = &config.Config{}
-	}
-	org, err := resolveOrg(o.g, cfg)
-	if err != nil {
-		return err
-	}
-	policy, err := cfg.Resolve(name, ov)
+	org := o.g.org
+	policy, err := o.g.cfg.Resolve(name, ov)
 	if err != nil {
 		return err
 	}
@@ -192,9 +182,6 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 
 	derived := name + "-template"
 	staffTeam := o.g.staffTeam
-	if staffTeam == "" {
-		staffTeam = cfg.StaffTeam
-	}
 
 	if o.dryRun {
 		visibility := "private"

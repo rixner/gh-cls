@@ -61,13 +61,33 @@ func resolveVersion() string {
 	return "dev (" + rev + ")"
 }
 
-// globalOpts holds the flags shared by every subcommand. A single instance is
-// bound to the root's persistent flags and handed to each subcommand, so a
-// subcommand reads the same values the user set anywhere on the line.
+// globalOpts holds the course config, loaded once by the root before any
+// subcommand runs, plus the shared --concurrency flag. The org and staff team
+// are read from the config (never overridden on the command line), so every
+// subcommand sees the same configured semester. configPath is the -c flag.
 type globalOpts struct {
+	configPath  string
+	cfg         *config.Config
 	org         string
 	staffTeam   string
 	concurrency int
+}
+
+// load resolves the config path (-c flag or $GH_CLS_CONFIG), reads the config
+// once, and exposes the org and staff team it records to every subcommand.
+func (g *globalOpts) load() error {
+	path, err := config.ResolvePath(g.configPath)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return err
+	}
+	g.cfg = cfg
+	g.org = cfg.Org
+	g.staffTeam = cfg.StaffTeam
+	return nil
 }
 
 // NewRootCmd builds the root `gh cls` command with all subcommands attached.
@@ -79,18 +99,23 @@ func NewRootCmd() *cobra.Command {
 		Short: "Course tooling that replaces GitHub Classroom",
 		Long: `gh cls manages a course's per-semester GitHub organization:
 hardening the org, preparing squashed assignment templates, bulk-creating
-student and team repositories, and freezing them at a deadline.`,
+student and team repositories, and freezing them at a deadline.
+
+The org and staff team come from a user-authored config file, located with
+-c/--config or $GH_CLS_CONFIG; the tool only reads it, never writes it.`,
 		// Errors are returned to main for reporting; cobra should neither print
 		// the error itself (main does, once) nor dump usage text on every
 		// operational failure.
 		SilenceErrors: true,
 		SilenceUsage:  true,
-		Version:      resolveVersion(),
+		Version:       resolveVersion(),
+		// Load the config once, up front, so every subcommand shares it. Runs for
+		// all subcommands; --version/--help short-circuit before this.
+		PersistentPreRunE: func(*cobra.Command, []string) error { return g.load() },
 	}
 
 	pf := root.PersistentFlags()
-	pf.StringVarP(&g.org, "org", "o", "", "semester GitHub organization")
-	pf.StringVarP(&g.staffTeam, "staff", "s", "", "staff/TA team slug")
+	pf.StringVarP(&g.configPath, "config", "c", "", "path to the course config file (or set $GH_CLS_CONFIG)")
 	pf.IntVarP(&g.concurrency, "concurrency", "j", defaultConcurrency, "max concurrent GitHub operations")
 
 	root.AddCommand(
@@ -101,19 +126,6 @@ student and team repositories, and freezing them at a deadline.`,
 		newAuditCmd(g),
 	)
 	return root
-}
-
-// resolveOrg picks the org to operate on: the -o/--org flag wins, else the
-// config's org (written by setup). template, assign, and freeze read it from
-// config; setup is the only command that sets it.
-func resolveOrg(g *globalOpts, cfg *config.Config) (string, error) {
-	if g.org != "" {
-		return g.org, nil
-	}
-	if cfg != nil && cfg.Org != "" {
-		return cfg.Org, nil
-	}
-	return "", fmt.Errorf("no organization set; run `gh cls setup --org <org>` or pass -o/--org")
 }
 
 // ownerChecker is the slice of a client the owner guard needs.

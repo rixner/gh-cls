@@ -93,8 +93,7 @@ verifies cleanup ran.
 
 Useful for eyeballing behavior in the GitHub UI. Work in a scratch directory and
 point `GH_CLS_CONFIG` at a throwaway config so your real config is never touched
-(its name is arbitrary — the `./gh-cls.yml` default only applies when
-`GH_CLS_CONFIG` is unset):
+(the name is arbitrary; every command needs `-c` or `GH_CLS_CONFIG` to find it):
 
 ```
 export GH_CLS_CONFIG=./gh-cls-test.yml
@@ -102,37 +101,39 @@ ORG=gh-cls-sandbox
 STU=<throwaway-login>
 ```
 
-There is **no `gh-cls-test.yml` to copy** — you create it during the walkthrough
-(the config is per-course, so the repo ships none; the format is documented in
-[README.md](README.md)). `setup` (step 1) creates the file for you with the
-`org:` line; you add the `assignments:` entries in step 4 before `assign` needs
-them. The `export` above just chooses where that file will live.
+There is **no `gh-cls-test.yml` to copy** — you author it (the config is
+per-course; the format is documented in [README.md](README.md)). The tool only
+reads it, never writes it. Create it now with the org and staff team (you add the
+`assignments:` entry before step 5); the `export` above points every command at
+it, or pass `-c gh-cls-test.yml` to each:
+
+```yaml
+org: gh-cls-sandbox
+staff_team: staff
+```
 
 Run each step **with `--dry-run` first**, then for real.
 
-1. **setup** — `gh cls setup -o $ORG -s staff`. Re-run; the second run should
-   report `already` for each setting. It writes both `org:` and `staff_team:` into
-   `gh-cls-test.yml`, so later steps need neither flag. In the UI verify: base
-   permission *None*, member repo/Pages creation off, Actions disabled, a `staff`
-   team exists.
+1. **setup** — `gh cls setup`. It reads the org and staff team from the config.
+   Re-run; the second run should report `already` for each setting. In the UI
+   verify: base permission *None*, member repo/Pages creation off, Actions
+   disabled, a `staff` team exists.
 
 2. **Seed a source template.** Create a repo with at least one commit to generate
    from — e.g. a new repo initialized with a README named `hw1-src`.
 
-3. **`gh cls template hw1 -o $ORG -t $ORG/hw1-src`** — verify `hw1-template`
-   exists, is marked a *template repository*, is private, and has a single commit
-   on its default branch. (`template` also marks the *source* `hw1-src` as a
-   template repository, which GitHub requires in order to generate from it.)
-   Re-run without `-F` → it should error that the template already exists; with
-   `-F` → it recreates it.
+3. **`gh cls template hw1 -t $ORG/hw1-src`** — verify `hw1-template` exists, is
+   marked a *template repository*, is private, and has a single commit on its
+   default branch. (`template` also marks the *source* `hw1-src` as a template
+   repository, which GitHub requires in order to generate from it.) Re-run without
+   `-F` → it should error that the template already exists; with `-F` → it
+   recreates it.
 
-4. **Fill in the config** so `assign` can resolve the assignment. `setup` already
-   created `gh-cls-test.yml` with the `org:` and `staff_team:` lines; open it and
-   add the `assignments` entries (`assign` errors with *"assignment not found in
-   config"* otherwise):
+4. **Add the assignment to the config** so `assign` can resolve it (`assign`
+   errors with *"assignment not found in config"* otherwise):
    ```yaml
    org: gh-cls-sandbox
-   staff_team: staff        # already written by setup
+   staff_team: staff
    assignments:
      hw1:
        type: individual
@@ -144,20 +145,19 @@ Run each step **with `--dry-run` first**, then for real.
    <STU>,<STU>
    ```
 
-5. **`gh cls assign hw1 -o $ORG -r roster.csv --public --branch-protection --feedback issue`**
-   (no `-s` — `assign` inherits `staff_team` from config) — verify `hw1-<STU>` is
-   created, `<STU>` is a direct collaborator with **push**, the staff team has
-   push, a protection ruleset is present (public repo), and a *Feedback* issue is
-   open. Re-run → it should report the repo `skipped`.
+5. **`gh cls assign hw1 -r roster.csv --public --branch-protection --feedback issue`**
+   — verify `hw1-<STU>` is created, `<STU>` is a direct collaborator with **push**,
+   the staff team has push, a protection ruleset is present (public repo), and a
+   *Feedback* issue is open. Re-run → it should report the repo `skipped`.
 
-6. **`gh cls freeze hw1 -o $ORG`** — `<STU>` drops to **read**. (Single-account
+6. **`gh cls freeze hw1`** — `<STU>` drops to **read**. (Single-account
    fallback: reports `0` changed because you are admin-skipped.)
 
-7. **`gh cls freeze hw1 -o $ORG --undo`** — push restored. Re-run → `0` changes.
+7. **`gh cls freeze hw1 --undo`** — push restored. Re-run → `0` changes.
 
 8. **Group assignment (optional)** — add a `group` assignment to the config,
    write a `teams.yml` (`alpha: [<STU>]`), and
-   `gh cls assign <name> -o $ORG -r roster.csv --teams teams.yml --public`.
+   `gh cls assign <name> -r roster.csv --teams teams.yml --public`.
    Verify `<name>-alpha` is created with the team's members granted push.
 
 9. **Cleanup** — delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
