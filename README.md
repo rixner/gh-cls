@@ -91,7 +91,11 @@ gh cls freeze hw1 --undo
 
 - **setup** sets base permission to none, disables member repo/Pages creation
   and Actions org-wide, reports Copilot status, and ensures the staff team. All
-  actions are idempotent and report changed vs already-in-desired-state.
+  actions are idempotent and report changed vs already-in-desired-state. It also
+  prints an optional-hardening checklist for member-privilege toggles that exist
+  only in the web UI (installing apps, changing repository visibility, deleting or
+  transferring repositories, creating teams) — these are the instructor's to
+  apply or leave open, at their discretion.
 - **template** generates `<name>-template` from the maintained source template
   via GitHub's template generation, so the source's history is never exposed (the
   derived repo is one fresh commit). It marks the source as a template repository

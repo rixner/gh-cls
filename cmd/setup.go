@@ -118,6 +118,12 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 		"Add TAs to the staff team; you remain an Owner.",
 		"Verify in Billing & plans that the org shows \"Team\" (required for --branch-protection).",
 	})
+	printOptionalHardening(out, []string{
+		"Restrict members from installing apps / granting third-party integration access, if you want owners-only.",
+		"Restrict members from changing repository visibility.",
+		"Restrict members from deleting or transferring repositories.",
+		"Restrict members from creating teams.",
+	})
 	return nil
 }
 

@@ -45,13 +45,24 @@ func printResults(w io.Writer, results []result) {
 	tw.Flush()
 }
 
-// printManualSteps lists actions the tool cannot perform via the API.
-func printManualSteps(w io.Writer, steps []string) {
+// printSteps writes a titled bullet list, or nothing when there are no steps.
+func printSteps(w io.Writer, title string, steps []string) {
 	if len(steps) == 0 {
 		return
 	}
-	fmt.Fprintln(w, "\nManual steps (cannot be done via the API on this tier):")
+	fmt.Fprintf(w, "\n%s\n", title)
 	for _, s := range steps {
 		fmt.Fprintf(w, "  - %s\n", s)
 	}
+}
+
+// printManualSteps lists actions the tool cannot perform via the API.
+func printManualSteps(w io.Writer, steps []string) {
+	printSteps(w, "Manual steps (cannot be done via the API on this tier):", steps)
+}
+
+// printOptionalHardening lists member-privilege restrictions the tool cannot set
+// (they exist only in the web UI) and that are the instructor's to apply or not.
+func printOptionalHardening(w io.Writer, steps []string) {
+	printSteps(w, "Optional hardening (instructor's discretion — Settings → Member privileges, web UI only):", steps)
 }

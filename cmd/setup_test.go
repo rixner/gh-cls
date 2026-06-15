@@ -141,7 +141,8 @@ func TestSetupChangesAndReports(t *testing.T) {
 	if fake.createdTeam != "staff" {
 		t.Error("staff team should be created when absent")
 	}
-	for _, want := range []string{"CONFIG ORG SET → cs101-spring26", "changed", "none present", "created staff"} {
+	for _, want := range []string{"CONFIG ORG SET → cs101-spring26", "changed", "none present", "created staff",
+		"Optional hardening", "creating teams", "deleting or transferring"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)
 		}
