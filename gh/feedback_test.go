@@ -113,6 +113,18 @@ func TestBranchExists(t *testing.T) {
 			t.Fatalf("404 should mean absent without error, got ok=%v err=%v", ok, err)
 		}
 	})
+	t.Run("absent on 409 empty repository", func(t *testing.T) {
+		// A freshly generated repo briefly answers 409 "Git Repository is empty"
+		// from the ref endpoint. That must read as absent so waitRepoReady keeps
+		// polling instead of surfacing it as fatal and rolling back the new repo.
+		f := &fakeRequester{steps: []step{{err: httpErr(409, nil)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		ok, err := c.BranchExists(context.Background(), "org", "hw1-ada", "feedback")
+		if err != nil || ok {
+			t.Fatalf("409 empty repo should mean absent without error, got ok=%v err=%v", ok, err)
+		}
+	})
 	t.Run("propagates other errors", func(t *testing.T) {
 		f := &fakeRequester{steps: []step{{err: httpErr(500, nil)}}}
 		var waits int

@@ -36,7 +36,11 @@ func (c *restClient) BranchExists(ctx context.Context, owner, repo, branch strin
 	// ref segments (heads/<branch>) are part of the path and must not be escaped.
 	path := fmt.Sprintf("repos/%s/%s/git/ref/heads/%s", url.PathEscape(owner), url.PathEscape(repo), branch)
 	if _, err := c.do(ctx, "GET", path, nil, nil); err != nil {
-		if notFound(err) {
+		// 404 means the repo has commits but not this branch; 409 ("Git Repository
+		// is empty") means it has no commits at all. Either way the branch is
+		// absent — a normal answer, not a failure — which also lets a freshly
+		// generated repo be polled until its starter commit lands.
+		if notFound(err) || emptyRepo(err) {
 			return false, nil
 		}
 		return false, err

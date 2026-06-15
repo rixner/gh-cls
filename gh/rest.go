@@ -91,3 +91,12 @@ func notFound(err error) bool {
 	var he *api.HTTPError
 	return errors.As(err, &he) && he.StatusCode == http.StatusNotFound
 }
+
+// emptyRepo reports whether err is a 409 from the API. The git ref endpoints
+// answer 409 ("Git Repository is empty") for a repository that exists but has no
+// commits yet — the transient state a freshly generated repo passes through
+// before its starter commit lands.
+func emptyRepo(err error) bool {
+	var he *api.HTTPError
+	return errors.As(err, &he) && he.StatusCode == http.StatusConflict
+}
