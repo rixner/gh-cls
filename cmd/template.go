@@ -62,7 +62,10 @@ the GitHub API — no local clone, no git binary, and no separate git credential
 }
 
 func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) error {
-	cfg, _, _ := config.Load()
+	cfg, _, err := config.Load()
+	if err != nil {
+		return err
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -139,6 +142,7 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 		}
 	}
 
+	deletedExisting := false
 	if _, exists, err := client.GetRepo(ctx, org, derived); err != nil {
 		return fmt.Errorf("checking for existing %s/%s: %w", org, derived, err)
 	} else if exists {
@@ -148,11 +152,18 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 		if err := client.DeleteRepo(ctx, org, derived); err != nil {
 			return fmt.Errorf("deleting existing %s/%s: %w", org, derived, err)
 		}
+		deletedExisting = true
 	}
 
 	// Template generation copies the source's files as a single fresh commit on
 	// its default branch, exposing none of the source's history.
 	if err := client.GenerateFromTemplate(ctx, srcOwner, srcName, org, derived, true, false); err != nil {
+		if deletedExisting {
+			// The previous template was already deleted for --force and could not be
+			// rebuilt: there is now no <name>-template at all. Say so loudly, since a
+			// silent "generate failed" hides that a working artifact is gone.
+			return fmt.Errorf("generating %s/%s from %s failed AFTER the previous template was deleted for --force: %s/%s is now gone and could not be rebuilt; fix the cause and re-run `gh cls template %s`: %w", org, derived, source, org, derived, name, err)
+		}
 		return fmt.Errorf("generating %s/%s from %s: %w", org, derived, source, err)
 	}
 

@@ -44,7 +44,9 @@ type fakeAssignClient struct {
 	withholdBranch bool // simulate generation that never lands the default branch
 	forcePublic    bool // generation produces public repos regardless of the request
 	exists         map[string]bool
-	private        map[string]bool // "owner/name" -> visibility recorded at generation
+	public         map[string]bool // "owner/name" -> repo is public; absent means private
+	invited        []string        // "repo:username" entries modeled as pending invitations
+	dropGrants     map[string]bool // usernames whose grant silently evaporates
 	branches       []gh.BranchCount
 	generated      []string
 	collabs        []string
@@ -62,7 +64,9 @@ func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.R
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.exists[owner+"/"+name] {
-		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: f.private[owner+"/"+name]}, true, nil
+		// Repos default to private (the realistic state of an assign-created repo);
+		// only those recorded in public are public.
+		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: !f.public[owner+"/"+name]}, true, nil
 	}
 	return nil, false, nil
 }
@@ -79,10 +83,10 @@ func (f *fakeAssignClient) GenerateFromTemplate(_ context.Context, _, _, owner, 
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.exists[owner+"/"+name] = true
-	if f.private == nil {
-		f.private = map[string]bool{}
+	if f.public == nil {
+		f.public = map[string]bool{}
 	}
-	f.private[owner+"/"+name] = private && !f.forcePublic
+	f.public[owner+"/"+name] = !private || f.forcePublic
 	f.generated = append(f.generated, name)
 	// Generation lands the default branch; record it so the readiness check
 	// (waitRepoReady -> BranchExists) sees a populated repo. withholdBranch
@@ -98,6 +102,44 @@ func (f *fakeAssignClient) AddCollaborator(_ context.Context, _, repo, username,
 	defer f.mu.Unlock()
 	f.collabs = append(f.collabs, repo+":"+username)
 	return nil
+}
+
+func (f *fakeAssignClient) ListDirectCollaborators(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []gh.Collaborator
+	for _, entry := range f.collabs {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] != repo {
+			continue
+		}
+		user := parts[1]
+		// A dropped grant never lands as a collaborator; an invited user is modeled
+		// as a pending invitation instead of live access.
+		if f.dropGrants[user] || contains(f.invited, repo+":"+user) {
+			continue
+		}
+		c := gh.Collaborator{Login: user}
+		c.Permissions.Push = true
+		out = append(out, c)
+	}
+	return out, nil
+}
+
+func (f *fakeAssignClient) ListRepoInvitations(_ context.Context, _, repo string) ([]gh.Invitation, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []gh.Invitation
+	for _, entry := range f.invited {
+		parts := strings.SplitN(entry, ":", 2)
+		if len(parts) != 2 || parts[0] != repo {
+			continue
+		}
+		var inv gh.Invitation
+		inv.Invitee.Login = parts[1]
+		out = append(out, inv)
+	}
+	return out, nil
 }
 
 func (f *fakeAssignClient) AddTeamRepo(_ context.Context, _, _, _, repo, _ string) error {
@@ -547,6 +589,60 @@ func TestAssignVerifiesVisibility(t *testing.T) {
 	}
 	if len(fake.collabs) != 0 {
 		t.Errorf("no access should be granted on a wrongly-public repo: %v", fake.collabs)
+	}
+}
+
+func TestAssignRejectsExistingPublicRepo(t *testing.T) {
+	// A reused repo that is public (drift, or a prior leaky run) must abort before
+	// access is re-asserted, just like a freshly-generated public repo would.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.public = map[string]bool{"cs101-spring26/hw1-ada": true}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("a public reused repo should fail the run, got %v", err)
+	}
+	if contains(fake.collabs, "hw1-ada:ada") {
+		t.Errorf("no access should be re-asserted on a wrongly-public repo: %v", fake.collabs)
+	}
+	if !strings.Contains(buf.String(), "is public but private was requested") {
+		t.Errorf("visibility mismatch should be reported clearly: %s", buf.String())
+	}
+}
+
+func TestAssignReportsPendingInvitations(t *testing.T) {
+	// An outside collaborator's grant becomes a pending invitation: the run still
+	// succeeds, but reports that the student must accept before they can push.
+	fake := newFakeAssign("admin")
+	fake.invited = []string{"hw1-ada:ada"}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "pending") {
+		t.Errorf("pending invitation should be reported: %s", buf.String())
+	}
+}
+
+func TestAssignVerifiesGrantTookEffect(t *testing.T) {
+	// A grant that lands as neither access nor an invitation is a silent failure;
+	// the post-condition check must catch it and fail the repo loudly.
+	fake := newFakeAssign("admin")
+	fake.dropGrants = map[string]bool{"ada": true}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("a grant that did not take effect should fail the run, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "did not take effect") {
+		t.Errorf("the failure should explain the grant did not take effect: %s", buf.String())
 	}
 }
 

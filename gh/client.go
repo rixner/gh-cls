@@ -73,6 +73,8 @@ type Client interface {
 	ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]Repo, error)
 	// ListDirectCollaborators returns a repo's direct collaborators.
 	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]Collaborator, error)
+	// ListRepoInvitations returns a repo's pending collaborator invitations.
+	ListRepoInvitations(ctx context.Context, owner, repo string) ([]Invitation, error)
 }
 
 // Repo is the subset of a repository's fields the tool inspects.

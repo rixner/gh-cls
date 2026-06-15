@@ -54,6 +54,8 @@ type assignClient interface {
 	EnableIssues(ctx context.Context, owner, repo string) error
 	CreateIssue(ctx context.Context, owner, repo, title, body string) error
 	IssueExists(ctx context.Context, owner, repo, title string) (bool, error)
+	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]gh.Collaborator, error)
+	ListRepoInvitations(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
 }
 
 // assignOpts carries the resolved flags and dependencies for `gh cls assign`.
@@ -133,13 +135,17 @@ func (o *assignOpts) overrides(cmd *cobra.Command) config.Overrides {
 
 // unitResult records the outcome of provisioning one repository.
 type unitResult struct {
-	repo   string
-	status string // "created" or "skipped"
-	err    error
+	repo    string
+	status  string   // "created" or "skipped"
+	pending []string // members whose grant is a not-yet-accepted invitation
+	err     error
 }
 
 func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov config.Overrides) error {
-	cfg, _, _ := config.Load()
+	cfg, _, err := config.Load()
+	if err != nil {
+		return err
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
@@ -313,21 +319,16 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 			res.err = err
 			return res
 		}
-		// Confirm the new repo actually got the requested visibility before granting
-		// anyone access: a private assignment that came out public would expose
-		// student work, so abort this repo rather than populate a leaky one.
-		if info.Private == policy.Public {
-			actual, want := "private", "private"
-			if !info.Private {
-				actual = "public"
-			}
-			if policy.Public {
-				want = "public"
-			}
-			res.err = fmt.Errorf("repository %s was created %s but %s was requested; aborting before granting access", repo, actual, want)
-			return res
-		}
 		res.status = "created"
+	}
+
+	// Confirm the repo's visibility matches the policy before granting anyone
+	// access — on a freshly generated repo and on a reused one alike. A private
+	// assignment that came out (or has since drifted) public would expose student
+	// work, so abort this repo rather than (re-)assert access on a leaky one.
+	if err := checkVisibility(repo, info, policy.Public); err != nil {
+		res.err = err
+		return res
 	}
 
 	// Re-assert grants so re-running is safe and access is correct.
@@ -360,7 +361,74 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 		res.err = err
 		return res
 	}
+
+	// Post-condition: confirm every member actually holds the access we granted.
+	// A grant to a non-member becomes a GitHub invitation that conveys no access
+	// until accepted, so the only honest end state is "has write, or has a pending
+	// invitation"; a member who is neither means the grant silently did not land.
+	pending, err := o.verifyAccess(ctx, client, org, repo, u.Members)
+	if err != nil {
+		res.err = err
+		return res
+	}
+	res.pending = pending
 	return res
+}
+
+// checkVisibility fails if a repo's visibility does not match what the policy
+// requested. It gates access: a private assignment that is (or has drifted)
+// public would expose student work, so this is checked before any grant.
+func checkVisibility(repo string, info *gh.Repo, wantPublic bool) error {
+	if info.Private != wantPublic {
+		return nil
+	}
+	actual, want := "private", "private"
+	if !info.Private {
+		actual = "public"
+	}
+	if wantPublic {
+		want = "public"
+	}
+	return fmt.Errorf("repository %s is %s but %s was requested; aborting before asserting access", repo, actual, want)
+}
+
+// verifyAccess re-reads a repo's collaborators and pending invitations and
+// confirms every granted member is reflected as one or the other. A member who
+// is neither means the grant silently failed, which is a loud error. The pending
+// invitees are returned so the run can report that they must still accept.
+func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org, repo string, members []string) ([]string, error) {
+	collaborators, err := client.ListDirectCollaborators(ctx, org, repo)
+	if err != nil {
+		return nil, fmt.Errorf("verifying access on %s: %w", repo, err)
+	}
+	hasWrite := make(map[string]bool, len(collaborators))
+	for _, c := range collaborators {
+		if c.Permissions.Admin || c.Permissions.Maintain || c.Permissions.Push {
+			hasWrite[strings.ToLower(c.Login)] = true
+		}
+	}
+	invitations, err := client.ListRepoInvitations(ctx, org, repo)
+	if err != nil {
+		return nil, fmt.Errorf("verifying invitations on %s: %w", repo, err)
+	}
+	invited := make(map[string]bool, len(invitations))
+	for _, inv := range invitations {
+		invited[strings.ToLower(inv.Invitee.Login)] = true
+	}
+
+	var pending []string
+	for _, m := range members {
+		key := strings.ToLower(m)
+		switch {
+		case hasWrite[key]:
+			// access is live
+		case invited[key]:
+			pending = append(pending, m)
+		default:
+			return nil, fmt.Errorf("push grant to %s on %s did not take effect: they are neither a collaborator nor have a pending invitation; re-run assign to repair it", m, repo)
+		}
+	}
+	return pending, nil
 }
 
 // addFeedback ensures the chosen feedback artifact exists, creating only the
@@ -414,7 +482,7 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 
 // reportResults summarizes the run and returns an error if any unit failed.
 func reportResults(out io.Writer, results []unitResult) error {
-	var created, skipped, failed int
+	var created, skipped, failed, pending int
 	for _, r := range results {
 		switch {
 		case r.err != nil:
@@ -424,8 +492,14 @@ func reportResults(out io.Writer, results []unitResult) error {
 		default:
 			created++
 		}
+		pending += len(r.pending)
 	}
 	fmt.Fprintf(out, "\n%d created, %d skipped, %d failed\n", created, skipped, failed)
+	if pending > 0 {
+		// Outside collaborators must accept the invitation before they have access;
+		// until then the repo is provisioned but the student cannot push.
+		fmt.Fprintf(out, "note: %d student invitation(s) are still pending — those students must accept the GitHub invitation before they can push\n", pending)
+	}
 	if skipped > 0 {
 		// Re-asserting push on existing repos un-does a prior freeze on them.
 		fmt.Fprintf(out, "note: re-asserted push on %d existing repo(s); if these were frozen, they are now writable again\n", skipped)

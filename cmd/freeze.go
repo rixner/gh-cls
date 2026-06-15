@@ -59,7 +59,10 @@ type freezeResult struct {
 }
 
 func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string) error {
-	cfg, _, _ := config.Load()
+	cfg, _, err := config.Load()
+	if err != nil {
+		return err
+	}
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
