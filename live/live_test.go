@@ -104,7 +104,7 @@ func TestLive(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "gh-cls-test.yml")
 	t.Setenv("GH_CLS_CONFIG", cfgPath)
-	writeConfig(t, cfgPath, org, srcName, name, grp)
+	writeConfig(t, cfgPath, org, name, grp)
 
 	// 0. Seed a source template with content: a repo with at least one commit for
 	// `template` to generate from. Created with auto_init via the raw client so it
@@ -119,16 +119,18 @@ func TestLive(t *testing.T) {
 		t.Errorf("re-running setup should report 'already' for hardened settings, got:\n%s", out)
 	}
 
-	// 2. template — generate the single-commit template, verify, then confirm the
-	// overwrite guard (no -F errors; -F recreates).
-	mustRunCLI(t, ctx, "template", "-t", org+"/"+srcName, name)
+	// 2. template — build the squashed template repo, verify, then confirm the
+	// overwrite guard (no -F errors; -F recreates). --mark-source flags the
+	// freshly-seeded source a template repository (the pre-req to generate from it);
+	// later calls find it already marked.
+	mustRunCLI(t, ctx, "template", name+"-template", "-s", org+"/"+srcName, "--mark-source")
 	assertTemplate(t, ctx, client, org, name+"-template")
-	if _, err := runCLI(ctx, "template", "-t", org+"/"+srcName, name); err == nil {
+	if _, err := runCLI(ctx, "template", name+"-template", "-s", org+"/"+srcName); err == nil {
 		t.Error("re-running template without -F should error (template already exists)")
 	} else if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("template re-run error = %v, want it to mention 'already exists'", err)
 	}
-	mustRunCLI(t, ctx, "template", "-t", org+"/"+srcName, "-F", name)
+	mustRunCLI(t, ctx, "template", name+"-template", "-s", org+"/"+srcName, "-F")
 	assertTemplate(t, ctx, client, org, name+"-template")
 
 	// 3. assign (individual) — create the student repo, verify the push grant,
@@ -164,8 +166,9 @@ func TestLive(t *testing.T) {
 		mustRunCLI(t, ctx, "freeze", "-u", name)
 	}
 
-	// 6. group flow — exercises the teams resolution and multi-member grants.
-	mustRunCLI(t, ctx, "template", "-t", org+"/"+srcName, grp)
+	// 6. group flow — exercises the teams resolution and multi-member grants. The
+	// source is already a template repository by now, so no --mark-source is needed.
+	mustRunCLI(t, ctx, "template", grp+"-template", "-s", org+"/"+srcName)
 	assertTemplate(t, ctx, client, org, grp+"-template")
 	rosterGrp := filepath.Join(dir, "roster-group.csv")
 	teamsPath := filepath.Join(dir, "teams.yml")
@@ -227,18 +230,20 @@ func seedSource(t *testing.T, rc *api.RESTClient, org, name string) {
 
 // writeConfig writes the course config the run needs: the org plus one
 // individual and one group assignment, each pointing at the seeded source.
-func writeConfig(t *testing.T, path, org, srcName, indName, grpName string) {
+func writeConfig(t *testing.T, path, org, indName, grpName string) {
 	t.Helper()
+	// Each assignment names the template repo assign clones: the <name>-template
+	// repo built by the template command (a bare name, resolved to this org).
 	content := fmt.Sprintf(`org: %[1]s
 staff_team: staff
 assignments:
   %[2]s:
     type: individual
-    template: %[1]s/%[4]s
+    template: %[2]s-template
   %[3]s:
     type: group
-    template: %[1]s/%[4]s
-`, org, indName, grpName, srcName)
+    template: %[3]s-template
+`, org, indName, grpName)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("writing config %s: %v", path, err)
 	}

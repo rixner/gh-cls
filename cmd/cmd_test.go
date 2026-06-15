@@ -82,7 +82,7 @@ func TestOrgIsConfigOnly(t *testing.T) {
 func TestLocalFlagMatrix(t *testing.T) {
 	cases := map[string]map[string]string{
 		"setup":    {"n": "dry-run"},
-		"template": {"t": "template", "F": "force", "n": "dry-run"},
+		"template": {"s": "source", "F": "force", "n": "dry-run"},
 		"assign":   {"r": "roster", "T": "teams", "p": "public", "b": "branch-protection", "a": "all-branches", "f": "feedback", "U": "allow-unsquashed", "n": "dry-run"},
 		"freeze":   {"u": "undo", "n": "dry-run"},
 		"audit":    {"r": "roster", "T": "teams", "n": "dry-run"},

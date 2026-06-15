@@ -23,12 +23,13 @@ type templateClient interface {
 
 // templateOpts carries the resolved flags and dependencies for `gh cls template`.
 type templateOpts struct {
-	g         *globalOpts
-	source    string
-	force     bool
-	dryRun    bool
-	newClient func(context.Context) (templateClient, error)
-	sleep     func(time.Duration)
+	g          *globalOpts
+	source     string
+	markSource bool
+	force      bool
+	dryRun     bool
+	newClient  func(context.Context) (templateClient, error)
+	sleep      func(time.Duration)
 }
 
 func newTemplateCmd(g *globalOpts) *cobra.Command {
@@ -38,54 +39,57 @@ func newTemplateCmd(g *globalOpts) *cobra.Command {
 		sleep:     time.Sleep,
 	}
 	cmd := &cobra.Command{
-		Use:   "template <name>",
-		Short: "Prepare a single-commit template for an assignment",
-		Long: `Derive a single-commit template repo (<name>-template) in the semester org
-from the maintained source template, so the source template's development
-history is never exposed to students. Run once per assignment, before assign.
+		Use:   "template <repo>",
+		Short: "Build a squashed, single-commit template repository",
+		Long: `Create <repo> as a single-commit copy of a source repository, with none of
+the source's history, and mark it a template repository so assign can generate
+student repos from it. A bare <repo> is created in the configured org; pass
+owner/name to create it elsewhere.
 
-The derived template is produced through GitHub's own template generation, which
-copies the source's files as one fresh commit without its history. This uses only
-the GitHub API — no local clone, no git binary, and no separate git credentials.`,
-		Example: "  gh cls template hw1",
+This is an optional helper: assign clones whatever template an assignment names,
+so any existing template repository works just as well. Generation runs purely
+against the GitHub API — no local clone, no git binary, no separate credentials.`,
+		Example: "  gh cls template hw1-template --source cs101-staff/hw1-dev",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0])
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.source, "template", "t", "", "source template repo (owner/name), overriding config")
-	f.BoolVarP(&o.force, "force", "F", false, "overwrite an existing <name>-template")
+	f.StringVarP(&o.source, "source", "s", "", "source repo to squash (owner/name, required)")
+	f.BoolVar(&o.markSource, "mark-source", false, "mark the source a template repository if it is not already")
+	f.BoolVarP(&o.force, "force", "F", false, "overwrite <repo> if it already exists")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "describe what would be created without doing it")
+	_ = cmd.MarkFlagRequired("source")
 	return cmd
 }
 
-func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) error {
-	org := o.g.org
-	source := o.source
-	if source == "" {
-		if a, ok := o.g.cfg.Assignments[name]; ok {
-			source = a.Template
-		}
-	}
-	if source == "" {
-		return fmt.Errorf("no source template for %q: set assignments.%s.template or pass --template", name, name)
-	}
-	srcOwner, srcName, err := splitRepo(source)
+func (o *templateOpts) run(ctx context.Context, out io.Writer, repoArg string) error {
+	// Output: the template repo to create. A bare name lands in the configured org.
+	dstOwner, dstName, err := splitRepo(qualifyTemplate(repoArg, o.g.org))
 	if err != nil {
 		return err
 	}
+	dst := dstOwner + "/" + dstName
 
-	derived := name + "-template"
+	// Source: the repo to squash. Always an explicit owner/name.
+	srcOwner, srcName, err := splitRepo(o.source)
+	if err != nil {
+		return fmt.Errorf("--source: %w", err)
+	}
+	source := srcOwner + "/" + srcName
 
 	if o.dryRun {
 		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
-		fmt.Fprintf(out, "Would derive %s/%s from %s:\n", org, derived, source)
+		fmt.Fprintf(out, "Would create %s from %s:\n", dst, source)
 		if o.force {
-			fmt.Fprintf(out, "  - overwrite %s/%s if it already exists\n", org, derived)
+			fmt.Fprintf(out, "  - overwrite %s if it already exists\n", dst)
 		}
-		fmt.Fprintf(out, "  - generate a private %s/%s from %s as a single commit (no source history)\n", org, derived, source)
-		fmt.Fprintf(out, "  - mark %s/%s as a template repository\n", org, derived)
+		if o.markSource {
+			fmt.Fprintf(out, "  - mark %s a template repository if it is not already\n", source)
+		}
+		fmt.Fprintf(out, "  - generate a private %s from %s as a single commit (no source history)\n", dst, source)
+		fmt.Fprintf(out, "  - mark %s a template repository\n", dst)
 		return nil
 	}
 
@@ -93,79 +97,78 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 	if err != nil {
 		return err
 	}
-	if err := requireOwner(ctx, client, org); err != nil {
+	if err := requireOwner(ctx, client, dstOwner); err != nil {
 		return err
 	}
 
-	// Verify the source exists before anything destructive happens: with --force
-	// the existing template is deleted below, and a good template must never be
-	// destroyed only to discover the source it would be rebuilt from is gone.
+	// Verify the source exists before anything destructive: with --force the
+	// existing <repo> is deleted below, and it must never be destroyed only to
+	// find the source it would be rebuilt from is gone.
 	srcRepo, exists, err := client.GetRepo(ctx, srcOwner, srcName)
 	if err != nil {
-		return fmt.Errorf("reading source template %s: %w", source, err)
+		return fmt.Errorf("reading source %s: %w", source, err)
 	}
 	if !exists {
-		return fmt.Errorf("source template %s not found", source)
+		return fmt.Errorf("source %s not found", source)
 	}
 
-	// Confirm the source actually has content before anything destructive: a
-	// --force run deletes the existing template below, and generating from an
-	// empty source would replace it with an empty one. Fail fast and clearly.
+	// The source must have content to generate from.
 	branch := srcRepo.DefaultBranch
 	if branch == "" {
-		return fmt.Errorf("source template %s has no commits to generate from; add a commit first", source)
+		return fmt.Errorf("source %s has no commits to generate from; add a commit first", source)
 	}
 	if ok, err := client.BranchExists(ctx, srcOwner, srcName, branch); err != nil {
-		return fmt.Errorf("checking source template %s for content: %w", source, err)
+		return fmt.Errorf("checking source %s for content: %w", source, err)
 	} else if !ok {
-		return fmt.Errorf("source template %s has no commits on its default branch %q; add a commit first", source, branch)
+		return fmt.Errorf("source %s has no commits on its default branch %q; add a commit first", source, branch)
 	}
 
-	// Generating a repository from another requires the source to be marked a
-	// template repository. The source is one by role, so ensure the flag is set;
-	// this is a no-op when it already is.
+	// Generating from a repo requires it to be a template repository. We never
+	// silently flip someone's source repo: it is a checked pre-condition, opted
+	// into with --mark-source.
 	if !srcRepo.IsTemplate {
+		if !o.markSource {
+			return fmt.Errorf("source %s is not a template repository; mark it in the GitHub UI, or re-run with --mark-source to set it", source)
+		}
 		if err := client.SetRepoTemplate(ctx, srcOwner, srcName); err != nil {
-			return fmt.Errorf("marking source %s as a template repository (required to generate from it): %w", source, err)
+			return fmt.Errorf("marking source %s a template repository: %w", source, err)
 		}
 	}
 
 	deletedExisting := false
-	if _, exists, err := client.GetRepo(ctx, org, derived); err != nil {
-		return fmt.Errorf("checking for existing %s/%s: %w", org, derived, err)
+	if _, exists, err := client.GetRepo(ctx, dstOwner, dstName); err != nil {
+		return fmt.Errorf("checking for existing %s: %w", dst, err)
 	} else if exists {
 		if !o.force {
-			return fmt.Errorf("%s/%s already exists; pass -F/--force to overwrite", org, derived)
+			return fmt.Errorf("%s already exists; pass -F/--force to overwrite", dst)
 		}
-		if err := client.DeleteRepo(ctx, org, derived); err != nil {
-			return fmt.Errorf("deleting existing %s/%s: %w", org, derived, err)
+		if err := client.DeleteRepo(ctx, dstOwner, dstName); err != nil {
+			return fmt.Errorf("deleting existing %s: %w", dst, err)
 		}
 		deletedExisting = true
 	}
 
 	// Template generation copies the source's files as a single fresh commit on
 	// its default branch, exposing none of the source's history.
-	if err := client.GenerateFromTemplate(ctx, srcOwner, srcName, org, derived, true, false); err != nil {
+	if err := client.GenerateFromTemplate(ctx, srcOwner, srcName, dstOwner, dstName, true, false); err != nil {
 		if deletedExisting {
-			// The previous template was already deleted for --force and could not be
-			// rebuilt: there is now no <name>-template at all. Say so loudly, since a
-			// silent "generate failed" hides that a working artifact is gone.
-			return fmt.Errorf("generating %s/%s from %s failed AFTER the previous template was deleted for --force: %s/%s is now gone and could not be rebuilt; fix the cause and re-run `gh cls template %s`: %w", org, derived, source, org, derived, name, err)
+			// The previous repo was already deleted for --force and could not be
+			// rebuilt: there is now no template at all. Say so loudly.
+			return fmt.Errorf("generating %s from %s failed AFTER the previous %s was deleted for --force: it is now gone and could not be rebuilt; fix the cause and re-run: %w", dst, source, dst, err)
 		}
-		return fmt.Errorf("generating %s/%s from %s: %w", org, derived, source, err)
+		return fmt.Errorf("generating %s from %s: %w", dst, source, err)
 	}
 
-	// From here the derived repo exists. If finishing it fails, it is unusable
-	// (empty, or not actually a template), so roll it back rather than leave a
-	// broken <name>-template for assign to trip over.
-	if err := o.finishTemplate(ctx, client, org, derived); err != nil {
-		if delErr := client.DeleteRepo(ctx, org, derived); delErr != nil {
-			return fmt.Errorf("%w; additionally, rolling back %s/%s failed — delete it manually before retrying: %v", err, org, derived, delErr)
+	// From here the new repo exists. If finishing it fails, it is unusable (empty,
+	// or not actually a template), so roll it back rather than leave a broken one.
+	if err := o.finishTemplate(ctx, client, dstOwner, dstName); err != nil {
+		if delErr := client.DeleteRepo(ctx, dstOwner, dstName); delErr != nil {
+			return fmt.Errorf("%w; additionally, rolling back %s failed — delete it manually before retrying: %v", err, dst, delErr)
 		}
-		return fmt.Errorf("%w (rolled back %s/%s; re-run to try again)", err, org, derived)
+		return fmt.Errorf("%w (rolled back %s; re-run to try again)", err, dst)
 	}
 
-	fmt.Fprintf(out, "Created %s/%s — single commit generated from %s, marked as a template repository.\n", org, derived, source)
+	fmt.Fprintf(out, "Created %s — single commit generated from %s, marked a template repository.\n", dst, source)
 	return nil
 }
 
@@ -173,29 +176,40 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 // template, and verifies that flag actually took. Each step is a post-condition
 // assign depends on: it generates student repos from this template, which only
 // works if the template has content and is itself marked a template repository.
-func (o *templateOpts) finishTemplate(ctx context.Context, client templateClient, org, derived string) error {
+func (o *templateOpts) finishTemplate(ctx context.Context, client templateClient, owner, name string) error {
 	// Generation is asynchronous: wait until the repo's default branch lands so
 	// the template is not marked usable while still empty.
-	if _, err := waitRepoReady(ctx, client, o.sleep, org, derived); err != nil {
+	if _, err := waitRepoReady(ctx, client, o.sleep, owner, name); err != nil {
 		return err
 	}
-	if err := client.SetRepoTemplate(ctx, org, derived); err != nil {
-		return fmt.Errorf("marking %s/%s as a template: %w", org, derived, err)
+	if err := client.SetRepoTemplate(ctx, owner, name); err != nil {
+		return fmt.Errorf("marking %s/%s a template: %w", owner, name, err)
 	}
-	repo, exists, err := client.GetRepo(ctx, org, derived)
+	repo, exists, err := client.GetRepo(ctx, owner, name)
 	if err != nil {
-		return fmt.Errorf("verifying %s/%s: %w", org, derived, err)
+		return fmt.Errorf("verifying %s/%s: %w", owner, name, err)
 	}
 	if !exists {
-		return fmt.Errorf("%s/%s disappeared right after it was created", org, derived)
+		return fmt.Errorf("%s/%s disappeared right after it was created", owner, name)
 	}
 	if !repo.Private {
-		return fmt.Errorf("%s/%s was created public but must be private (starter code must not be world-readable)", org, derived)
+		return fmt.Errorf("%s/%s was created public but must be private (starter code must not be world-readable)", owner, name)
 	}
 	if !repo.IsTemplate {
-		return fmt.Errorf("%s/%s was not marked a template repository (the change did not take effect)", org, derived)
+		return fmt.Errorf("%s/%s was not marked a template repository (the change did not take effect)", owner, name)
 	}
 	return nil
+}
+
+// qualifyTemplate gives a bare template name (no owner) the configured org, so
+// "hw1-template" means "<org>/hw1-template" — the common in-org case. A reference
+// that already names an owner ("owner/name") is returned unchanged, so a template
+// may live in another org.
+func qualifyTemplate(ref, org string) string {
+	if strings.Contains(ref, "/") {
+		return ref
+	}
+	return org + "/" + ref
 }
 
 // splitRepo parses an "owner/name" reference.

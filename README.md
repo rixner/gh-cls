@@ -39,14 +39,20 @@ staff_team: staff
 assignments:
   hw1:
     type: individual
-    template: cs101-templates/hw1-starter
+    template: hw1-template        # the repo assign clones; bare -> cs101-spring26/hw1-template
     feedback: issue
   project:
     type: group
-    template: cs101-templates/project-starter
+    template: shared-org/proj-base
     branch_protection: true
     feedback: pr
 ```
+
+An assignment's `template` is the **template repository assign clones** to create
+each student/team repo. A bare name (`hw1-template`) is taken to live in the
+configured `org`; qualify it with an owner (`other-org/base`) to clone a template
+from another org. Build one with `gh cls template` (below), or point at any
+existing GitHub *template repository* — `gh cls template` is not required.
 
 The **roster** is a local CSV mapping student identifier → GitHub username:
 
@@ -75,10 +81,10 @@ Persistent flags: `-c/--config`, `-j/--concurrency`. The examples below assume
 # 1. Per-semester: harden the org named in the config.
 gh cls setup
 
-# 2. Per-assignment: generate a single-commit <name>-template in the org.
-gh cls template hw1
+# 2. Optional: build a squashed, single-commit template repo from a source.
+gh cls template hw1-template --source cs101-staff/hw1-dev
 
-# 3. Create one repo per student (or team), granting push + staff access.
+# 3. Create one repo per student (or team) from the assignment's template repo.
 gh cls assign hw1 --roster roster.csv
 gh cls assign project --roster roster.csv --teams teams.yml --branch-protection
 
@@ -98,12 +104,17 @@ gh cls freeze hw1 --undo
   only in the web UI (installing apps, changing repository visibility, deleting or
   transferring repositories, creating teams) — these are the instructor's to
   apply or leave open, at their discretion.
-- **template** generates `<name>-template` from the maintained source template
-  via GitHub's template generation, so the source's history is never exposed (the
-  derived repo is one fresh commit). It marks the source as a template repository
-  if needed, since generation requires it. `-F` replaces an existing one.
-- **assign** runs preflight checks (type/inputs, in-org template, all-branches
-  single-commit, roster/teams consistency), then generates repos concurrently.
+- **template** builds `<repo>` as a single-commit, history-free copy of
+  `--source` (via GitHub's template generation) and marks it a template
+  repository so assign can clone it. It is optional: assign clones whatever
+  template an assignment names, so any existing template repository works. The
+  source must already be a template repository — `--mark-source` opts into
+  marking it rather than failing; `-F` overwrites an existing `<repo>`. A bare
+  `<repo>` is created in the org; `--source` is always `owner/name`.
+- **assign** runs preflight checks (type/inputs; the assignment's template repo
+  exists and is a template repository; all-branches single-commit; roster/teams
+  consistency), then generates each repo from that template concurrently. The
+  template must be a template repository — `--mark-template` opts into marking it.
   `-b` applies an all-branches ruleset blocking force-push and deletion, which
   only org admins bypass (staff get push but cannot force-push or delete
   protected branches); `-f pr|issue` adds a feedback artifact. Idempotent:

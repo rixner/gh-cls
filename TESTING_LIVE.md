@@ -119,25 +119,26 @@ Run each step **with `--dry-run` first**, then for real.
    verify: base permission *None*, member repo/Pages creation off, Actions
    disabled, a `staff` team exists.
 
-2. **Seed a source template.** Create a repo with at least one commit to generate
-   from — e.g. a new repo initialized with a README named `hw1-src`.
+2. **Seed a source.** Create a repo with at least one commit to squash from —
+   e.g. a new repo initialized with a README named `hw1-src`.
 
-3. **`gh cls template hw1 -t $ORG/hw1-src`** — verify `hw1-template` exists, is
-   marked a *template repository*, is private, and has a single commit on its
-   default branch. (`template` also marks the *source* `hw1-src` as a template
-   repository, which GitHub requires in order to generate from it.) Re-run without
-   `-F` → it should error that the template already exists; with `-F` → it
-   recreates it.
+3. **`gh cls template hw1-template -s $ORG/hw1-src --mark-source`** — verify
+   `hw1-template` exists, is marked a *template repository*, is private, and has a
+   single commit on its default branch. `--mark-source` flags the source `hw1-src`
+   a template repository (the pre-req to generate from it); without the flag the
+   command fails telling you to set it. Re-run without `-F` → it should error that
+   `hw1-template` already exists; with `-F` → it recreates it.
 
 4. **Add the assignment to the config** so `assign` can resolve it (`assign`
-   errors with *"assignment not found in config"* otherwise):
+   errors with *"assignment not found in config"* otherwise). Its `template` is the
+   repo assign clones — `hw1-template`, built in step 3:
    ```yaml
    org: gh-cls-sandbox
    staff_team: staff
    assignments:
      hw1:
        type: individual
-       template: gh-cls-sandbox/hw1-src
+       template: hw1-template
    ```
    Also create a `roster.csv` (kept out of git by `.gitignore`):
    ```csv
@@ -146,19 +147,22 @@ Run each step **with `--dry-run` first**, then for real.
    ```
 
 5. **`gh cls assign hw1 -r roster.csv --public --branch-protection --feedback issue`**
-   — verify `hw1-<STU>` is created, `<STU>` is a direct collaborator with **push**,
-   the staff team has push, a protection ruleset is present (public repo), and a
-   *Feedback* issue is open. Re-run → it should report the repo `skipped`.
+   — clones `hw1-template` into `hw1-<STU>`; verify `<STU>` is a direct collaborator
+   with **push**, the staff team has push, a protection ruleset is present (public
+   repo), and a *Feedback* issue is open. Re-run → it should report the repo
+   `skipped`.
 
-6. **`gh cls freeze hw1`** — `<STU>` drops to **read**. (Single-account
-   fallback: reports `0` changed because you are admin-skipped.)
+6. **`gh cls freeze hw1`** — `<STU>` drops to **read** (the `hw1-template` repo is
+   skipped: freeze ignores template repositories). (Single-account fallback:
+   reports `0` changed because you are admin-skipped.)
 
 7. **`gh cls freeze hw1 --undo`** — push restored. Re-run → `0` changes.
 
-8. **Group assignment (optional)** — add a `group` assignment to the config,
-   write a `teams.yml` (`alpha: [<STU>]`), and
-   `gh cls assign <name> -r roster.csv --teams teams.yml --public`.
-   Verify `<name>-alpha` is created with the team's members granted push.
+8. **Group assignment (optional)** — build a group template
+   (`gh cls template proj-template -s $ORG/hw1-src`), add a `group` assignment with
+   `template: proj-template`, write a `teams.yml` (`alpha: [<STU>]`), and
+   `gh cls assign proj -r roster.csv --teams teams.yml --public`. Verify
+   `proj-alpha` is created with the team's members granted push.
 
 9. **Cleanup** — delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
    repos. (Leaving the `staff` team is fine.)

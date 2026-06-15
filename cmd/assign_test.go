@@ -22,8 +22,8 @@ func assignGlobals() *globalOpts {
 		Org:       "cs101-spring26",
 		StaffTeam: "staff",
 		Assignments: map[string]config.Assignment{
-			"hw1":     {Type: config.TypeIndividual, Template: "cs101-templates/hw1-starter"},
-			"project": {Type: config.TypeGroup, Template: "cs101-templates/project-starter"},
+			"hw1":     {Type: config.TypeIndividual, Template: "hw1-template"}, // bare -> cs101-spring26/hw1-template
+			"project": {Type: config.TypeGroup, Template: "project-template"},
 		},
 	}
 	return &globalOpts{cfg: cfg, org: cfg.Org, staffTeam: cfg.StaffTeam, concurrency: 4}
@@ -55,6 +55,7 @@ type fakeAssignClient struct {
 	deleted        []string
 	collabs        []string
 	teamRepos      []string
+	isTemplate     map[string]bool // "owner/name" -> repo is a template repository
 	rulesets       map[string]bool // repos a protection ruleset was applied to
 	refs           []string        // "repo:ref"
 	prs            []string        // "repo:head->base"
@@ -70,9 +71,19 @@ func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.R
 	if f.exists[owner+"/"+name] {
 		// Repos default to private (the realistic state of an assign-created repo);
 		// only those recorded in public are public.
-		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: !f.public[owner+"/"+name]}, true, nil
+		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: !f.public[owner+"/"+name], IsTemplate: f.isTemplate[owner+"/"+name]}, true, nil
 	}
 	return nil, false, nil
+}
+
+func (f *fakeAssignClient) SetRepoTemplate(_ context.Context, owner, name string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.isTemplate == nil {
+		f.isTemplate = map[string]bool{}
+	}
+	f.isTemplate[owner+"/"+name] = true
+	return nil
 }
 
 func (f *fakeAssignClient) ListBranchesWithCommitCount(context.Context, string, string) ([]gh.BranchCount, error) {
@@ -225,9 +236,10 @@ func (f *fakeAssignClient) IssueExists(_ context.Context, _, repo, _ string) (bo
 
 func newFakeAssign(role string) *fakeAssignClient {
 	return &fakeAssignClient{
-		role:     role,
-		exists:   map[string]bool{"cs101-spring26/hw1-template": true, "cs101-spring26/project-template": true},
-		branches: []gh.BranchCount{{Name: "main", Commits: 1}},
+		role:       role,
+		exists:     map[string]bool{"cs101-spring26/hw1-template": true, "cs101-spring26/project-template": true},
+		isTemplate: map[string]bool{"cs101-spring26/hw1-template": true, "cs101-spring26/project-template": true},
+		branches:   []gh.BranchCount{{Name: "main", Commits: 1}},
 	}
 }
 
@@ -343,6 +355,40 @@ func TestAssignTemplateMissing(t *testing.T) {
 	}
 	if len(fake.generated) != 0 {
 		t.Error("no repos should be generated when the template is missing")
+	}
+}
+
+func TestAssignTemplateNotATemplateRepo(t *testing.T) {
+	// The template repo exists but is not a GitHub template repository, and
+	// --mark-template was not given: fail with guidance, generate nothing.
+	fake := newFakeAssign("admin")
+	delete(fake.isTemplate, "cs101-spring26/hw1-template")
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "--mark-template") {
+		t.Fatalf("a non-template template repo should fail pointing at --mark-template, got %v", err)
+	}
+	if len(fake.generated) != 0 {
+		t.Error("nothing should be generated when the template is not a template repo")
+	}
+}
+
+func TestAssignMarkTemplate(t *testing.T) {
+	// --mark-template opts into marking the template repo, then proceeds.
+	fake := newFakeAssign("admin")
+	delete(fake.isTemplate, "cs101-spring26/hw1-template")
+	o := newAssignOpts(t, fake, assignRoster, "")
+	o.markTemplate = true
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if !fake.isTemplate["cs101-spring26/hw1-template"] {
+		t.Error("--mark-template should mark the template repo a template repository")
+	}
+	if len(fake.generated) == 0 {
+		t.Error("generation should proceed after marking the template")
 	}
 }
 

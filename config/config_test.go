@@ -89,12 +89,16 @@ func TestResolvePrecedence(t *testing.T) {
 	})
 
 	t.Run("flag overrides config", func(t *testing.T) {
-		p, err := c.Resolve("hw1", Overrides{Public: ptr(false), Template: "other/repo", Feedback: ptr(FeedbackPR)})
+		p, err := c.Resolve("hw1", Overrides{Public: ptr(false), Feedback: ptr(FeedbackPR)})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if p.Public || p.Template != "other/repo" || p.Feedback != FeedbackPR {
+		if p.Public || p.Feedback != FeedbackPR {
 			t.Errorf("override not applied: %+v", p)
+		}
+		// Template is read from config, never overridden.
+		if p.Template != "org/hw1" {
+			t.Errorf("template = %q, want the config value org/hw1", p.Template)
 		}
 	})
 
@@ -114,10 +118,12 @@ func TestResolvePrecedence(t *testing.T) {
 		}
 	})
 
-	t.Run("missing template", func(t *testing.T) {
-		bad := &Config{Assignments: map[string]Assignment{"x": {Type: TypeIndividual}}}
-		if _, err := bad.Resolve("x", Overrides{}); err == nil {
-			t.Error("want error when no template configured or overridden")
+	t.Run("missing template is allowed", func(t *testing.T) {
+		// Resolve no longer requires a template; only assign does, and it checks
+		// for itself. This keeps audit/freeze working on a templateless entry.
+		bare := &Config{Assignments: map[string]Assignment{"x": {Type: TypeIndividual}}}
+		if _, err := bare.Resolve("x", Overrides{}); err != nil {
+			t.Errorf("Resolve should not require a template, got %v", err)
 		}
 	})
 }

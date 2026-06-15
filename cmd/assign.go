@@ -40,6 +40,7 @@ const (
 type assignClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
+	SetRepoTemplate(ctx context.Context, owner, name string) error
 	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]gh.BranchCount, error)
 	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
 	DeleteRepo(ctx context.Context, org, name string) error
@@ -68,6 +69,7 @@ type assignOpts struct {
 	allBranches      bool
 	feedback         string
 	allowUnsquashed  bool
+	markTemplate     bool
 	dryRun           bool
 	newClient        func(context.Context) (assignClient, error)
 	sleep            func(time.Duration)
@@ -81,11 +83,11 @@ func newAssignCmd(g *globalOpts) *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "assign <name>",
-		Short: "Bulk-create assignment repositories from the squashed template",
+		Short: "Bulk-create assignment repositories from the assignment's template",
 		Long: `Create one repository per unit (each student for an individual assignment,
-each team for a group assignment) from the derived <name>-template, granting
-push to the unit's members and to the staff team. Idempotent: existing repos
-are skipped for generation but their access grants are re-asserted.`,
+each team for a group assignment) from the template repository the assignment
+names, granting push to the unit's members and to the staff team. Idempotent:
+existing repos are skipped for generation but their access grants are re-asserted.`,
 		Example: `  gh cls assign hw1 --roster roster.csv
   gh cls assign project --roster roster.csv --teams teams.yml --branch-protection`,
 		Args:    cobra.ExactArgs(1),
@@ -102,6 +104,7 @@ are skipped for generation but their access grants are re-asserted.`,
 	f.BoolVarP(&o.allBranches, "all-branches", "a", false, "include all template branches (default: default branch only)")
 	f.StringVarP(&o.feedback, "feedback", "f", "", "create a feedback artifact: pr or issue")
 	f.BoolVarP(&o.allowUnsquashed, "allow-unsquashed", "U", false, "proceed even if a template branch has more than one commit")
+	f.BoolVar(&o.markTemplate, "mark-template", false, "mark the assignment's template a template repository if it is not already")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "list what would be created without doing it")
 	_ = cmd.MarkFlagRequired("roster")
 	return cmd
@@ -180,7 +183,16 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		fmt.Fprintf(out, "warning: enrolled student %s is on no team\n", id)
 	}
 
-	derived := name + "-template"
+	// The template repo to clone is named by the assignment; a bare name lives in
+	// the configured org, an owner/name may live in another org.
+	if policy.Template == "" {
+		return fmt.Errorf("assignment %q has no template: set assignments.%s.template to the template repository assign should clone", name, name)
+	}
+	tmplOwner, tmplName, err := splitRepo(qualifyTemplate(policy.Template, org))
+	if err != nil {
+		return fmt.Errorf("assignment %q template: %w", name, err)
+	}
+	tmpl := tmplOwner + "/" + tmplName
 	staffTeam := o.g.staffTeam
 
 	if o.dryRun {
@@ -189,7 +201,7 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 			visibility = "public"
 		}
 		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
-		fmt.Fprintf(out, "Would create %d %s repo(s) in %s from %s/%s:\n", len(units), visibility, org, org, derived)
+		fmt.Fprintf(out, "Would create %d %s repo(s) in %s from %s:\n", len(units), visibility, org, tmpl)
 		if extras := planExtras(policy); extras != "" {
 			fmt.Fprintf(out, "  with %s\n", extras)
 		}
@@ -207,20 +219,32 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
-	// Preflight 2: derived template exists in the org (not overridable).
-	if _, exists, err := client.GetRepo(ctx, org, derived); err != nil {
-		return fmt.Errorf("checking template %s/%s: %w", org, derived, err)
-	} else if !exists {
-		return fmt.Errorf("template %s/%s not found; run `gh cls template %s` first", org, derived, name)
+	// Preflight 2: the template repo exists and is actually a template repository
+	// (required to generate from it). We never silently flip it: --mark-template
+	// opts into marking a repo that is not yet a template.
+	tmplRepo, exists, err := client.GetRepo(ctx, tmplOwner, tmplName)
+	if err != nil {
+		return fmt.Errorf("checking template %s: %w", tmpl, err)
+	}
+	if !exists {
+		return fmt.Errorf("template %s not found; create it with `gh cls template %s -s <source>` or fix assignments.%s.template", tmpl, tmplName, name)
+	}
+	if !tmplRepo.IsTemplate {
+		if !o.markTemplate {
+			return fmt.Errorf("template %s is not a template repository; mark it in the GitHub UI, or re-run with --mark-template to set it", tmpl)
+		}
+		if err := client.SetRepoTemplate(ctx, tmplOwner, tmplName); err != nil {
+			return fmt.Errorf("marking template %s a template repository: %w", tmpl, err)
+		}
 	}
 
 	// Preflight 3: template fully squashed (all branches), overridable with -U.
-	if err := o.checkSquashed(ctx, client, org, name, derived); err != nil {
+	if err := o.checkSquashed(ctx, client, tmplOwner, tmplName); err != nil {
 		return err
 	}
 
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) unitResult {
-		return o.provision(ctx, client, org, name, derived, staffTeam, policy, u)
+		return o.provision(ctx, client, org, name, tmplOwner, tmplName, staffTeam, policy, u)
 	})
 	return reportResults(out, results)
 }
@@ -240,10 +264,11 @@ func planExtras(policy config.Policy) string {
 	return strings.Join(parts, " and ")
 }
 
-// checkSquashed verifies every branch of the derived template has exactly one
-// commit, aborting with a per-branch breakdown unless --allow-unsquashed is set.
-func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, org, name, derived string) error {
-	branches, err := client.ListBranchesWithCommitCount(ctx, org, derived)
+// checkSquashed verifies every branch of the template has exactly one commit,
+// aborting with a per-branch breakdown unless --allow-unsquashed is set, so a
+// template carrying development history never leaks it into student repos.
+func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, tmplOwner, tmplName string) error {
+	branches, err := client.ListBranchesWithCommitCount(ctx, tmplOwner, tmplName)
 	if err != nil {
 		return fmt.Errorf("inspecting template branches: %w", err)
 	}
@@ -258,7 +283,7 @@ func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, org
 	}
 
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "template %s/%s is not fully squashed:\n", org, derived)
+	fmt.Fprintf(&sb, "template %s/%s is not fully squashed:\n", tmplOwner, tmplName)
 	for _, b := range branches {
 		state := "ok"
 		if b.Commits > 1 {
@@ -266,7 +291,7 @@ func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, org
 		}
 		fmt.Fprintf(&sb, "  %-20s %d commit(s)  %s\n", b.Name, b.Commits, state)
 	}
-	fmt.Fprintf(&sb, "Aborting. Re-run `gh cls template %s` to re-squash, or pass --allow-unsquashed (-U) to proceed anyway.", name)
+	fmt.Fprintf(&sb, "Aborting. Rebuild it squashed with `gh cls template`, or pass --allow-unsquashed (-U) to proceed anyway.")
 	return errors.New(sb.String())
 }
 
@@ -274,7 +299,7 @@ func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, org
 // Branch protection is applied once, when the repo is first created; the
 // feedback artifact is reconciled on every run so a partial failure is repaired
 // on re-run without reopening a closed PR or issue.
-func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, derived, staffTeam string, policy config.Policy, u unit.Unit) unitResult {
+func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, tmplOwner, tmplName, staffTeam string, policy config.Policy, u unit.Unit) unitResult {
 	repo := name + "-" + u.Key
 	res := unitResult{repo: repo}
 
@@ -286,7 +311,7 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 	if exists {
 		res.status = "skipped"
 	} else {
-		if err := client.GenerateFromTemplate(ctx, org, derived, org, repo, !policy.Public, o.allBranches); err != nil {
+		if err := client.GenerateFromTemplate(ctx, tmplOwner, tmplName, org, repo, !policy.Public, o.allBranches); err != nil {
 			res.err = fmt.Errorf("generating %s: %w", repo, err)
 			return res
 		}

@@ -11,10 +11,10 @@ type Policy struct {
 	Feedback         string
 }
 
-// Overrides carries command-line values. A nil pointer (or empty Template) means
-// the user did not set that flag, so the config value stands.
+// Overrides carries command-line policy values. A nil pointer means the user did
+// not set that flag, so the config value stands. Template is not overridable: it
+// is a property of the assignment, read only from config.
 type Overrides struct {
-	Template         string
 	Public           *bool
 	BranchProtection *bool
 	Feedback         *string
@@ -22,7 +22,8 @@ type Overrides struct {
 
 // Resolve produces the effective Policy for an assignment by applying the
 // precedence: command-line override, then the assignment's config entry, then
-// the built-in default (private, no protection, no feedback).
+// the built-in default (private, no protection, no feedback). It does not require
+// a template: only assign needs one, and it validates that itself.
 func (c *Config) Resolve(name string, ov Overrides) (Policy, error) {
 	a, ok := c.Assignments[name]
 	if !ok {
@@ -36,9 +37,6 @@ func (c *Config) Resolve(name string, ov Overrides) (Policy, error) {
 		BranchProtection: boolOr(a.BranchProtection, false),
 		Feedback:         a.Feedback,
 	}
-	if ov.Template != "" {
-		p.Template = ov.Template
-	}
 	if ov.Public != nil {
 		p.Public = *ov.Public
 	}
@@ -47,10 +45,6 @@ func (c *Config) Resolve(name string, ov Overrides) (Policy, error) {
 	}
 	if ov.Feedback != nil {
 		p.Feedback = *ov.Feedback
-	}
-
-	if p.Template == "" {
-		return Policy{}, fmt.Errorf("assignment %q: no template configured (set assignments.%s.template or pass --template)", name, name)
 	}
 	return p, nil
 }
