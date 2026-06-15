@@ -34,7 +34,7 @@ installed — *not* automatically your working copy. Install the local checkout 
 `gh cls` runs the code you are testing rather than the published release:
 
 ```
-go build ./...          # produces the ./gh-cls binary
+go build                # produces the ./gh-cls binary
 gh extension remove cls # only if a published copy is already installed
 gh extension install .  # registers this directory as `gh cls`
 ```
