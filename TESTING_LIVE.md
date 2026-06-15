@@ -15,19 +15,17 @@ sole owner cannot test (see *The freeze caveat* below).
    `gh-cls-sandbox`). You must be an *owner*; every command guards on it.
 2. **Auth is inherited from `gh` — there is no token to manage.** `gh cls` uses
    your existing `gh auth login`. You only need to ensure that login carries the
-   scopes the test needs (the defaults omit `delete_repo`), and that git can push
-   with it:
+   scopes the test needs (the defaults omit `delete_repo`):
    ```
    gh auth refresh -s admin:org -s delete_repo
-   gh auth setup-git
    ```
-   `admin:org` is for org settings and teams; `delete_repo` is for cleanup;
-   `setup-git` lets `template`'s `git clone`/`git push` authenticate.
+   `admin:org` is for org settings and teams; `delete_repo` is for cleanup. Every
+   command — including `template` — runs purely against the GitHub API, so no
+   `git` binary or credential helper is involved.
 3. **A "student" login.** A second throwaway GitHub account is the recommended
    path. For the `freeze` downgrade to be observable it should **accept
    membership** in the sandbox org once (invite it, then accept from that
    account). After that, repo grants to it take effect immediately.
-4. **`git` on `PATH`** — `template` shells out to it.
 
 ## The freeze caveat (why a second account matters)
 
@@ -100,13 +98,15 @@ Run each step **with `--dry-run` first**, then for real.
    report `already` for each setting. In the UI verify: base permission *None*,
    member repo/Pages creation off, Actions disabled, a `staff` team exists.
 
-2. **Seed a source template.** Create a repo with at least one commit to squash
+2. **Seed a source template.** Create a repo with at least one commit to generate
    from — e.g. a new repo initialized with a README named `hw1-src`.
 
 3. **`gh cls template hw1 -o $ORG -t $ORG/hw1-src`** — verify `hw1-template`
    exists, is marked a *template repository*, is private, and has a single commit
-   on its default branch. Re-run without `-F` → it should error that the template
-   already exists; with `-F` → it recreates it.
+   on its default branch. (`template` also marks the *source* `hw1-src` as a
+   template repository, which GitHub requires in order to generate from it.)
+   Re-run without `-F` → it should error that the template already exists; with
+   `-F` → it recreates it.
 
 4. **Fill in the config** so `assign` can resolve the assignment. `setup` already
    created `gh-cls-test.yml` with the `org:` line; open it and add the

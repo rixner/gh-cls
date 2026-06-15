@@ -12,8 +12,9 @@
 //   - own the org named by GH_CLS_LIVE_ORG (an organization owner), and
 //   - carry the admin:org and delete_repo scopes (the latter for teardown):
 //     gh auth refresh -s admin:org -s delete_repo
-//   - have the git credential helper configured (gh auth setup-git), because the
-//     `template` command shells out to `git clone`/`git push`.
+//
+// Every command runs purely against the GitHub API (template included), so no
+// git binary or credential helper is involved.
 //
 // Environment (selectors, not auth):
 //   - GH_CLS_LIVE_ORG  (required) the disposable org to operate in; also the
@@ -71,7 +72,7 @@ func TestLive(t *testing.T) {
 	ts := time.Now().UTC().Format("20060102t150405")
 	name := "ghclslive" + ts   // individual assignment
 	grp := "ghclslivegrp" + ts // group assignment
-	srcName := "ghclssrc" + ts // source template to squash from
+	srcName := "ghclssrc" + ts // source template to generate from
 
 	// Tear everything down even on failure or panic. Registered before any repo
 	// is created so partial runs still clean up. Best-effort: log, never fail.
@@ -103,9 +104,9 @@ func TestLive(t *testing.T) {
 	cfgPath := filepath.Join(dir, "gh-cls-test.yml")
 	t.Setenv("GH_CLS_CONFIG", cfgPath)
 
-	// 0. Seed a source template with content. CreateOrgRepo makes an empty repo
-	// (auto_init:false) that cannot be cloned, so create one with auto_init via
-	// the raw client; the resulting README commit is what `template` squashes.
+	// 0. Seed a source template with content: a repo with at least one commit for
+	// `template` to generate from. Created with auto_init via the raw client so it
+	// has a README commit (CreateOrgRepo deliberately makes empty repos).
 	seedSource(t, rc, org, srcName)
 
 	// 1. setup — harden the org, then verify, then prove idempotency.
@@ -120,8 +121,8 @@ func TestLive(t *testing.T) {
 	// replace the file wholesale with the assignment entries the run needs).
 	writeConfig(t, cfgPath, org, srcName, name, grp)
 
-	// 2. template — derive the squashed single-commit template, verify, then
-	// confirm the overwrite guard (no -F errors; -F recreates).
+	// 2. template — generate the single-commit template, verify, then confirm the
+	// overwrite guard (no -F errors; -F recreates).
 	mustRunCLI(t, ctx, "template", "-o", org, "-t", org+"/"+srcName, name)
 	assertTemplate(t, ctx, client, org, name+"-template")
 	if _, err := runCLI(ctx, "template", "-o", org, "-t", org+"/"+srcName, name); err == nil {

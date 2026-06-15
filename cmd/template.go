@@ -8,51 +8,42 @@ import (
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
-	"github.com/rixner/gh-cls/git"
 	"github.com/spf13/cobra"
 )
-
-// defaultSquashMessage is the commit message of the single flattened commit in
-// a derived template, used unless -m overrides it.
-const defaultSquashMessage = "Provided starter code"
 
 // templateClient is the narrow set of GitHub operations template needs.
 type templateClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
-	CreateOrgRepo(ctx context.Context, org, name string, private bool) (*gh.Repo, error)
-	SetRepoTemplate(ctx context.Context, org, name string) error
+	SetRepoTemplate(ctx context.Context, owner, name string) error
+	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
 	DeleteRepo(ctx context.Context, org, name string) error
 }
-
-// squashFunc flattens a source repo into a single-commit push to pushURL.
-type squashFunc func(ctx context.Context, srcURL, pushURL, message string) (string, error)
 
 // templateOpts carries the resolved flags and dependencies for `gh cls template`.
 type templateOpts struct {
 	g         *globalOpts
 	source    string
-	message   string
 	force     bool
 	dryRun    bool
 	newClient func(context.Context) (templateClient, error)
-	squash    squashFunc
 }
 
 func newTemplateCmd(g *globalOpts) *cobra.Command {
 	o := &templateOpts{
 		g:         g,
 		newClient: func(context.Context) (templateClient, error) { return gh.New() },
-		squash:    git.Squash,
 	}
 	cmd := &cobra.Command{
 		Use:   "template <name>",
-		Short: "Prepare a squashed template for an assignment",
+		Short: "Prepare a single-commit template for an assignment",
 		Long: `Derive a single-commit template repo (<name>-template) in the semester org
 from the maintained source template, so the source template's development
 history is never exposed to students. Run once per assignment, before assign.
 
-Requires git on PATH; clone and push use your existing git credentials.`,
+The derived template is produced through GitHub's own template generation, which
+copies the source's files as one fresh commit without its history. This uses only
+the GitHub API — no local clone, no git binary, and no separate git credentials.`,
 		Example: "  gh cls template hw1",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -61,7 +52,6 @@ Requires git on PATH; clone and push use your existing git credentials.`,
 	}
 	f := cmd.Flags()
 	f.StringVarP(&o.source, "template", "t", "", "source template repo (owner/name), overriding config")
-	f.StringVarP(&o.message, "message", "m", defaultSquashMessage, "commit message for the flattened commit")
 	f.BoolVarP(&o.force, "force", "F", false, "overwrite an existing <name>-template")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "describe what would be created without doing it")
 	return cmd
@@ -96,11 +86,11 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 	if o.dryRun {
 		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
 		fmt.Fprintf(out, "Would derive %s/%s from %s:\n", org, derived, source)
-		fmt.Fprintf(out, "  - shallow-clone %s and flatten to one commit (%q)\n", source, o.message)
 		if o.force {
 			fmt.Fprintf(out, "  - overwrite %s/%s if it already exists\n", org, derived)
 		}
-		fmt.Fprintf(out, "  - create private %s/%s and mark it a template repository\n", org, derived)
+		fmt.Fprintf(out, "  - generate a private %s/%s from %s as a single commit (no source history)\n", org, derived, source)
+		fmt.Fprintf(out, "  - mark %s/%s as a template repository\n", org, derived)
 		return nil
 	}
 
@@ -110,6 +100,26 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 	}
 	if err := requireOwner(ctx, client, org); err != nil {
 		return err
+	}
+
+	// Verify the source exists before anything destructive happens: with --force
+	// the existing template is deleted below, and a good template must never be
+	// destroyed only to discover the source it would be rebuilt from is gone.
+	srcRepo, exists, err := client.GetRepo(ctx, srcOwner, srcName)
+	if err != nil {
+		return fmt.Errorf("reading source template %s: %w", source, err)
+	}
+	if !exists {
+		return fmt.Errorf("source template %s not found", source)
+	}
+
+	// Generating a repository from another requires the source to be marked a
+	// template repository. The source is one by role, so ensure the flag is set;
+	// this is a no-op when it already is.
+	if !srcRepo.IsTemplate {
+		if err := client.SetRepoTemplate(ctx, srcOwner, srcName); err != nil {
+			return fmt.Errorf("marking source %s as a template repository (required to generate from it): %w", source, err)
+		}
 	}
 
 	if _, exists, err := client.GetRepo(ctx, org, derived); err != nil {
@@ -123,29 +133,17 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 		}
 	}
 
-	srcRepo, exists, err := client.GetRepo(ctx, srcOwner, srcName)
-	if err != nil {
-		return fmt.Errorf("reading source template %s: %w", source, err)
-	}
-	if !exists {
-		return fmt.Errorf("source template %s not found", source)
-	}
-
-	newRepo, err := client.CreateOrgRepo(ctx, org, derived, true)
-	if err != nil {
-		return fmt.Errorf("creating %s/%s: %w", org, derived, err)
-	}
-
-	branch, err := o.squash(ctx, srcRepo.CloneURL, newRepo.CloneURL, o.message)
-	if err != nil {
-		return fmt.Errorf("squashing template: %w", err)
+	// Template generation copies the source's files as a single fresh commit on
+	// its default branch, exposing none of the source's history.
+	if err := client.GenerateFromTemplate(ctx, srcOwner, srcName, org, derived, true, false); err != nil {
+		return fmt.Errorf("generating %s/%s from %s: %w", org, derived, source, err)
 	}
 
 	if err := client.SetRepoTemplate(ctx, org, derived); err != nil {
 		return fmt.Errorf("marking %s/%s as a template: %w", org, derived, err)
 	}
 
-	fmt.Fprintf(out, "Created %s/%s — single commit on %s, marked as a template repository.\n", org, derived, branch)
+	fmt.Fprintf(out, "Created %s/%s — single commit generated from %s, marked as a template repository.\n", org, derived, source)
 	return nil
 }
 

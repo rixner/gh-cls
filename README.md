@@ -15,8 +15,9 @@ gh extension install rixner/gh-cls
 ```
 
 Requires the [`gh`](https://cli.github.com) CLI (authenticated via `gh auth
-login`) and, for `gh cls template`, `git` on your PATH. The extension inherits
-your existing `gh` authentication and never handles tokens itself.
+login`). The extension inherits your existing `gh` authentication and never
+handles tokens itself; every command, including `template`, runs purely against
+the GitHub API, so no `git` binary or separate git credentials are needed.
 
 ## Student Information
 
@@ -71,7 +72,7 @@ Every mutating command requires you to be an organization **owner** and accepts
 # 1. Per-semester: harden the org and record it in config (requires --org).
 gh cls setup --org cs101-spring26 --staff-team staff
 
-# 2. Per-assignment: derive a single-commit <name>-template in the org.
+# 2. Per-assignment: generate a single-commit <name>-template in the org.
 gh cls template hw1
 
 # 3. Create one repo per student (or team), granting push + staff access.
@@ -86,8 +87,10 @@ gh cls freeze hw1 --undo
 - **setup** sets base permission to none, disables member repo/Pages creation
   and Actions org-wide, reports Copilot status, and ensures the staff team. All
   actions are idempotent and report changed vs already-in-desired-state.
-- **template** flattens the maintained source template to one commit so its
-  history is never exposed; `-F` replaces an existing one. Requires `git`.
+- **template** generates `<name>-template` from the maintained source template
+  via GitHub's template generation, so the source's history is never exposed (the
+  derived repo is one fresh commit). It marks the source as a template repository
+  if needed, since generation requires it. `-F` replaces an existing one.
 - **assign** runs preflight checks (type/inputs, in-org template, all-branches
   single-commit, roster/teams consistency), then generates repos concurrently.
   `-b` applies an all-branches ruleset blocking force-push and deletion; `-f
@@ -106,5 +109,5 @@ the **org** shows "Team" (required for `--branch-protection`).
 
 ```sh
 go build ./...   # builds the gh-cls binary
-go test ./...    # all tests run locally (no network); git squash uses real git
+go test ./...    # all tests run locally against fakes (no network)
 ```

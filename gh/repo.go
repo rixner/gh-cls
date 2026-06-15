@@ -33,8 +33,8 @@ func (c *restClient) CreateOrgRepo(ctx context.Context, org, name string, privat
 }
 
 // SetRepoTemplate marks a repository as a template repository.
-func (c *restClient) SetRepoTemplate(ctx context.Context, org, name string) error {
-	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(name))
+func (c *restClient) SetRepoTemplate(ctx context.Context, owner, name string) error {
+	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(name))
 	_, err := c.do(ctx, "PATCH", path, map[string]any{"is_template": true}, nil)
 	return err
 }

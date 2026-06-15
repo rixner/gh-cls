@@ -21,7 +21,7 @@ type Client interface {
 	// CreateOrgRepo creates an empty repository in the org.
 	CreateOrgRepo(ctx context.Context, org, name string, private bool) (*Repo, error)
 	// SetRepoTemplate marks a repository as a template repository.
-	SetRepoTemplate(ctx context.Context, org, name string) error
+	SetRepoTemplate(ctx context.Context, owner, name string) error
 	// DeleteRepo deletes a repository.
 	DeleteRepo(ctx context.Context, org, name string) error
 
