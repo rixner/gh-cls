@@ -37,20 +37,21 @@ team-beta: [student-002]
 
 // fakeAssignClient is a concurrency-safe stand-in for the assign operations.
 type fakeAssignClient struct {
-	mu        sync.Mutex
-	role      string
-	teamID    int64
-	hasIssues bool
-	exists    map[string]bool
-	branches  []gh.BranchCount
-	generated []string
-	collabs   []string
-	teamRepos []string
-	rulesets  map[string]int64 // repo -> staff team ID used in bypass
-	refs      []string         // "repo:ref"
-	prs       []string         // "repo:head->base"
-	issues    []string         // repo
-	enabled   []string         // repos where issues were enabled
+	mu             sync.Mutex
+	role           string
+	teamID         int64
+	hasIssues      bool
+	withholdBranch bool // simulate generation that never lands the default branch
+	exists         map[string]bool
+	branches       []gh.BranchCount
+	generated      []string
+	collabs        []string
+	teamRepos      []string
+	rulesets       map[string]int64 // repo -> staff team ID used in bypass
+	refs           []string         // "repo:ref"
+	prs            []string         // "repo:head->base"
+	issues         []string         // repo
+	enabled        []string         // repos where issues were enabled
 }
 
 func (f *fakeAssignClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -77,6 +78,12 @@ func (f *fakeAssignClient) GenerateFromTemplate(_ context.Context, _, _, owner, 
 	defer f.mu.Unlock()
 	f.exists[owner+"/"+name] = true
 	f.generated = append(f.generated, name)
+	// Generation lands the default branch; record it so the readiness check
+	// (waitRepoReady -> BranchExists) sees a populated repo. withholdBranch
+	// simulates a generation whose content never appears.
+	if !f.withholdBranch {
+		f.refs = append(f.refs, name+":refs/heads/main")
+	}
 	return nil
 }
 
@@ -420,9 +427,11 @@ func TestAssignFeedbackIssueSkipsEnableWhenOn(t *testing.T) {
 	}
 }
 
-func TestAssignProtectionNewOnlyFeedbackReconciled(t *testing.T) {
-	// An existing repo is reused: branch protection is not re-applied, but the
-	// feedback artifact is reconciled (a missing one is created).
+func TestAssignProtectionAndFeedbackReconciled(t *testing.T) {
+	// An existing repo is reused: both branch protection and the feedback artifact
+	// are reconciled. Re-applying protection (ApplyRuleset is idempotent) repairs a
+	// repo that was created but never protected on a prior partial run, instead of
+	// leaving it permanently unprotected.
 	fake := newFakeAssign("admin")
 	fake.exists["cs101-spring26/hw1-ada"] = true
 	o := newAssignOpts(t, fake, assignRoster, "")
@@ -431,8 +440,8 @@ func TestAssignProtectionNewOnlyFeedbackReconciled(t *testing.T) {
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", ov); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := fake.rulesets["hw1-ada"]; ok {
-		t.Error("ruleset should not be applied to a reused repo")
+	if _, ok := fake.rulesets["hw1-ada"]; !ok {
+		t.Error("branch protection should be reconciled (re-applied) on a reused repo")
 	}
 	if !contains(fake.issues, "hw1-ada") {
 		t.Error("feedback should be reconciled on a reused repo that lacks it")
@@ -498,6 +507,24 @@ func TestAssignFeedbackIssueIdempotent(t *testing.T) {
 	}
 	if count(fake.issues, "hw1-ada") != 1 {
 		t.Errorf("existing feedback issue should not be duplicated: %v", fake.issues)
+	}
+}
+
+func TestAssignWaitsForContent(t *testing.T) {
+	// A generated repo whose default branch never lands must be reported as a
+	// failure, not silently treated as ready (which would let assign create a
+	// feedback ref against, or grant access to, an empty shell).
+	fake := newFakeAssign("admin")
+	fake.withholdBranch = true
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("a repo that never becomes ready should fail the run, got %v", err)
+	}
+	// No grants should be asserted on a repo that never became ready.
+	if len(fake.collabs) != 0 {
+		t.Errorf("no access should be granted before the repo is ready: %v", fake.collabs)
 	}
 }
 

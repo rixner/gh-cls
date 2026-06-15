@@ -5,6 +5,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rixner/gh-cls/gh"
 )
@@ -18,11 +19,12 @@ type generateCall struct {
 // fakeTemplateClient stands in for the GitHub operations template uses, keyed by
 // "owner/name", recording mutations.
 type fakeTemplateClient struct {
-	role      string
-	repos     map[string]*gh.Repo
-	generated []generateCall
-	deleted   []string
-	templated []string
+	role         string
+	repos        map[string]*gh.Repo
+	generated    []generateCall
+	deleted      []string
+	templated    []string
+	markWontTake bool // SetRepoTemplate "succeeds" but the is_template flag never sticks
 }
 
 func (f *fakeTemplateClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -35,7 +37,7 @@ func (f *fakeTemplateClient) GetRepo(_ context.Context, owner, name string) (*gh
 func (f *fakeTemplateClient) SetRepoTemplate(_ context.Context, owner, name string) error {
 	key := owner + "/" + name
 	f.templated = append(f.templated, key)
-	if r, ok := f.repos[key]; ok {
+	if r, ok := f.repos[key]; ok && !f.markWontTake {
 		r.IsTemplate = true
 	}
 	return nil
@@ -49,6 +51,11 @@ func (f *fakeTemplateClient) GenerateFromTemplate(_ context.Context, tmplOwner, 
 	f.repos[key] = &gh.Repo{Name: name, Private: private, DefaultBranch: "main"}
 	f.generated = append(f.generated, generateCall{tmpl: tmplOwner + "/" + tmplRepo, dst: key, private: private})
 	return nil
+}
+
+func (f *fakeTemplateClient) BranchExists(_ context.Context, owner, name, branch string) (bool, error) {
+	r, ok := f.repos[owner+"/"+name]
+	return ok && r.DefaultBranch == branch, nil
 }
 
 func (f *fakeTemplateClient) DeleteRepo(_ context.Context, org, name string) error {
@@ -68,6 +75,7 @@ func newTemplateOpts(t *testing.T, fake *fakeTemplateClient, source string, forc
 		force:     force,
 		dryRun:    dryRun,
 		newClient: func(context.Context) (templateClient, error) { return fake, nil },
+		sleep:     func(time.Duration) {},
 	}
 }
 
@@ -193,5 +201,27 @@ func TestTemplateDryRun(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "DRY RUN") {
 		t.Errorf("dry-run output should be labeled: %s", buf.String())
+	}
+}
+
+func TestTemplateRollsBackWhenMarkFails(t *testing.T) {
+	// The repo generates, but marking it a template never takes effect. The
+	// command must verify that post-condition, fail, and roll back the unusable
+	// repo so no broken <name>-template is left for assign to generate from.
+	fake := &fakeTemplateClient{role: "admin", repos: withSource(), markWontTake: true}
+	o := newTemplateOpts(t, fake, "cs101-templates/hw1-starter", false, false)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "not marked a template") {
+		t.Fatalf("want a post-condition failure about the template flag, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "rolled back") {
+		t.Errorf("error should report the rollback: %v", err)
+	}
+	if !contains(fake.deleted, "cs101-spring26/hw1-template") {
+		t.Errorf("the unusable repo should be rolled back (deleted), deleted = %v", fake.deleted)
+	}
+	if _, ok := fake.repos["cs101-spring26/hw1-template"]; ok {
+		t.Error("no broken template repo should remain after rollback")
 	}
 }

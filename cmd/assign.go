@@ -309,7 +309,7 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 			res.err = fmt.Errorf("generating %s: %w", repo, err)
 			return res
 		}
-		if info, err = o.pollReady(ctx, client, org, repo); err != nil {
+		if info, err = waitRepoReady(ctx, client, o.sleep, org, repo); err != nil {
 			res.err = err
 			return res
 		}
@@ -330,8 +330,11 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 		}
 	}
 
-	// Branch protection is applied once, with the repo, not re-applied on reuse.
-	if res.status == "created" && policy.BranchProtection {
+	// Branch protection is reconciled on every run, not only when the repo is
+	// first created: ApplyRuleset is idempotent (it no-ops when the ruleset is
+	// already present), so a transient failure on a prior run is repaired here
+	// instead of leaving an existing repo permanently unprotected.
+	if policy.BranchProtection {
 		if err := client.ApplyRuleset(ctx, org, repo, staffTeamID); err != nil {
 			res.err = fmt.Errorf("applying branch protection to %s: %w", repo, err)
 			return res
@@ -393,18 +396,6 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 		}
 	}
 	return nil
-}
-
-// pollReady waits for an asynchronously-generated repository to appear and
-// returns it.
-func (o *assignOpts) pollReady(ctx context.Context, client assignClient, org, repo string) (*gh.Repo, error) {
-	for i := 0; i < readyAttempts; i++ {
-		if r, exists, err := client.GetRepo(ctx, org, repo); err == nil && exists {
-			return r, nil
-		}
-		o.sleep(readyDelay)
-	}
-	return nil, fmt.Errorf("repository %s/%s did not become ready after generation", org, repo)
 }
 
 // reportResults summarizes the run and returns an error if any unit failed.

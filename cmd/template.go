@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
@@ -17,6 +18,7 @@ type templateClient interface {
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
 	SetRepoTemplate(ctx context.Context, owner, name string) error
 	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
+	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	DeleteRepo(ctx context.Context, org, name string) error
 }
 
@@ -27,12 +29,14 @@ type templateOpts struct {
 	force     bool
 	dryRun    bool
 	newClient func(context.Context) (templateClient, error)
+	sleep     func(time.Duration)
 }
 
 func newTemplateCmd(g *globalOpts) *cobra.Command {
 	o := &templateOpts{
 		g:         g,
 		newClient: func(context.Context) (templateClient, error) { return gh.New() },
+		sleep:     time.Sleep,
 	}
 	cmd := &cobra.Command{
 		Use:   "template <name>",
@@ -139,11 +143,43 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 		return fmt.Errorf("generating %s/%s from %s: %w", org, derived, source, err)
 	}
 
-	if err := client.SetRepoTemplate(ctx, org, derived); err != nil {
-		return fmt.Errorf("marking %s/%s as a template: %w", org, derived, err)
+	// From here the derived repo exists. If finishing it fails, it is unusable
+	// (empty, or not actually a template), so roll it back rather than leave a
+	// broken <name>-template for assign to trip over.
+	if err := o.finishTemplate(ctx, client, org, derived); err != nil {
+		if delErr := client.DeleteRepo(ctx, org, derived); delErr != nil {
+			return fmt.Errorf("%w; additionally, rolling back %s/%s failed — delete it manually before retrying: %v", err, org, derived, delErr)
+		}
+		return fmt.Errorf("%w (rolled back %s/%s; re-run to try again)", err, org, derived)
 	}
 
 	fmt.Fprintf(out, "Created %s/%s — single commit generated from %s, marked as a template repository.\n", org, derived, source)
+	return nil
+}
+
+// finishTemplate confirms a freshly generated repo is populated, marks it a
+// template, and verifies that flag actually took. Each step is a post-condition
+// assign depends on: it generates student repos from this template, which only
+// works if the template has content and is itself marked a template repository.
+func (o *templateOpts) finishTemplate(ctx context.Context, client templateClient, org, derived string) error {
+	// Generation is asynchronous: wait until the repo's default branch lands so
+	// the template is not marked usable while still empty.
+	if _, err := waitRepoReady(ctx, client, o.sleep, org, derived); err != nil {
+		return err
+	}
+	if err := client.SetRepoTemplate(ctx, org, derived); err != nil {
+		return fmt.Errorf("marking %s/%s as a template: %w", org, derived, err)
+	}
+	repo, exists, err := client.GetRepo(ctx, org, derived)
+	if err != nil {
+		return fmt.Errorf("verifying %s/%s: %w", org, derived, err)
+	}
+	if !exists {
+		return fmt.Errorf("%s/%s disappeared right after it was created", org, derived)
+	}
+	if !repo.IsTemplate {
+		return fmt.Errorf("%s/%s was not marked a template repository (the change did not take effect)", org, derived)
+	}
 	return nil
 }
 

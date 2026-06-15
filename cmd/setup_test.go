@@ -23,6 +23,7 @@ type fakeSetupClient struct {
 	patched        map[string]any
 	actionsSet     string
 	createdTeam    string
+	ignorePatches  bool // accept PATCH/PUT calls but leave the org state unchanged
 }
 
 func (f *fakeSetupClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -36,6 +37,21 @@ func (f *fakeSetupClient) PatchOrg(_ context.Context, _ string, fields map[strin
 	}
 	for k, v := range fields {
 		f.patched[k] = v
+		if f.ignorePatches {
+			continue
+		}
+		// Apply to the org state so a later GetOrg (the post-condition check) sees
+		// the change, mirroring a tier that honors the setting.
+		switch k {
+		case "default_repository_permission":
+			f.settings.DefaultRepositoryPermission = v.(string)
+		case "members_can_create_repositories":
+			b := v.(bool)
+			f.settings.MembersCanCreateRepositories = &b
+		case "members_can_create_pages":
+			b := v.(bool)
+			f.settings.MembersCanCreatePages = &b
+		}
 	}
 	return nil
 }
@@ -44,6 +60,9 @@ func (f *fakeSetupClient) GetActionsPermissions(context.Context, string) (*gh.Ac
 }
 func (f *fakeSetupClient) SetActionsEnabledRepositories(_ context.Context, _, v string) error {
 	f.actionsSet = v
+	if !f.ignorePatches {
+		f.actions = v
+	}
 	return nil
 }
 func (f *fakeSetupClient) CopilotSeatCount(context.Context, string) (int, bool, error) {
@@ -151,6 +170,35 @@ func TestSetupAlreadyHardened(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "already") {
 		t.Errorf("expected 'already' statuses:\n%s", buf.String())
+	}
+}
+
+func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
+	// The API accepts every change but the org silently ignores them (as some plan
+	// tiers do). setup must re-read, notice the org is not actually hardened, and
+	// warn loudly rather than report success.
+	yes := true
+	fake := &fakeSetupClient{
+		role:          "admin",
+		settings:      gh.OrgSettings{DefaultRepositoryPermission: "write", MembersCanCreateRepositories: &yes},
+		actions:       "all",
+		ignorePatches: true,
+	}
+	o, _ := newSetupOpts(t, fake, "cs101-spring26", "", false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		`still "write" after the change`,
+		"member repository creation",
+		`still "all" after the change`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("expected a post-condition warning containing %q:\n%s", want, out)
+		}
 	}
 }
 

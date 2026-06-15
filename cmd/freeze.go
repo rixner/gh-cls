@@ -127,7 +127,40 @@ func (o *freezeOpts) processRepo(ctx context.Context, client freezeClient, org, 
 			return res
 		}
 	}
+
+	// Post-condition: re-read and confirm the gate actually moved. The freeze is
+	// the deadline lock, so it is never reported done on the strength of the write
+	// call alone — a 200 is not proof the permission changed.
+	if !o.dryRun {
+		if err := o.verifyResult(ctx, client, org, repo); err != nil {
+			res.err = err
+			return res
+		}
+	}
 	return res
+}
+
+// verifyResult re-reads a repo's direct collaborators and confirms the end state
+// the operation intended: after a freeze no non-admin retains write; after an
+// undo every non-admin holds push.
+func (o *freezeOpts) verifyResult(ctx context.Context, client freezeClient, org, repo string) error {
+	collaborators, err := client.ListDirectCollaborators(ctx, org, repo)
+	if err != nil {
+		return fmt.Errorf("verifying %s after the change: %w", repo, err)
+	}
+	for _, c := range collaborators {
+		if c.Permissions.Admin {
+			continue
+		}
+		if o.undo {
+			if !c.Permissions.Push {
+				return fmt.Errorf("unfreeze of %s did not take: %s still lacks push", repo, c.Login)
+			}
+		} else if c.Permissions.Push || c.Permissions.Maintain || c.Permissions.Triage {
+			return fmt.Errorf("freeze of %s did not take: %s still has write access", repo, c.Login)
+		}
+	}
+	return nil
 }
 
 // target returns the permission to set for a non-admin collaborator, or "" to

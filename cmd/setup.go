@@ -193,7 +193,46 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 		results = append(results, result{"staff team", statusChanged, "created " + staffTeam})
 	}
 
+	// Post-condition: re-read the org and confirm the settings we changed actually
+	// took. Some plan tiers silently accept a PATCH without applying it, so a 200
+	// is not proof; any setting that did not stick becomes a loud warning so the
+	// instructor knows to set it by hand rather than assuming the org is hardened.
+	results = append(results, verifyHardening(ctx, client, org)...)
+
 	return results, nil
+}
+
+// verifyHardening re-reads the org and returns a warning for each setting that
+// did not reach its hardened value. It returns nothing when everything stuck,
+// keeping a clean run quiet.
+func verifyHardening(ctx context.Context, client setupClient, org string) []result {
+	var warnings []result
+
+	cur, err := client.GetOrg(ctx, org)
+	if err != nil {
+		return append(warnings, result{"verification", statusWarning, "could not re-read org settings to confirm: " + err.Error()})
+	}
+	if cur.DefaultRepositoryPermission != "none" {
+		warnings = append(warnings, result{"base repository permission", statusWarning,
+			fmt.Sprintf("still %q after the change — your plan may not allow it; set it manually", cur.DefaultRepositoryPermission)})
+	}
+	if cur.MembersCanCreateRepositories != nil && *cur.MembersCanCreateRepositories {
+		warnings = append(warnings, result{"member repository creation", statusWarning, "still enabled after the change — set it manually"})
+	}
+	if cur.MembersCanCreatePages != nil && *cur.MembersCanCreatePages {
+		warnings = append(warnings, result{"member Pages creation", statusWarning, "still enabled after the change — set it manually"})
+	}
+
+	ap, err := client.GetActionsPermissions(ctx, org)
+	if err != nil {
+		return append(warnings, result{"verification", statusWarning, "could not re-read Actions policy to confirm: " + err.Error()})
+	}
+	if ap.EnabledRepositories != "none" {
+		warnings = append(warnings, result{"GitHub Actions", statusWarning,
+			fmt.Sprintf("still %q after the change — set it manually", ap.EnabledRepositories)})
+	}
+
+	return warnings
 }
 
 // toggleOff sets a boolean org setting to false, reporting changed/already, or a

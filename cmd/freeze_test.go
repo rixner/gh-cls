@@ -28,11 +28,12 @@ func collab(login, level string) gh.Collaborator {
 }
 
 type fakeFreezeClient struct {
-	mu      sync.Mutex
-	role    string
-	repos   []gh.Repo
-	collabs map[string][]gh.Collaborator
-	changes []string // "repo:user=permission"
+	mu        sync.Mutex
+	role      string
+	repos     []gh.Repo
+	collabs   map[string][]gh.Collaborator
+	changes   []string // "repo:user=permission"
+	dontApply bool     // record the change but leave the permission unchanged
 }
 
 func (f *fakeFreezeClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -48,13 +49,30 @@ func (f *fakeFreezeClient) ListOrgReposByPrefix(_ context.Context, _, prefix str
 }
 
 func (f *fakeFreezeClient) ListDirectCollaborators(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
-	return f.collabs[repo], nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	cs := f.collabs[repo]
+	out := make([]gh.Collaborator, len(cs))
+	copy(out, cs)
+	return out, nil
 }
 
 func (f *fakeFreezeClient) AddCollaborator(_ context.Context, _, repo, username, permission string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.changes = append(f.changes, repo+":"+username+"="+permission)
+	if f.dontApply {
+		return nil
+	}
+	// Reflect the new permission so a subsequent re-read (the post-condition
+	// verification) sees the change, as the real API would.
+	cs := f.collabs[repo]
+	for i := range cs {
+		if cs[i].Login == username {
+			cs[i] = collab(username, permission)
+		}
+	}
+	f.collabs[repo] = cs
 	return nil
 }
 
@@ -126,6 +144,20 @@ func TestFreezeUndoRestoresPush(t *testing.T) {
 		if strings.Contains(c, "prof") {
 			t.Error("admins must be left untouched by undo")
 		}
+	}
+}
+
+func TestFreezeVerifiesDowngradeTookEffect(t *testing.T) {
+	// The API accepts the downgrade but it does not actually take effect. The
+	// freeze must re-read, detect the still-open gate, and fail loudly rather than
+	// report a deadline lock that never happened.
+	fake := freezeFake("admin")
+	fake.dontApply = true
+	o := newFreezeOpts(t, fake, false, false)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("freeze should fail when the downgrade did not take, got %v", err)
 	}
 }
 
