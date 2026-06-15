@@ -27,6 +27,22 @@ sole owner cannot test (see *The freeze caveat* below).
    membership** in the sandbox org once (invite it, then accept from that
    account). After that, repo grants to it take effect immediately.
 
+## Install the extension under test
+
+Both runs below invoke `gh cls`, which resolves to whatever `cls` extension is
+installed — *not* automatically your working copy. Install the local checkout so
+`gh cls` runs the code you are testing rather than the published release:
+
+```
+go build ./...          # produces the ./gh-cls binary
+gh extension remove cls # only if a published copy is already installed
+gh extension install .  # registers this directory as `gh cls`
+```
+
+`gh` strips the `gh-` prefix, so the `gh-cls` binary becomes the `gh cls`
+command. The install is a symlink to this directory, so a later `go build ./...`
+is picked up with no reinstall.
+
 ## The freeze caveat (why a second account matters)
 
 `freeze` downgrades every *non-admin* direct collaborator from write to read and
