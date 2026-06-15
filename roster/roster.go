@@ -6,6 +6,8 @@
 // from it. Callers must likewise keep this data out of every repository.
 package roster
 
+import "strings"
+
 // Roster is an in-memory view of the enrollment file: identifier -> GitHub
 // username, with identifiers retained in file order for stable iteration.
 type Roster struct {
@@ -17,6 +19,19 @@ type Roster struct {
 func (r *Roster) Lookup(id string) (string, bool) {
 	u, ok := r.byID[id]
 	return u, ok
+}
+
+// ByUsername returns the reverse mapping, GitHub username -> identifier, with
+// usernames lower-cased because GitHub logins are case-insensitive. It lets a
+// caller turn a username observed on GitHub (a collaborator or an invitation's
+// invitee) back into the student identifier for an audit. If two identifiers
+// share a username (a roster error), the later one wins.
+func (r *Roster) ByUsername() map[string]string {
+	rev := make(map[string]string, len(r.ids))
+	for _, id := range r.ids {
+		rev[strings.ToLower(r.byID[id])] = id
+	}
+	return rev
 }
 
 // IDs returns the student identifiers in the order they appeared in the file.

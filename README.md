@@ -79,7 +79,11 @@ gh cls template hw1
 gh cls assign hw1 --roster roster.csv
 gh cls assign project --roster roster.csv --teams teams.yml --branch-protection
 
-# 4. At the deadline: downgrade students from write to read (reverse with -u).
+# 4. Anytime: reconcile who should be on each repo against who actually is.
+gh cls audit hw1 --roster roster.csv
+gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
+
+# 5. At the deadline: downgrade students from write to read (reverse with -u).
 gh cls freeze hw1
 gh cls freeze hw1 --undo
 ```
@@ -96,6 +100,14 @@ gh cls freeze hw1 --undo
   `-b` applies an all-branches ruleset blocking force-push and deletion; `-f
   pr|issue` adds a feedback artifact. Idempotent: existing repos are skipped but
   access grants are re-asserted.
+- **audit** reconciles the students who should be on the `<name>-*` repos
+  (resolved from the roster, plus the teams file for a group assignment) against
+  the actual state, reporting each as *on repo*, *invited (pending)*, *invited
+  (EXPIRED)*, *MISSING*, or *NO REPO*, and flagging access that is present but not
+  expected. Because students join as outside collaborators — a grant becomes an
+  invitation they must accept within seven days — `--renew` re-issues access for
+  everyone whose invitation expired or who is missing entirely (it never removes
+  access). `--all` lists everyone, not just those needing attention.
 - **freeze** operates purely on each repo's current direct collaborators, never
   the roster, so a drifted roster cannot let anyone escape the freeze.
 

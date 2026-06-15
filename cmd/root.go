@@ -96,6 +96,7 @@ student and team repositories, and freezing them at a deadline.`,
 		newTemplateCmd(g),
 		newAssignCmd(g),
 		newFreezeCmd(g),
+		newAuditCmd(g),
 	)
 	return root
 }

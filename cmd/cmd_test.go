@@ -55,6 +55,7 @@ func TestLocalFlagMatrix(t *testing.T) {
 		"template": {"t": "template", "F": "force", "n": "dry-run"},
 		"assign":   {"r": "roster", "T": "teams", "p": "public", "b": "branch-protection", "a": "all-branches", "f": "feedback", "U": "allow-unsquashed", "n": "dry-run"},
 		"freeze":   {"u": "undo", "n": "dry-run"},
+		"audit":    {"r": "roster", "T": "teams", "n": "dry-run"},
 	}
 	for name, want := range cases {
 		cmd := subcommand(t, name)

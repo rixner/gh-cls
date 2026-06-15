@@ -107,3 +107,41 @@ func TestListDirectCollaborators(t *testing.T) {
 		t.Errorf("expected two pages, got %d requests", f.calls)
 	}
 }
+
+func TestListRepoInvitations(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`[{"id":1,"invitee":{"login":"ada"},"expired":false},{"id":2,"invitee":{"login":"alan"},"expired":true}]`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	out, err := c.ListRepoInvitations(context.Background(), "org", "hw1-ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 2 {
+		t.Fatalf("got %d invitations, want 2", len(out))
+	}
+	if out[0].ID != 1 || out[0].Invitee.Login != "ada" || out[0].Expired {
+		t.Errorf("decoded[0] = %+v", out[0])
+	}
+	if out[1].ID != 2 || !out[1].Expired {
+		t.Errorf("decoded[1] should be the expired invitation: %+v", out[1])
+	}
+	if !strings.Contains(f.paths[0], "invitations") {
+		t.Errorf("path = %q", f.paths[0])
+	}
+}
+
+func TestDeleteRepoInvitation(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	if err := c.DeleteRepoInvitation(context.Background(), "org", "hw1-ada", 555); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "DELETE" || f.paths[0] != "repos/org/hw1-ada/invitations/555" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+}

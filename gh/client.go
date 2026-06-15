@@ -73,6 +73,8 @@ type Client interface {
 	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]Collaborator, error)
 	// ListRepoInvitations returns a repo's pending collaborator invitations.
 	ListRepoInvitations(ctx context.Context, owner, repo string) ([]Invitation, error)
+	// DeleteRepoInvitation cancels a repository invitation by ID.
+	DeleteRepoInvitation(ctx context.Context, owner, repo string, id int64) error
 }
 
 // Repo is the subset of a repository's fields the tool inspects.
