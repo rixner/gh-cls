@@ -80,9 +80,11 @@ func NewRootCmd() *cobra.Command {
 		Long: `gh cls manages a course's per-semester GitHub organization:
 hardening the org, preparing squashed assignment templates, bulk-creating
 student and team repositories, and freezing them at a deadline.`,
-		// Errors are returned to main for reporting; cobra should not also dump
-		// usage text on every operational failure.
-		SilenceUsage: true,
+		// Errors are returned to main for reporting; cobra should neither print
+		// the error itself (main does, once) nor dump usage text on every
+		// operational failure.
+		SilenceErrors: true,
+		SilenceUsage:  true,
 		Version:      resolveVersion(),
 	}
 
