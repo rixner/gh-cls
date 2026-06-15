@@ -42,7 +42,7 @@ func TestResolveIndividual(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.HasWarnings() {
+	if len(rep.UnassignedIDs) > 0 {
 		t.Errorf("individual resolve should have no warnings, got %+v", rep)
 	}
 	want := []unit.Unit{
@@ -70,7 +70,7 @@ func TestResolveGroup(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.HasWarnings() {
+	if len(rep.UnassignedIDs) > 0 {
 		t.Errorf("no warnings expected, got %+v", rep)
 	}
 	want := []unit.Unit{

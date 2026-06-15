@@ -78,7 +78,6 @@ type Client interface {
 // Repo is the subset of a repository's fields the tool inspects.
 type Repo struct {
 	Name          string `json:"name"`
-	FullName      string `json:"full_name"`
 	Private       bool   `json:"private"`
 	DefaultBranch string `json:"default_branch"`
 	IsTemplate    bool   `json:"is_template"`

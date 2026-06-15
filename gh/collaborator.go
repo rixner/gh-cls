@@ -26,7 +26,6 @@ type Invitation struct {
 	Invitee struct {
 		Login string `json:"login"`
 	} `json:"invitee"`
-	Permissions string `json:"permissions"`
 }
 
 // ListOrgReposByPrefix returns every repository in the org whose name starts

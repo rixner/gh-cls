@@ -7,6 +7,3 @@ type Report struct {
 	// surfaced as a warning so it is never silent.
 	UnassignedIDs []string
 }
-
-// HasWarnings reports whether the Report holds anything worth printing.
-func (r Report) HasWarnings() bool { return len(r.UnassignedIDs) > 0 }

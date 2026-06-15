@@ -6,12 +6,10 @@ import (
 	"net/url"
 )
 
-// Team is the subset of a team's fields the tool needs. ID is required to name a
-// team as a ruleset bypass actor.
+// Team is the subset of a team's fields the tool needs: its ID, required to name
+// the team as a ruleset bypass actor.
 type Team struct {
-	ID   int64  `json:"id"`
-	Slug string `json:"slug"`
-	Name string `json:"name"`
+	ID int64 `json:"id"`
 }
 
 // GetTeam fetches a team by slug, reporting existence via the bool.

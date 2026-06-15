@@ -73,7 +73,7 @@ func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.R
 }
 
 func (f *fakeAssignClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
-	return &gh.Team{Slug: "staff", ID: f.teamID}, true, nil
+	return &gh.Team{ID: f.teamID}, true, nil
 }
 
 func (f *fakeAssignClient) ListBranchesWithCommitCount(context.Context, string, string) ([]gh.BranchCount, error) {

@@ -15,7 +15,7 @@ func TestGetTeam(t *testing.T) {
 		if err != nil || !exists {
 			t.Fatalf("want exists, got exists=%v err=%v", exists, err)
 		}
-		if team.ID != 42 || team.Slug != "staff" {
+		if team.ID != 42 {
 			t.Errorf("decoded %+v", team)
 		}
 		if f.paths[0] != "orgs/org/teams/staff" {

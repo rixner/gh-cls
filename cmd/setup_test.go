@@ -72,11 +72,11 @@ func (f *fakeSetupClient) GetTeam(context.Context, string, string) (*gh.Team, bo
 	if !f.teamExists {
 		return nil, false, nil
 	}
-	return &gh.Team{Slug: "staff", ID: 1}, true, nil
+	return &gh.Team{ID: 1}, true, nil
 }
 func (f *fakeSetupClient) CreateTeam(_ context.Context, _, name string) (*gh.Team, error) {
 	f.createdTeam = name
-	return &gh.Team{Slug: name, ID: 2}, nil
+	return &gh.Team{ID: 2}, nil
 }
 
 // newSetupOpts builds setupOpts wired to a fake, writing config into a temp dir.
