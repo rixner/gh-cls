@@ -8,14 +8,15 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// WriteOrg sets the org key in the config at path, creating the file (and any
-// parent directories) if it does not exist. It returns the previous org value
+// WriteSetup records the values setup owns in the config at path: the org
+// (always) and, when non-empty, the staff team. It creates the file (and any
+// parent directories) if it does not exist, and returns the previous org value
 // (empty if the key was absent) so the caller can announce the change.
 //
 // The file is edited through a yaml.Node tree rather than a marshal of the
 // Config struct, so existing comments, key order, and any keys this tool does
 // not model are preserved.
-func WriteOrg(path, org string) (previous string, err error) {
+func WriteSetup(path, org, staffTeam string) (previousOrg string, err error) {
 	var doc yaml.Node
 	data, readErr := os.ReadFile(path)
 	switch {
@@ -27,7 +28,13 @@ func WriteOrg(path, org string) (previous string, err error) {
 		return "", fmt.Errorf("reading config %s: %w", path, readErr)
 	}
 
-	previous = setOrg(&doc, org)
+	// org is pinned to the top of the file; staff_team follows it. The staff team
+	// is recorded only when known, so later commands (assign) inherit it from
+	// config and need not be told it again.
+	previousOrg = setScalar(&doc, "org", org, true)
+	if staffTeam != "" {
+		setScalar(&doc, "staff_team", staffTeam, false)
+	}
 
 	out, err := yaml.Marshal(&doc)
 	if err != nil {
@@ -41,14 +48,15 @@ func WriteOrg(path, org string) (previous string, err error) {
 	if err := os.WriteFile(path, out, 0o644); err != nil {
 		return "", fmt.Errorf("writing config %s: %w", path, err)
 	}
-	return previous, nil
+	return previousOrg, nil
 }
 
-// setOrg sets the org scalar in a parsed document, returning the prior value.
-// It handles an empty document (builds a fresh mapping), an existing org key
-// (replaces its value in place, preserving surrounding comments), and a missing
-// org key (prepends it so it stays at the top of the file).
-func setOrg(doc *yaml.Node, org string) (previous string) {
+// setScalar sets key to value in a parsed document, returning the prior value
+// (empty if the key was absent). It handles an empty document (builds a fresh
+// mapping) and an existing key (replaces its value in place, preserving
+// surrounding comments). A missing key is prepended (to pin it to the top of the
+// file) when prepend is true, otherwise appended.
+func setScalar(doc *yaml.Node, key, value string, prepend bool) (previous string) {
 	if doc.Kind == 0 {
 		doc.Kind = yaml.DocumentNode
 		doc.Content = []*yaml.Node{{Kind: yaml.MappingNode}}
@@ -59,16 +67,20 @@ func setOrg(doc *yaml.Node, org string) (previous string) {
 		doc.Content[0] = mapping
 	}
 	for i := 0; i+1 < len(mapping.Content); i += 2 {
-		if mapping.Content[i].Value == "org" {
+		if mapping.Content[i].Value == key {
 			val := mapping.Content[i+1]
 			previous = val.Value
 			val.Tag = "!!str"
-			val.Value = org
+			val.Value = value
 			return previous
 		}
 	}
-	key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "org"}
-	val := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: org}
-	mapping.Content = append([]*yaml.Node{key, val}, mapping.Content...)
+	k := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key}
+	v := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value}
+	if prepend {
+		mapping.Content = append([]*yaml.Node{k, v}, mapping.Content...)
+	} else {
+		mapping.Content = append(mapping.Content, k, v)
+	}
 	return ""
 }

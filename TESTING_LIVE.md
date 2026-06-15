@@ -111,8 +111,10 @@ them. The `export` above just chooses where that file will live.
 Run each step **with `--dry-run` first**, then for real.
 
 1. **setup** — `gh cls setup -o $ORG -s staff`. Re-run; the second run should
-   report `already` for each setting. In the UI verify: base permission *None*,
-   member repo/Pages creation off, Actions disabled, a `staff` team exists.
+   report `already` for each setting. It writes both `org:` and `staff_team:` into
+   `gh-cls-test.yml`, so later steps need neither flag. In the UI verify: base
+   permission *None*, member repo/Pages creation off, Actions disabled, a `staff`
+   team exists.
 
 2. **Seed a source template.** Create a repo with at least one commit to generate
    from — e.g. a new repo initialized with a README named `hw1-src`.
@@ -125,12 +127,12 @@ Run each step **with `--dry-run` first**, then for real.
    `-F` → it recreates it.
 
 4. **Fill in the config** so `assign` can resolve the assignment. `setup` already
-   created `gh-cls-test.yml` with the `org:` line; open it and add the
-   `staff_team` and `assignments` entries (`assign` errors with *"assignment not
-   found in config"* otherwise):
+   created `gh-cls-test.yml` with the `org:` and `staff_team:` lines; open it and
+   add the `assignments` entries (`assign` errors with *"assignment not found in
+   config"* otherwise):
    ```yaml
    org: gh-cls-sandbox
-   staff_team: staff
+   staff_team: staff        # already written by setup
    assignments:
      hw1:
        type: individual

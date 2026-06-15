@@ -83,7 +83,7 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 		fmt.Fprintln(out, "  - disable GitHub Actions org-wide")
 		fmt.Fprintln(out, "  - report Copilot seat status")
 		if staffTeam != "" {
-			fmt.Fprintf(out, "  - ensure staff team %q exists\n", staffTeam)
+			fmt.Fprintf(out, "  - ensure staff team %q exists and record it in config\n", staffTeam)
 		}
 		return nil
 	}
@@ -100,11 +100,14 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 
 	// The org write is the deliberate act that establishes the semester; it is
 	// announced loudly, and happens only once the ownership check has passed.
-	prev, err := config.WriteOrg(writePath, org)
+	prev, err := config.WriteSetup(writePath, org, staffTeam)
 	if err != nil {
 		return err
 	}
 	printOrgWarning(out, org, prev)
+	if staffTeam != "" {
+		fmt.Fprintf(out, "    Recorded staff_team: %s (assign inherits it; no -s needed).\n", staffTeam)
+	}
 
 	results, err := hardenOrg(ctx, client, org, staffTeam)
 	if err != nil {

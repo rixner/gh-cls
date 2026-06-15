@@ -32,7 +32,7 @@ Reusable, no-PII course structure, found (first match wins) at `$GH_CLS_CONFIG`,
 use any other path or name:
 
 ```yaml
-# `org` is written by `gh cls setup --org`, not by hand.
+# `org` and `staff_team` are written by `gh cls setup`, not by hand.
 org: cs101-spring26
 staff_team: staff
 
@@ -90,7 +90,8 @@ gh cls freeze hw1 --undo
 ```
 
 - **setup** sets base permission to none, disables member repo/Pages creation
-  and Actions org-wide, reports Copilot status, and ensures the staff team. All
+  and Actions org-wide, reports Copilot status, and ensures the staff team
+  (recording it as `staff_team` in config so later commands inherit it). All
   actions are idempotent and report changed vs already-in-desired-state. It also
   prints an optional-hardening checklist for member-privilege toggles that exist
   only in the web UI (installing apps, changing repository visibility, deleting or

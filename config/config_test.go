@@ -148,7 +148,7 @@ assignments:
 		t.Fatal(err)
 	}
 
-	prev, err := WriteOrg(path, "cs101-spring26")
+	prev, err := WriteSetup(path, "cs101-spring26", "staff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ assignments:
 func TestWriteOrgCreatesFile(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "nested", "config.yml")
-	prev, err := WriteOrg(path, "brand-new-org")
+	prev, err := WriteSetup(path, "brand-new-org", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,5 +196,25 @@ func TestWriteOrgCreatesFile(t *testing.T) {
 	}
 	if c.Org != "brand-new-org" {
 		t.Errorf("org = %q, want brand-new-org", c.Org)
+	}
+	if c.StaffTeam != "" {
+		t.Errorf("staff_team = %q, want empty when not provided", c.StaffTeam)
+	}
+}
+
+func TestWriteSetupRecordsStaffTeam(t *testing.T) {
+	// setup persists the staff team so later commands inherit it from config and
+	// need not be told it again on every assign.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yml")
+	if _, err := WriteSetup(path, "cs101-spring26", "staff"); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Org != "cs101-spring26" || c.StaffTeam != "staff" {
+		t.Errorf("recorded config wrong: org=%q staff_team=%q", c.Org, c.StaffTeam)
 	}
 }
