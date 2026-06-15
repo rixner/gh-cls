@@ -117,6 +117,19 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, name string) erro
 		return fmt.Errorf("source template %s not found", source)
 	}
 
+	// Confirm the source actually has content before anything destructive: a
+	// --force run deletes the existing template below, and generating from an
+	// empty source would replace it with an empty one. Fail fast and clearly.
+	branch := srcRepo.DefaultBranch
+	if branch == "" {
+		return fmt.Errorf("source template %s has no commits to generate from; add a commit first", source)
+	}
+	if ok, err := client.BranchExists(ctx, srcOwner, srcName, branch); err != nil {
+		return fmt.Errorf("checking source template %s for content: %w", source, err)
+	} else if !ok {
+		return fmt.Errorf("source template %s has no commits on its default branch %q; add a commit first", source, branch)
+	}
+
 	// Generating a repository from another requires the source to be marked a
 	// template repository. The source is one by role, so ensure the flag is set;
 	// this is a no-op when it already is.

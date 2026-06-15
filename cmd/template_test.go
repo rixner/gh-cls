@@ -24,7 +24,8 @@ type fakeTemplateClient struct {
 	generated    []generateCall
 	deleted      []string
 	templated    []string
-	markWontTake bool // SetRepoTemplate "succeeds" but the is_template flag never sticks
+	markWontTake bool            // SetRepoTemplate "succeeds" but the is_template flag never sticks
+	noContent    map[string]bool // "owner/name" repos whose branches do not resolve (empty repo)
 }
 
 func (f *fakeTemplateClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
@@ -54,7 +55,11 @@ func (f *fakeTemplateClient) GenerateFromTemplate(_ context.Context, tmplOwner, 
 }
 
 func (f *fakeTemplateClient) BranchExists(_ context.Context, owner, name, branch string) (bool, error) {
-	r, ok := f.repos[owner+"/"+name]
+	key := owner + "/" + name
+	if f.noContent[key] {
+		return false, nil
+	}
+	r, ok := f.repos[key]
 	return ok && r.DefaultBranch == branch, nil
 }
 
@@ -201,6 +206,31 @@ func TestTemplateDryRun(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "DRY RUN") {
 		t.Errorf("dry-run output should be labeled: %s", buf.String())
+	}
+}
+
+func TestTemplateRejectsEmptySource(t *testing.T) {
+	// The source repo exists but has no commits (its default branch does not
+	// resolve). This must be caught up front, before the existing template is
+	// deleted on --force, so a bad run never destroys a good template.
+	repos := withSource()
+	repos["cs101-spring26/hw1-template"] = &gh.Repo{Name: "hw1-template"}
+	fake := &fakeTemplateClient{
+		role:      "admin",
+		repos:     repos,
+		noContent: map[string]bool{"cs101-templates/hw1-starter": true},
+	}
+	o := newTemplateOpts(t, fake, "cs101-templates/hw1-starter", true /*force*/, false)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "no commits") {
+		t.Fatalf("empty source should be rejected, got %v", err)
+	}
+	if len(fake.deleted) != 0 {
+		t.Errorf("the existing template must not be deleted when the source is invalid: %v", fake.deleted)
+	}
+	if len(fake.generated) != 0 {
+		t.Errorf("nothing should be generated from an empty source: %v", fake.generated)
 	}
 }
 
