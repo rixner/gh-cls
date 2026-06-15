@@ -11,7 +11,7 @@ func TestApplyRulesetSkipsWhenActivePresent(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`[{"name":"gh-cls-protect","enforcement":"active"}]`)}}}
 	var waits int
 	c := newTestClient(f, &waits)
-	if err := c.ApplyRuleset(context.Background(), "org", "hw1-ada", 42); err != nil {
+	if err := c.ApplyRuleset(context.Background(), "org", "hw1-ada"); err != nil {
 		t.Fatal(err)
 	}
 	if f.calls != 1 {
@@ -28,7 +28,7 @@ func TestApplyRulesetRejectsExistingInactive(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`[{"name":"gh-cls-protect","enforcement":"disabled"}]`)}}}
 	var waits int
 	c := newTestClient(f, &waits)
-	err := c.ApplyRuleset(context.Background(), "org", "hw1-ada", 42)
+	err := c.ApplyRuleset(context.Background(), "org", "hw1-ada")
 	if err == nil || !strings.Contains(err.Error(), "not active") {
 		t.Fatalf("an inactive existing ruleset should error, got %v", err)
 	}
@@ -44,13 +44,16 @@ func TestApplyRulesetVerifiesAfterCreate(t *testing.T) {
 	}}
 	var waits int
 	c := newTestClient(f, &waits)
-	err := c.ApplyRuleset(context.Background(), "org", "hw1-ada", 42)
+	err := c.ApplyRuleset(context.Background(), "org", "hw1-ada")
 	if err == nil || !strings.Contains(err.Error(), "did not take effect") {
 		t.Fatalf("a ruleset absent after creation should fail, got %v", err)
 	}
 }
 
-func TestApplyRulesetCreatesWithStaffBypass(t *testing.T) {
+func TestApplyRulesetExcludesStaffFromBypass(t *testing.T) {
+	// Divergence guard: the bypass list grants org admins only. Staff push to
+	// student repos but must never be able to force-push or delete protected
+	// branches, so no Team actor may appear in the ruleset.
 	f := &fakeRequester{steps: []step{
 		{resp: okResp(`[]`)}, // no existing rulesets
 		{resp: okResp(`{}`)}, // create
@@ -58,7 +61,7 @@ func TestApplyRulesetCreatesWithStaffBypass(t *testing.T) {
 	}}
 	var waits int
 	c := newTestClient(f, &waits)
-	if err := c.ApplyRuleset(context.Background(), "org", "hw1-ada", 42); err != nil {
+	if err := c.ApplyRuleset(context.Background(), "org", "hw1-ada"); err != nil {
 		t.Fatal(err)
 	}
 	if f.calls != 3 || f.methods[1] != "POST" {
@@ -73,31 +76,12 @@ func TestApplyRulesetCreatesWithStaffBypass(t *testing.T) {
 		`"non_fast_forward"`,
 		`"deletion"`,
 		`"OrganizationAdmin"`,
-		`"actor_id":42`,
-		`"actor_type":"Team"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("create body missing %s:\n%s", want, body)
 		}
 	}
-}
-
-func TestApplyRulesetWithoutStaffTeamOmitsTeamActor(t *testing.T) {
-	f := &fakeRequester{steps: []step{
-		{resp: okResp(`[]`)},
-		{resp: okResp(`{}`)},
-		{resp: okResp(`[{"name":"gh-cls-protect","enforcement":"active"}]`)},
-	}}
-	var waits int
-	c := newTestClient(f, &waits)
-	if err := c.ApplyRuleset(context.Background(), "org", "hw1-ada", 0); err != nil {
-		t.Fatal(err)
-	}
-	body := f.bodies[1]
-	if !strings.Contains(body, `"OrganizationAdmin"`) {
-		t.Errorf("org admin bypass should always be present:\n%s", body)
-	}
 	if strings.Contains(body, `"actor_type":"Team"`) {
-		t.Errorf("no team actor expected when staffTeamID is zero:\n%s", body)
+		t.Errorf("staff team must not be granted a bypass:\n%s", body)
 	}
 }

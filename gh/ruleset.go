@@ -11,10 +11,11 @@ import (
 const protectRulesetName = "gh-cls-protect"
 
 // ApplyRuleset applies an all-branches ruleset that blocks force-pushes and
-// branch deletion while allowing ordinary pushes, bypassed by org admins and
-// (if non-zero) the staff team. It is idempotent: if the ruleset already exists
-// it does nothing.
-func (c *restClient) ApplyRuleset(ctx context.Context, org, repo string, staffTeamID int64) error {
+// branch deletion while allowing ordinary pushes, bypassed by org admins only.
+// The staff team is deliberately not granted a bypass: staff push to student
+// repos but must not be able to force-push or delete protected branches. It is
+// idempotent: if the ruleset already exists it does nothing.
+func (c *restClient) ApplyRuleset(ctx context.Context, org, repo string) error {
 	path := fmt.Sprintf("repos/%s/%s/rulesets", url.PathEscape(org), url.PathEscape(repo))
 
 	active, found, err := c.findManagedRuleset(ctx, path)
@@ -33,9 +34,6 @@ func (c *restClient) ApplyRuleset(ctx context.Context, org, repo string, staffTe
 
 	bypass := []map[string]any{
 		{"actor_id": 1, "actor_type": "OrganizationAdmin", "bypass_mode": "always"},
-	}
-	if staffTeamID != 0 {
-		bypass = append(bypass, map[string]any{"actor_id": staffTeamID, "actor_type": "Team", "bypass_mode": "always"})
 	}
 
 	body := map[string]any{

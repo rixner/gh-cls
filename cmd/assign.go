@@ -40,13 +40,12 @@ const (
 type assignClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
-	GetTeam(ctx context.Context, org, slug string) (*gh.Team, bool, error)
 	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]gh.BranchCount, error)
 	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
 	DeleteRepo(ctx context.Context, org, name string) error
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
-	ApplyRuleset(ctx context.Context, org, repo string, staffTeamID int64) error
+	ApplyRuleset(ctx context.Context, org, repo string) error
 	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
@@ -233,20 +232,8 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
-	// Resolve the staff team's ID once, for the ruleset bypass list.
-	var staffTeamID int64
-	if policy.BranchProtection && staffTeam != "" {
-		if team, exists, err := client.GetTeam(ctx, org, staffTeam); err != nil {
-			return fmt.Errorf("resolving staff team %q: %w", staffTeam, err)
-		} else if exists {
-			staffTeamID = team.ID
-		} else {
-			fmt.Fprintf(out, "warning: staff team %q not found; branch protection will bypass org admins only\n", staffTeam)
-		}
-	}
-
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) unitResult {
-		return o.provision(ctx, client, org, name, derived, staffTeam, staffTeamID, policy, u)
+		return o.provision(ctx, client, org, name, derived, staffTeam, policy, u)
 	})
 	return reportResults(out, results)
 }
@@ -300,7 +287,7 @@ func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, org
 // Branch protection is applied once, when the repo is first created; the
 // feedback artifact is reconciled on every run so a partial failure is repaired
 // on re-run without reopening a closed PR or issue.
-func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, derived, staffTeam string, staffTeamID int64, policy config.Policy, u unit.Unit) unitResult {
+func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, derived, staffTeam string, policy config.Policy, u unit.Unit) unitResult {
 	repo := name + "-" + u.Key
 	res := unitResult{repo: repo}
 
@@ -363,7 +350,7 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 	// already present), so a transient failure on a prior run is repaired here
 	// instead of leaving an existing repo permanently unprotected.
 	if policy.BranchProtection {
-		if err := client.ApplyRuleset(ctx, org, repo, staffTeamID); err != nil {
+		if err := client.ApplyRuleset(ctx, org, repo); err != nil {
 			res.err = fmt.Errorf("applying branch protection to %s: %w", repo, err)
 			return res
 		}

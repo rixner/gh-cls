@@ -39,7 +39,6 @@ team-beta: [student-002]
 type fakeAssignClient struct {
 	mu             sync.Mutex
 	role           string
-	teamID         int64
 	hasIssues      bool
 	withholdBranch bool // simulate generation that never lands the default branch
 	forcePublic    bool // generation produces public repos regardless of the request
@@ -52,7 +51,7 @@ type fakeAssignClient struct {
 	deleted        []string
 	collabs        []string
 	teamRepos      []string
-	rulesets       map[string]int64 // repo -> staff team ID used in bypass
+	rulesets       map[string]bool // repos a protection ruleset was applied to
 	refs           []string         // "repo:ref"
 	prs            []string         // "repo:head->base"
 	issues         []string         // repo
@@ -70,10 +69,6 @@ func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.R
 		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: !f.public[owner+"/"+name]}, true, nil
 	}
 	return nil, false, nil
-}
-
-func (f *fakeAssignClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
-	return &gh.Team{ID: f.teamID}, true, nil
 }
 
 func (f *fakeAssignClient) ListBranchesWithCommitCount(context.Context, string, string) ([]gh.BranchCount, error) {
@@ -159,13 +154,13 @@ func (f *fakeAssignClient) AddTeamRepo(_ context.Context, _, _, _, repo, _ strin
 	return nil
 }
 
-func (f *fakeAssignClient) ApplyRuleset(_ context.Context, _, repo string, staffTeamID int64) error {
+func (f *fakeAssignClient) ApplyRuleset(_ context.Context, _, repo string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.rulesets == nil {
-		f.rulesets = map[string]int64{}
+		f.rulesets = map[string]bool{}
 	}
-	f.rulesets[repo] = staffTeamID
+	f.rulesets[repo] = true
 	return nil
 }
 
@@ -227,7 +222,6 @@ func (f *fakeAssignClient) IssueExists(_ context.Context, _, repo, _ string) (bo
 func newFakeAssign(role string) *fakeAssignClient {
 	return &fakeAssignClient{
 		role:     role,
-		teamID:   42,
 		exists:   map[string]bool{"cs101-spring26/hw1-template": true, "cs101-spring26/project-template": true},
 		branches: []gh.BranchCount{{Name: "main", Commits: 1}},
 	}
@@ -423,8 +417,8 @@ func TestAssignBranchProtection(t *testing.T) {
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{BranchProtection: boolp(true)}); err != nil {
 		t.Fatal(err)
 	}
-	if id, ok := fake.rulesets["hw1-ada"]; !ok || id != 42 {
-		t.Errorf("ruleset not applied with resolved staff team ID: %v", fake.rulesets)
+	if !fake.rulesets["hw1-ada"] {
+		t.Errorf("ruleset not applied: %v", fake.rulesets)
 	}
 	if len(fake.rulesets) != 3 {
 		t.Errorf("expected a ruleset on each of 3 repos, got %d", len(fake.rulesets))

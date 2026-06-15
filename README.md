@@ -102,9 +102,10 @@ gh cls freeze hw1 --undo
   if needed, since generation requires it. `-F` replaces an existing one.
 - **assign** runs preflight checks (type/inputs, in-org template, all-branches
   single-commit, roster/teams consistency), then generates repos concurrently.
-  `-b` applies an all-branches ruleset blocking force-push and deletion; `-f
-  pr|issue` adds a feedback artifact. Idempotent: existing repos are skipped but
-  access grants are re-asserted.
+  `-b` applies an all-branches ruleset blocking force-push and deletion, which
+  only org admins bypass (staff get push but cannot force-push or delete
+  protected branches); `-f pr|issue` adds a feedback artifact. Idempotent:
+  existing repos are skipped but access grants are re-asserted.
 - **audit** reconciles the students who should be on the `<name>-*` repos
   (resolved from the roster, plus the teams file for a group assignment) against
   the actual state, reporting each as *on repo*, *invited (pending)*, *invited

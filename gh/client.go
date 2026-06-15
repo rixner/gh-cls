@@ -49,7 +49,7 @@ type Client interface {
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 
 	// ApplyRuleset applies the all-branches force-push/deletion-blocking ruleset.
-	ApplyRuleset(ctx context.Context, org, repo string, staffTeamID int64) error
+	ApplyRuleset(ctx context.Context, org, repo string) error
 	// GetRef returns the SHA a ref (e.g. "heads/main") points at.
 	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
 	// CreateRef creates a fully-qualified ref (e.g. "refs/heads/feedback").
