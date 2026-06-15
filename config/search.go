@@ -9,14 +9,16 @@ import (
 // config file and takes precedence over every other location.
 const envVar = "GH_CLS_CONFIG"
 
-// workingDirFile is the per-course working-directory config name.
-const workingDirFile = ".gh-cls.yml"
+// workingDirFile is the per-course working-directory config name. It is a
+// visible (non-dotted) file on purpose: the config is hand-edited course
+// structure, not a hidden machine setting, so it should be easy to see and open.
+const workingDirFile = "gh-cls.yml"
 
 // Search returns the config path to use, following the documented order:
 //
 //  1. $GH_CLS_CONFIG, if set (returned even if the file is missing, so an
 //     explicit pointer surfaces a read error rather than being silently ignored).
-//  2. ./.gh-cls.yml, if it exists.
+//  2. ./gh-cls.yml, if it exists.
 //  3. $XDG_CONFIG_HOME/gh-cls/config.yml (or ~/.config/gh-cls/config.yml), if it
 //     exists.
 //

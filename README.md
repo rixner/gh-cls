@@ -28,7 +28,8 @@ writes into any repository. Keep these files off version control.
 ## Configuration
 
 Reusable, no-PII course structure, found (first match wins) at `$GH_CLS_CONFIG`,
-`./.gh-cls.yml`, or `$XDG_CONFIG_HOME/gh-cls/config.yml`:
+`./gh-cls.yml`, or `$XDG_CONFIG_HOME/gh-cls/config.yml`. Set `$GH_CLS_CONFIG` to
+use any other path or name:
 
 ```yaml
 # `org` is written by `gh cls setup --org`, not by hand.

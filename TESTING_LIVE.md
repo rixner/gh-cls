@@ -77,7 +77,7 @@ verifies cleanup ran.
 
 Useful for eyeballing behavior in the GitHub UI. Work in a scratch directory and
 point `GH_CLS_CONFIG` at a throwaway config so your real config is never touched
-(its name is arbitrary — the hidden `./.gh-cls.yml` default only applies when
+(its name is arbitrary — the `./gh-cls.yml` default only applies when
 `GH_CLS_CONFIG` is unset):
 
 ```
