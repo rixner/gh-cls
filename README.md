@@ -22,8 +22,8 @@ the GitHub API, so no `git` binary or separate git credentials are needed.
 ## Student Information
 
 Mappings between students and GitHub usernames live only in your local
-**roster** and **teams** files, which the tool reads at runtime and never writes
-into any repository. Keep these files off version control.
+**roster** and **teams** files, which the tool reads at runtime and never
+writes into any repository. Keep these files off version control.
 
 ## Configuration
 
@@ -123,3 +123,8 @@ the **org** shows "Team" (required for `--branch-protection`).
 go build ./...   # builds the gh-cls binary
 go test ./...    # all tests run locally against fakes (no network)
 ```
+
+## AI Assistance
+
+This project was developed with assistance from AI coding tools. All code has been
+reviewed, tested, and accepted by the maintainers.
