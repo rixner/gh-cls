@@ -66,9 +66,7 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 		fmt.Fprintln(out, "  - disable members creating repositories and Pages")
 		fmt.Fprintln(out, "  - disable GitHub Actions org-wide")
 		fmt.Fprintln(out, "  - report Copilot seat status")
-		if staffTeam != "" {
-			fmt.Fprintf(out, "  - ensure staff team %q exists\n", staffTeam)
-		}
+		fmt.Fprintf(out, "  - ensure staff team %q exists\n", staffTeam)
 		return nil
 	}
 
@@ -162,10 +160,8 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 		results = append(results, result{"Copilot", statusWarning, fmt.Sprintf("%d seat(s) present — cancel manually", count)})
 	}
 
-	// Staff team.
-	if staffTeam == "" {
-		results = append(results, result{"staff team", statusReported, "none configured — skipped"})
-	} else if _, exists, err := client.GetTeam(ctx, org, staffTeam); err != nil {
+	// Staff team. Required by the config, so it is always ensured.
+	if _, exists, err := client.GetTeam(ctx, org, staffTeam); err != nil {
 		return nil, fmt.Errorf("checking staff team: %w", err)
 	} else if exists {
 		results = append(results, result{"staff team", statusAlready, staffTeam})

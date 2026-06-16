@@ -64,9 +64,6 @@ TA who is not yet an organization member is invited and joins once they accept.`
 func (o *staffOpts) run(ctx context.Context, out io.Writer) error {
 	org := o.g.org
 	staffTeam := o.g.staffTeam
-	if staffTeam == "" {
-		return fmt.Errorf("no staff_team in the config; set it before syncing staff")
-	}
 
 	// Parse the TA list before any API call, so a malformed file aborts before
 	// the team is touched. A TA file is the same CSV format as the roster, so the

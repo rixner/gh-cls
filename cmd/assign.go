@@ -39,6 +39,7 @@ const (
 // assignClient is the narrow set of GitHub operations assign needs.
 type assignClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)
+	GetTeam(ctx context.Context, org, slug string) (*gh.Team, bool, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
 	SetRepoTemplate(ctx context.Context, owner, name string) error
 	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]gh.BranchCount, error)
@@ -219,6 +220,15 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
+	// Preflight: the staff team must already exist. assign grants it push on every
+	// repo, so a missing team would only surface after repos are created; check it
+	// up front, before the first mutation. setup is what creates it.
+	if _, exists, err := client.GetTeam(ctx, org, staffTeam); err != nil {
+		return fmt.Errorf("checking staff team %q: %w", staffTeam, err)
+	} else if !exists {
+		return fmt.Errorf("staff team %q not found in %s; run `gh cls setup` to create it", staffTeam, org)
+	}
+
 	// Preflight 2: the template repo exists and is actually a template repository
 	// (required to generate from it). We never silently flip it: --mark-template
 	// opts into marking a repo that is not yet a template.
@@ -350,11 +360,9 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 			return res
 		}
 	}
-	if staffTeam != "" {
-		if err := client.AddTeamRepo(ctx, org, staffTeam, org, repo, "push"); err != nil {
-			res.err = fmt.Errorf("granting staff team on %s: %w", repo, err)
-			return res
-		}
+	if err := client.AddTeamRepo(ctx, org, staffTeam, org, repo, "push"); err != nil {
+		res.err = fmt.Errorf("granting staff team on %s: %w", repo, err)
+		return res
 	}
 
 	// Branch protection is reconciled on every run, not only when the repo is

@@ -59,18 +59,15 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
-	t.Run("staff_team is optional", func(t *testing.T) {
-		c, err := Load(write(t, "org: cs101-spring26\n"))
-		if err != nil {
-			t.Fatalf("a config with org but no staff_team should load: %v", err)
-		}
-		if c.StaffTeam != "" {
-			t.Errorf("StaffTeam = %q, want empty", c.StaffTeam)
+	t.Run("missing staff_team is rejected", func(t *testing.T) {
+		_, err := Load(write(t, "org: cs101-spring26\n"))
+		if err == nil || !strings.Contains(err.Error(), "staff_team") {
+			t.Fatalf("a config without staff_team should error mentioning staff_team, got %v", err)
 		}
 	})
 
 	t.Run("invalid assignment type is rejected", func(t *testing.T) {
-		if _, err := Load(write(t, "org: x\nassignments:\n  hw1:\n    type: bogus\n")); err == nil {
+		if _, err := Load(write(t, "org: x\nstaff_team: staff\nassignments:\n  hw1:\n    type: bogus\n")); err == nil {
 			t.Fatal("Load should reject an invalid assignment type")
 		}
 	})

@@ -30,7 +30,9 @@ writes into any repository. Keep these files off version control.
 Reusable, no-PII course structure that **you author**; the tool only reads it,
 never writes it. Point every command at it with `-c/--config <file>` or by
 setting `$GH_CLS_CONFIG`; there is no search path or hidden config directory. The
-file must set `org` (and usually `staff_team`):
+file must set `org` and `staff_team` (the team may have no members yet — `setup`
+creates it and `assign` grants it access to every repo, so a TA added later
+inherits access to all existing assignments):
 
 ```yaml
 org: cs101-spring26

@@ -70,7 +70,7 @@ func TestOrgIsConfigOnly(t *testing.T) {
 		t.Error("--org must not be a flag")
 	}
 	for _, name := range []string{"setup", "staff", "template", "assign", "freeze", "audit"} {
-		withConfig(t, "org: cs101-spring26\n")
+		withConfig(t, "org: cs101-spring26\nstaff_team: staff\n")
 		if _, err := execute(name, "x", "--org", "foo"); err == nil || !strings.Contains(err.Error(), "unknown flag") {
 			t.Errorf("%s should reject --org as an unknown flag, got %v", name, err)
 		}
@@ -124,7 +124,7 @@ func TestSetupRequiresConfig(t *testing.T) {
 func TestAssignRequiresRoster(t *testing.T) {
 	// The full run is covered in assign_test.go with config and a fake client;
 	// here we only assert the required-flag enforcement.
-	withConfig(t, "org: cs101-spring26\n")
+	withConfig(t, "org: cs101-spring26\nstaff_team: staff\n")
 	if _, err := execute("assign", "hw1"); err == nil {
 		t.Fatal("assign without --roster should error")
 	}
@@ -132,7 +132,7 @@ func TestAssignRequiresRoster(t *testing.T) {
 
 func TestAssignFeedbackEnum(t *testing.T) {
 	// Invalid value is rejected in PreRunE, before any work.
-	withConfig(t, "org: cs101-spring26\n")
+	withConfig(t, "org: cs101-spring26\nstaff_team: staff\n")
 	_, err := execute("assign", "hw1", "-r", "roster.csv", "-f", "bogus")
 	if err == nil || !strings.Contains(err.Error(), "invalid --feedback") {
 		t.Fatalf("invalid feedback mode should be rejected, got %v", err)

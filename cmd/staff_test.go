@@ -188,13 +188,3 @@ func TestStaffTeamNotFound(t *testing.T) {
 		t.Fatalf("a missing staff team should error, got %v", err)
 	}
 }
-
-func TestStaffRequiresConfiguredTeam(t *testing.T) {
-	fake := &fakeStaffClient{role: "admin", teamExists: true}
-	o := newStaffOpts(t, fake, tasCSV, false)
-	o.g.staffTeam = "" // not set in config
-
-	if err := o.run(context.Background(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "staff_team") {
-		t.Fatalf("a missing staff_team config should error, got %v", err)
-	}
-}

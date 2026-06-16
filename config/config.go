@@ -36,22 +36,25 @@ type Assignment struct {
 // Config is the parsed course-structure file.
 type Config struct {
 	Org string `yaml:"org"`
-	// StaffTeam is optional: set it to the staff team slug to have setup ensure
-	// the team and assign grant it access to each repo. Omitting it runs the
-	// course with no staff team (those steps are skipped); only the staff command,
-	// whose sole job is managing that team, requires it.
+	// StaffTeam is the slug of the course's staff team. It is required, but may
+	// have no members: setup ensures the team exists, assign grants it access to
+	// each repo, and the staff command manages its membership. Requiring it up
+	// front means a TA added later inherits access to every already-created
+	// assignment, which is impossible if the team did not exist when the repos
+	// were made.
 	StaffTeam   string                `yaml:"staff_team"`
 	Assignments map[string]Assignment `yaml:"assignments"`
 }
 
-// Validate rejects a config that lacks the required org and any malformed
-// assignment entries. Only org is required; staff_team is optional (see the
-// field doc). It is also intentionally lenient about an empty template (a
-// --template flag can supply it at run time); that is enforced when an
-// assignment is actually resolved.
+// Validate rejects a config that lacks the required org or staff_team, or that
+// has a malformed assignment entry. It is intentionally lenient about an empty
+// template; that is enforced when an assignment is actually resolved.
 func (c *Config) Validate() error {
 	if c.Org == "" {
-		return fmt.Errorf("missing required \"org\" key; the config must set at least:\n\n  org: your-semester-org\n\n(staff_team is optional; omit it for a course with no staff team)")
+		return fmt.Errorf("missing required \"org\" key; the config must set at least:\n\n  org: your-semester-org\n  staff_team: your-staff-team-slug")
+	}
+	if c.StaffTeam == "" {
+		return fmt.Errorf("missing required \"staff_team\" key; name the staff team's slug:\n\n  staff_team: your-staff-team-slug\n\nThe team may have no members yet — setup creates it and assign grants it access to every repo, so a TA added later inherits access to all existing assignments.")
 	}
 	for name, a := range c.Assignments {
 		switch a.Type {

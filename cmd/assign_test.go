@@ -43,6 +43,7 @@ team-beta: [student-002]
 type fakeAssignClient struct {
 	mu             sync.Mutex
 	role           string
+	teamMissing    bool // the staff team does not exist (setup not run)
 	hasIssues      bool
 	withholdBranch bool // simulate generation that never lands the default branch
 	forcePublic    bool // generation produces public repos regardless of the request
@@ -64,6 +65,13 @@ type fakeAssignClient struct {
 }
 
 func (f *fakeAssignClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
+
+func (f *fakeAssignClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
+	if f.teamMissing {
+		return nil, false, nil
+	}
+	return &gh.Team{ID: 1}, true, nil
+}
 
 func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.Repo, bool, error) {
 	f.mu.Lock()
@@ -355,6 +363,22 @@ func TestAssignTemplateMissing(t *testing.T) {
 	}
 	if len(fake.generated) != 0 {
 		t.Error("no repos should be generated when the template is missing")
+	}
+}
+
+func TestAssignStaffTeamMissing(t *testing.T) {
+	// The staff team is granted on every repo, so a missing team must abort before
+	// any repo is generated, with guidance to run setup.
+	fake := newFakeAssign("admin")
+	fake.teamMissing = true
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "setup") {
+		t.Fatalf("a missing staff team should fail pointing at setup, got %v", err)
+	}
+	if len(fake.generated) != 0 {
+		t.Error("no repos should be generated when the staff team is missing")
 	}
 }
 

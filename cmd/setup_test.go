@@ -90,7 +90,7 @@ func newSetupOpts(t *testing.T, fake *fakeSetupClient, org, staffTeam string, dr
 
 func TestSetupOwnerGuard(t *testing.T) {
 	fake := &fakeSetupClient{role: "member"}
-	o := newSetupOpts(t, fake, "cs101-spring26", "", false)
+	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
 
 	err := o.run(context.Background(), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "owner") {
@@ -174,7 +174,7 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 		actions:       "all",
 		ignorePatches: true,
 	}
-	o := newSetupOpts(t, fake, "cs101-spring26", "", false)
+	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
