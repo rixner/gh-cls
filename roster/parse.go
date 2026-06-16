@@ -56,6 +56,10 @@ func Parse(in io.Reader) (*Roster, error) {
 	}
 
 	r := &Roster{byID: make(map[string]string)}
+	// Track the first line each username appeared on (lower-cased, since GitHub
+	// logins are case-insensitive) so a second occurrence is rejected rather than
+	// silently collapsing two students onto one repo or audit identity.
+	userLine := make(map[string]int)
 	for n, row := range rows[1:] {
 		line := n + 2 // 1-based, counting the header
 		if idCol >= len(row) || userCol >= len(row) {
@@ -69,6 +73,11 @@ func Parse(in io.Reader) (*Roster, error) {
 		if _, dup := r.byID[id]; dup {
 			return nil, fmt.Errorf("line %d: duplicate identifier %q", line, id)
 		}
+		key := strings.ToLower(user)
+		if first, dup := userLine[key]; dup {
+			return nil, fmt.Errorf("line %d: username %q already used on line %d (GitHub usernames are case-insensitive); remove the duplicate", line, user, first)
+		}
+		userLine[key] = line
 		r.byID[id] = user
 		r.ids = append(r.ids, id)
 	}

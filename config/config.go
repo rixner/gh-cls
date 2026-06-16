@@ -35,18 +35,23 @@ type Assignment struct {
 
 // Config is the parsed course-structure file.
 type Config struct {
-	Org         string                `yaml:"org"`
+	Org string `yaml:"org"`
+	// StaffTeam is optional: set it to the staff team slug to have setup ensure
+	// the team and assign grant it access to each repo. Omitting it runs the
+	// course with no staff team (those steps are skipped); only the staff command,
+	// whose sole job is managing that team, requires it.
 	StaffTeam   string                `yaml:"staff_team"`
 	Assignments map[string]Assignment `yaml:"assignments"`
 }
 
 // Validate rejects a config that lacks the required org and any malformed
-// assignment entries. It is intentionally lenient about an empty template (a
+// assignment entries. Only org is required; staff_team is optional (see the
+// field doc). It is also intentionally lenient about an empty template (a
 // --template flag can supply it at run time); that is enforced when an
 // assignment is actually resolved.
 func (c *Config) Validate() error {
 	if c.Org == "" {
-		return fmt.Errorf("missing required \"org\" key; the config must set at least:\n\n  org: your-semester-org\n  staff_team: your-staff-team\n")
+		return fmt.Errorf("missing required \"org\" key; the config must set at least:\n\n  org: your-semester-org\n\n(staff_team is optional; omit it for a course with no staff team)")
 	}
 	for name, a := range c.Assignments {
 		switch a.Type {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // GetRef returns the commit SHA a ref points at. ref is given without the
@@ -23,11 +24,24 @@ func (c *restClient) GetRef(ctx context.Context, owner, repo, ref string) (strin
 }
 
 // CreateRef creates a git ref. ref is fully qualified, e.g.
-// "refs/heads/feedback".
+// "refs/heads/feedback". It re-reads the ref to confirm the create took effect:
+// the next step opens the feedback PR against this branch, so a ref that did not
+// actually land would otherwise fail later with a confusing error.
 func (c *restClient) CreateRef(ctx context.Context, owner, repo, ref, sha string) error {
 	path := fmt.Sprintf("repos/%s/%s/git/refs", url.PathEscape(owner), url.PathEscape(repo))
-	_, err := c.do(ctx, "POST", path, map[string]any{"ref": ref, "sha": sha}, nil)
-	return err
+	if _, err := c.do(ctx, "POST", path, map[string]any{"ref": ref, "sha": sha}, nil); err != nil {
+		return err
+	}
+	// Post-condition: the ref resolves to the requested SHA. GetRef takes the ref
+	// without the leading "refs/".
+	got, err := c.GetRef(ctx, owner, repo, strings.TrimPrefix(ref, "refs/"))
+	if err != nil {
+		return fmt.Errorf("verifying created ref %s in %s/%s: %w", ref, owner, repo, err)
+	}
+	if got != sha {
+		return fmt.Errorf("created ref %s in %s/%s resolves to %s, want %s; create it manually", ref, owner, repo, got, sha)
+	}
+	return nil
 }
 
 // BranchExists reports whether a branch exists in the repository. branch is the
@@ -90,24 +104,14 @@ func (c *restClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 // exists in the repository. The issues endpoint also lists pull requests, which
 // carry a pull_request field and are skipped.
 func (c *restClient) IssueExists(ctx context.Context, owner, repo, title string) (bool, error) {
-	for page := 1; ; page++ {
-		path := fmt.Sprintf("repos/%s/%s/issues?state=all&per_page=100&page=%d",
-			url.PathEscape(owner), url.PathEscape(repo), page)
-		var batch []struct {
-			Title       string    `json:"title"`
-			PullRequest *struct{} `json:"pull_request"`
-		}
-		if _, err := c.do(ctx, "GET", path, nil, &batch); err != nil {
-			return false, err
-		}
-		for _, it := range batch {
-			if it.PullRequest == nil && it.Title == title {
-				return true, nil
-			}
-		}
-		if len(batch) < 100 {
-			break
-		}
+	type issue struct {
+		Title       string    `json:"title"`
+		PullRequest *struct{} `json:"pull_request"`
 	}
-	return false, nil
+	return findPaged(ctx, c, func(page int) string {
+		return fmt.Sprintf("repos/%s/%s/issues?state=all&per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), pageSize, page)
+	}, func(it issue) bool {
+		return it.PullRequest == nil && it.Title == title
+	})
 }

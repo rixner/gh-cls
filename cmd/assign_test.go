@@ -625,6 +625,33 @@ func TestAssignWaitsForContent(t *testing.T) {
 	}
 }
 
+func TestCheckVisibility(t *testing.T) {
+	// Lock every polarity: the check passes only when the repo's visibility
+	// matches the policy. Guards the easy-to-invert Private/wantPublic comparison.
+	cases := []struct {
+		name       string
+		private    bool
+		wantPublic bool
+		match      bool
+	}{
+		{"private repo, private wanted", true, false, true},
+		{"public repo, private wanted", false, false, false},
+		{"public repo, public wanted", false, true, true},
+		{"private repo, public wanted", true, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := checkVisibility("hw1-ada", &gh.Repo{Private: tc.private}, tc.wantPublic)
+			if tc.match && err != nil {
+				t.Errorf("matching visibility should pass, got %v", err)
+			}
+			if !tc.match && err == nil {
+				t.Error("mismatched visibility should error, got nil")
+			}
+		})
+	}
+}
+
 func TestAssignVerifiesVisibility(t *testing.T) {
 	// A private assignment whose repos come out public would expose student work.
 	// assign must catch the mismatch and fail before granting any access.

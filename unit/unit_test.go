@@ -97,6 +97,20 @@ func TestResolveGroupUnknownIdentifier(t *testing.T) {
 	}
 }
 
+func TestResolveGroupCaseMismatchHint(t *testing.T) {
+	// The roster has "student-001"; the teams file uses "Student-001". Identifiers
+	// are case-sensitive, so this is a hard error — but it should hint at the
+	// near-match rather than just say the identifier is missing.
+	src := "team-alpha: [Student-001]\n"
+	_, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustTeams(t, src))
+	if err == nil {
+		t.Fatal("a case-mismatched identifier must be a hard error")
+	}
+	if !strings.Contains(err.Error(), "student-001") || !strings.Contains(err.Error(), "case-sensitive") {
+		t.Errorf("error should hint at the case mismatch, got: %v", err)
+	}
+}
+
 func TestResolveGroupUnassignedWarns(t *testing.T) {
 	// student-004 and student-005 are on no team.
 	src := "team-alpha: [student-001, student-003]\nteam-beta: [student-002]\n"

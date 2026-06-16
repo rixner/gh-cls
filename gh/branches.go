@@ -14,14 +14,21 @@ type BranchCount struct {
 	Commits int
 }
 
+// branchRef is the subset of a branch list entry the tool reads.
+type branchRef struct {
+	Name string `json:"name"`
+}
+
 // ListBranchesWithCommitCount returns every branch of a repo with its exact
-// commit count, used to verify a derived template is fully squashed.
+// commit count, used to verify a derived template is fully squashed. It pages
+// through the full branch list so a template with many branches is checked in
+// full, not just its first page.
 func (c *restClient) ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]BranchCount, error) {
-	var branches []struct {
-		Name string `json:"name"`
-	}
-	path := fmt.Sprintf("repos/%s/%s/branches?per_page=100", url.PathEscape(owner), url.PathEscape(repo))
-	if _, err := c.do(ctx, "GET", path, nil, &branches); err != nil {
+	branches, err := getPaged[branchRef](ctx, c, func(page int) string {
+		return fmt.Sprintf("repos/%s/%s/branches?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), pageSize, page)
+	})
+	if err != nil {
 		return nil, err
 	}
 	out := make([]BranchCount, 0, len(branches))

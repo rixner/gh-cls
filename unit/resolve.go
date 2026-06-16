@@ -28,6 +28,14 @@ func resolveGroup(r *roster.Roster, t *teams.Teams) ([]Unit, Report, error) {
 	var missing []string
 	units := make([]Unit, 0, t.Len())
 
+	// Lower-cased identifier index, used only to turn a case-only mismatch (a
+	// common copy error between the teams file and the roster) into an actionable
+	// error rather than a bare "not in the roster".
+	lowerID := make(map[string]string, r.Len())
+	for _, id := range r.IDs() {
+		lowerID[strings.ToLower(id)] = id
+	}
+
 	for _, name := range t.Names() {
 		ids := t.Members(name)
 		members := make([]string, 0, len(ids))
@@ -35,7 +43,11 @@ func resolveGroup(r *roster.Roster, t *teams.Teams) ([]Unit, Report, error) {
 			assigned[id] = true
 			username, ok := r.Lookup(id)
 			if !ok {
-				missing = append(missing, fmt.Sprintf("team %s: %s", name, id))
+				entry := fmt.Sprintf("team %s: %s", name, id)
+				if canon, near := lowerID[strings.ToLower(id)]; near {
+					entry += fmt.Sprintf(" (roster has %q; identifiers are case-sensitive)", canon)
+				}
+				missing = append(missing, entry)
 				continue
 			}
 			members = append(members, username)

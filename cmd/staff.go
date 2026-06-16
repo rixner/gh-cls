@@ -78,11 +78,7 @@ func (o *staffOpts) run(ctx context.Context, out io.Writer) error {
 	// desired maps a lower-cased login to the original spelling: GitHub logins are
 	// case-insensitive, so comparison is lower-cased, but the original is kept for
 	// display and the add call.
-	desired := make(map[string]string, r.Len())
-	for _, id := range r.IDs() {
-		u, _ := r.Lookup(id)
-		desired[strings.ToLower(u)] = u
-	}
+	desired := r.UsersByLowercase()
 
 	client, err := o.newClient(ctx)
 	if err != nil {

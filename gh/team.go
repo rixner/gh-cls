@@ -52,20 +52,16 @@ type teamMember struct {
 // ListTeamMembers returns the logins of a team's current members, paging through
 // all results.
 func (c *restClient) ListTeamMembers(ctx context.Context, org, slug string) ([]string, error) {
-	var out []string
-	for page := 1; ; page++ {
-		var batch []teamMember
-		path := fmt.Sprintf("orgs/%s/teams/%s/members?per_page=100&page=%d",
-			url.PathEscape(org), url.PathEscape(slug), page)
-		if _, err := c.do(ctx, "GET", path, nil, &batch); err != nil {
-			return nil, err
-		}
-		for _, m := range batch {
-			out = append(out, m.Login)
-		}
-		if len(batch) < 100 {
-			break
-		}
+	members, err := getPaged[teamMember](ctx, c, func(page int) string {
+		return fmt.Sprintf("orgs/%s/teams/%s/members?per_page=%d&page=%d",
+			url.PathEscape(org), url.PathEscape(slug), pageSize, page)
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]string, len(members))
+	for i, m := range members {
+		out[i] = m.Login
 	}
 	return out, nil
 }

@@ -45,6 +45,19 @@ func TestByUsername(t *testing.T) {
 	}
 }
 
+func TestUsersByLowercase(t *testing.T) {
+	in := "identifier,username\nstudent-001,Ada\nstudent-002,alan\n"
+	r, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := r.UsersByLowercase()
+	want := map[string]string{"ada": "Ada", "alan": "alan"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("UsersByLowercase() = %v, want %v", got, want)
+	}
+}
+
 func TestParseColumnsCaseAndOrderInsensitive(t *testing.T) {
 	in := "USERNAME, Identifier\nada, student-001\n"
 	r, err := Parse(strings.NewReader(in))
@@ -72,6 +85,8 @@ func TestParseErrors(t *testing.T) {
 		"missing username column":   "identifier\nstudent-001\n",
 		"missing identifier column": "username\nada\n",
 		"duplicate identifier":      "identifier,username\ns1,ada\ns1,alan\n",
+		"duplicate username":        "identifier,username\ns1,ada\ns2,ada\n",
+		"duplicate username case":   "identifier,username\ns1,ada\ns2,Ada\n",
 		"empty username":            "identifier,username\ns1,\n",
 		"empty identifier":          "identifier,username\n,ada\n",
 		"header only":               "identifier,username\n",
@@ -81,5 +96,20 @@ func TestParseErrors(t *testing.T) {
 		if _, err := Parse(strings.NewReader(in)); err == nil {
 			t.Errorf("%s: expected error, got nil", name)
 		}
+	}
+}
+
+// TestParseDuplicateUsernameError checks the rejection names the colliding
+// username and the earlier line, and treats case-different logins as the same
+// account (GitHub usernames are case-insensitive).
+func TestParseDuplicateUsernameError(t *testing.T) {
+	in := "identifier,username\ns1,Ada\ns2,ada\n"
+	_, err := Parse(strings.NewReader(in))
+	if err == nil {
+		t.Fatal("expected a duplicate-username error, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "ada") || !strings.Contains(msg, "line 2") {
+		t.Errorf("error should name the username and the first line, got: %v", err)
 	}
 }

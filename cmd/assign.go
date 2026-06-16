@@ -391,7 +391,10 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 // requested. It gates access: a private assignment that is (or has drifted)
 // public would expose student work, so this is checked before any grant.
 func checkVisibility(repo string, info *gh.Repo, wantPublic bool) error {
-	if info.Private != wantPublic {
+	// Compare like polarities (Private vs Private) rather than info.Private
+	// against wantPublic, whose opposite meanings make the check easy to misread.
+	wantPrivate := !wantPublic
+	if info.Private == wantPrivate {
 		return nil
 	}
 	actual, want := "private", "private"

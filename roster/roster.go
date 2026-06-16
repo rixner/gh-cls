@@ -24,14 +24,28 @@ func (r *Roster) Lookup(id string) (string, bool) {
 // ByUsername returns the reverse mapping, GitHub username -> identifier, with
 // usernames lower-cased because GitHub logins are case-insensitive. It lets a
 // caller turn a username observed on GitHub (a collaborator or an invitation's
-// invitee) back into the student identifier for an audit. If two identifiers
-// share a username (a roster error), the later one wins.
+// invitee) back into the student identifier for an audit. The mapping is
+// unambiguous: Parse rejects a roster that reuses a username, so no two
+// identifiers can collide here.
 func (r *Roster) ByUsername() map[string]string {
 	rev := make(map[string]string, len(r.ids))
 	for _, id := range r.ids {
 		rev[strings.ToLower(r.byID[id])] = id
 	}
 	return rev
+}
+
+// UsersByLowercase maps each lower-cased GitHub username to its original
+// spelling. The lower-cased key is the right comparison form (GitHub logins are
+// case-insensitive) while the value preserves the spelling for display and API
+// calls. The mapping is unambiguous because Parse rejects a reused username.
+func (r *Roster) UsersByLowercase() map[string]string {
+	m := make(map[string]string, len(r.ids))
+	for _, id := range r.ids {
+		u := r.byID[id]
+		m[strings.ToLower(u)] = u
+	}
+	return m
 }
 
 // IDs returns the student identifiers in the order they appeared in the file.

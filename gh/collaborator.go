@@ -36,20 +36,16 @@ type Invitation struct {
 // ListOrgReposByPrefix returns every repository in the org whose name starts
 // with prefix, paging through all results.
 func (c *restClient) ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]Repo, error) {
+	repos, err := getPaged[Repo](ctx, c, func(page int) string {
+		return fmt.Sprintf("orgs/%s/repos?per_page=%d&page=%d", url.PathEscape(org), pageSize, page)
+	})
+	if err != nil {
+		return nil, err
+	}
 	var out []Repo
-	for page := 1; ; page++ {
-		var batch []Repo
-		path := fmt.Sprintf("orgs/%s/repos?per_page=100&page=%d", url.PathEscape(org), page)
-		if _, err := c.do(ctx, "GET", path, nil, &batch); err != nil {
-			return nil, err
-		}
-		for _, r := range batch {
-			if strings.HasPrefix(r.Name, prefix) {
-				out = append(out, r)
-			}
-		}
-		if len(batch) < 100 {
-			break
+	for _, r := range repos {
+		if strings.HasPrefix(r.Name, prefix) {
+			out = append(out, r)
 		}
 	}
 	return out, nil
@@ -58,20 +54,10 @@ func (c *restClient) ListOrgReposByPrefix(ctx context.Context, org, prefix strin
 // ListDirectCollaborators returns a repository's direct collaborators (not those
 // with access only via a team or org membership).
 func (c *restClient) ListDirectCollaborators(ctx context.Context, owner, repo string) ([]Collaborator, error) {
-	var out []Collaborator
-	for page := 1; ; page++ {
-		var batch []Collaborator
-		path := fmt.Sprintf("repos/%s/%s/collaborators?affiliation=direct&per_page=100&page=%d",
-			url.PathEscape(owner), url.PathEscape(repo), page)
-		if _, err := c.do(ctx, "GET", path, nil, &batch); err != nil {
-			return nil, err
-		}
-		out = append(out, batch...)
-		if len(batch) < 100 {
-			break
-		}
-	}
-	return out, nil
+	return getPaged[Collaborator](ctx, c, func(page int) string {
+		return fmt.Sprintf("repos/%s/%s/collaborators?affiliation=direct&per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), pageSize, page)
+	})
 }
 
 // DeleteRepoInvitation cancels a repository invitation by its ID. Renewing an
@@ -87,18 +73,8 @@ func (c *restClient) DeleteRepoInvitation(ctx context.Context, owner, repo strin
 // users granted access who are not organization members and have not yet
 // accepted, so they hold no access despite a successful grant call.
 func (c *restClient) ListRepoInvitations(ctx context.Context, owner, repo string) ([]Invitation, error) {
-	var out []Invitation
-	for page := 1; ; page++ {
-		var batch []Invitation
-		path := fmt.Sprintf("repos/%s/%s/invitations?per_page=100&page=%d",
-			url.PathEscape(owner), url.PathEscape(repo), page)
-		if _, err := c.do(ctx, "GET", path, nil, &batch); err != nil {
-			return nil, err
-		}
-		out = append(out, batch...)
-		if len(batch) < 100 {
-			break
-		}
-	}
-	return out, nil
+	return getPaged[Invitation](ctx, c, func(page int) string {
+		return fmt.Sprintf("repos/%s/%s/invitations?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), pageSize, page)
+	})
 }

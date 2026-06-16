@@ -24,7 +24,10 @@ func TestGetRef(t *testing.T) {
 }
 
 func TestCreateRef(t *testing.T) {
-	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{}`)}, // POST create
+		{resp: okResp(`{"object":{"sha":"starter-sha"}}`)}, // GET verify
+	}}
 	var waits int
 	c := newTestClient(f, &waits)
 	err := c.CreateRef(context.Background(), "org", "hw1-ada", "refs/heads/feedback", "starter-sha")
@@ -38,6 +41,25 @@ func TestCreateRef(t *testing.T) {
 		if !strings.Contains(f.bodies[0], want) {
 			t.Errorf("body %s missing %s", f.bodies[0], want)
 		}
+	}
+	// The create is followed by a post-read of the new ref (without "refs/").
+	if f.methods[1] != "GET" || f.paths[1] != "repos/org/hw1-ada/git/ref/heads/feedback" {
+		t.Errorf("verification request = %s %s", f.methods[1], f.paths[1])
+	}
+}
+
+// TestCreateRefRejectsMismatch checks the post-read fails the create when the
+// ref does not resolve to the requested SHA.
+func TestCreateRefRejectsMismatch(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{}`)},                             // POST create
+		{resp: okResp(`{"object":{"sha":"other-sha"}}`)}, // GET verify: wrong sha
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	err := c.CreateRef(context.Background(), "org", "hw1-ada", "refs/heads/feedback", "starter-sha")
+	if err == nil || !strings.Contains(err.Error(), "starter-sha") {
+		t.Fatalf("a SHA mismatch should fail the create, got %v", err)
 	}
 }
 
