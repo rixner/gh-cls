@@ -82,9 +82,23 @@ touched. It uses unique per-run repo names and deletes everything it creates in
 `t.Cleanup` (the `staff` team is left behind by design — there is no delete-team
 primitive and `setup` is idempotent).
 
-If `GH_CLS_STUDENT1` is not an accepted org member, the run still passes but logs
-that it skipped the freeze downgrade assertions (the pending-invite collaborator
-does not appear in the repo's direct-collaborator list).
+**`GH_CLS_STUDENT1` is required** — the test skips entirely if it is unset (just
+as the whole run skips when `GH_CLS_LIVE_ORG` is unset). **`GH_CLS_STUDENT2` is
+optional**: it only adds a second member to the group team in the final step, for
+extra coverage. With a single student account, leave it unset — the group flow
+still runs with the one member.
+
+**Set `GH_CLS_STUDENT1` to a throwaway account, not your own login.** As org owner
+you are an admin on every repo, and `freeze` skips admins (see *The freeze caveat*
+above), so it would never downgrade you. Unlike the manual run — where this just
+reports `0` changes — the automated test still enrolls you as a direct
+collaborator and then asserts the write→read transition, so the freeze assertion
+would **fail**.
+
+For the freeze assertions to run, `GH_CLS_STUDENT1` must also be an *accepted* org
+member. If it is set but only a pending invite (or otherwise not a direct
+collaborator), the run still passes but logs that it skipped the freeze downgrade
+assertions — it runs freeze/undo anyway to prove they don't error.
 
 Afterward, confirm the org has no `ghclslive*` / `ghclssrc*` repos left — that
 verifies cleanup ran.
