@@ -147,9 +147,13 @@ func TestLive(t *testing.T) {
 	}
 
 	// 4 & 5. freeze + undo. The write->read downgrade is only observable when the
-	// student is a real direct collaborator (an accepted org member); otherwise
-	// run the commands to prove they don't error, and skip the assertions.
-	if studentIsCollaborator {
+	// student is a real direct collaborator (an accepted org member) who does not
+	// also hold standing admin: an org owner keeps push on every repo regardless
+	// of the collaborator grant, so freeze downgrades the grant but the effective
+	// permission never drops. In the unobservable cases, run the commands to prove
+	// they don't error and skip the downgrade assertions.
+	switch {
+	case studentIsCollaborator && !isEffectiveAdmin(t, ctx, client, org, repo, student1):
 		mustRunCLI(t, ctx, "freeze", name)
 		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
 		mustRunCLI(t, ctx, "freeze", "-u", name)
@@ -158,7 +162,18 @@ func TestLive(t *testing.T) {
 		if !strings.Contains(out, "0 collaborator grant(s)") {
 			t.Errorf("a second --undo should change nothing, got:\n%s", out)
 		}
-	} else {
+	case studentIsCollaborator:
+		t.Logf("student %q has admin on %s (likely an org owner) — freeze cannot downgrade "+
+			"an owner's inherited push, so the effective push->pull and pull->push reads are "+
+			"unobservable and are skipped. Use a non-owner member account to exercise them. "+
+			"The grant operations and undo idempotency are still checked.", student1, repo)
+		mustRunCLI(t, ctx, "freeze", name)
+		mustRunCLI(t, ctx, "freeze", "-u", name)
+		out = mustRunCLI(t, ctx, "freeze", "-u", name)
+		if !strings.Contains(out, "0 collaborator grant(s)") {
+			t.Errorf("a second --undo should change nothing, got:\n%s", out)
+		}
+	default:
 		t.Logf("student %q is not a direct collaborator on %s — likely a pending invite; "+
 			"make the account a member of %s to exercise the freeze downgrade. "+
 			"Running freeze/undo without downgrade assertions.", student1, repo, org)
@@ -182,6 +197,14 @@ func TestLive(t *testing.T) {
 	grpRepo := grp + "-alpha"
 	assertRepoExists(t, ctx, client, org, grpRepo)
 	assertPushGranted(t, ctx, client, org, grpRepo, student1)
+	// The group's whole point is multi-member grants: verify the second member too,
+	// or say plainly that the single-member run leaves that path uncovered.
+	if student2 != "" {
+		assertPushGranted(t, ctx, client, org, grpRepo, student2)
+	} else {
+		t.Logf("GH_CLS_STUDENT2 is unset — group %s has a single member, so the "+
+			"multi-member grant path is not exercised; set GH_CLS_STUDENT2 to cover it.", grpRepo)
+	}
 }
 
 // runCLI drives the root command in-process with the given args, capturing its
@@ -285,6 +308,8 @@ func assertOrgHardened(t *testing.T, ctx context.Context, client gh.Client, org 
 	if s.DefaultRepositoryPermission != "none" {
 		t.Errorf("base repository permission = %q, want %q", s.DefaultRepositoryPermission, "none")
 	}
+	assertToggledOff(t, "member repository creation", s.MembersCanCreateRepositories)
+	assertToggledOff(t, "member Pages creation", s.MembersCanCreatePages)
 	ap, err := client.GetActionsPermissions(ctx, org)
 	if err != nil {
 		t.Fatalf("reading Actions policy: %v", err)
@@ -296,6 +321,22 @@ func assertOrgHardened(t *testing.T, ctx context.Context, client gh.Client, org 
 		t.Fatalf("reading staff team: %v", err)
 	} else if !ok {
 		t.Error("staff team should exist after setup")
+	}
+}
+
+// assertToggledOff checks an org setting setup is meant to disable. The toggle is
+// a *bool because some plan tiers omit the field entirely; a nil value means the
+// org doesn't expose it, which is reported (not silently passed) so a tier that
+// can't be hardened on this point is visible rather than mistaken for hardened.
+func assertToggledOff(t *testing.T, label string, v *bool) {
+	t.Helper()
+	if v == nil {
+		t.Logf("%s toggle is absent from this org's settings (some plan tiers omit it) — "+
+			"skipping its check.", label)
+		return
+	}
+	if *v {
+		t.Errorf("%s should be disabled after setup, got enabled", label)
 	}
 }
 
@@ -340,12 +381,26 @@ func assertPushGranted(t *testing.T, ctx context.Context, client gh.Client, org,
 	t.Helper()
 	c, ok := directCollaborator(t, ctx, client, org, repo, login)
 	if !ok {
+		t.Logf("%s is not a direct collaborator on %s/%s (likely a pending invite) — "+
+			"skipping the push-grant check; have the account accept the org invite to verify it.",
+			login, org, repo)
 		return false
 	}
 	if !c.Permissions.Push {
 		t.Errorf("%s should have push on %s/%s", login, org, repo)
 	}
 	return true
+}
+
+// isEffectiveAdmin reports whether login has standing admin on the repo. An org
+// owner is reported as admin on every repo regardless of the direct collaborator
+// grant, so freeze (which only downgrades the grant) cannot strip their push and
+// the downgrade is unobservable. assign grants push, never admin, so an admin bit
+// on a freshly-assigned student means inherited ownership/role, not the grant.
+func isEffectiveAdmin(t *testing.T, ctx context.Context, client gh.Client, org, repo, login string) bool {
+	t.Helper()
+	c, ok := directCollaborator(t, ctx, client, org, repo, login)
+	return ok && c.Permissions.Admin
 }
 
 // assertPermission requires the login to be a direct collaborator with the
