@@ -163,11 +163,11 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `--force` run is finished by re-running), and editing a file posts a new comment
   rather than changing the old one.
 
-## First run against a live org
+## Before a real run
 
-Nothing here was exercised against the live GitHub API while it was written.
-Before a real run, preview with `--dry-run`, and verify in Billing & plans that
-the **org** shows "Team" (required for `--branch-protection`).
+Preview any command with `--dry-run` first. The `--branch-protection` ruleset
+requires the organization to be on GitHub's Team plan or higher; confirm under
+**Billing & plans** that the org shows "Team".
 
 ## Development
 
