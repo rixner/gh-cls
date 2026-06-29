@@ -110,7 +110,11 @@ gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
 gh cls freeze hw1
 gh cls freeze hw1 --undo
 
-# 6. After grading: post one feedback file per student/team as a comment on the
+# 6. Collect submissions locally to grade by hand (one shallow clone per student,
+#    tagged each collect; see COLLECT.md for the model and the git you need).
+gh cls collect hw1 --roster roster.csv --out ./hw1
+
+# 7. After grading: post one feedback file per student/team as a comment on the
 #    repo's feedback issue or PR. Files are named <username>.md / <team>.md.
 gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 ```
@@ -167,6 +171,19 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   Idempotent: a re-run only posts feedback not already present (so a partial or
   `--force` run is finished by re-running), and editing a file posts a new comment
   rather than changing the old one.
+- **collect** clones each student or team repository locally for hand grading,
+  one shallow clone per repo under `--out`, taking each to its target commit and
+  tagging it (`gh-cls/collect/<label>`) so every collection is preserved. The
+  default target is the default-branch tip; `--commits <yml>` pins exact SHAs
+  (for grading the deadline state). Re-running a label tops up only repos not yet
+  collected under it; a new label advances the clones and tags the new state,
+  leaving prior tags in place. It is roster-aware (`--roster` for individual,
+  `--teams` for group), reporting any missing or unexpected repositories, and
+  refuses to disturb a clone with local changes so grading-script edits survive.
+  Shallow keeps disk small; a clone is a normal git repo, so `git restore .`,
+  `git fetch --unshallow`, and `git checkout gh-cls/collect/<label>` all work.
+  It is the one command that uses git (cloning via `gh`, updates via git). **See
+  [COLLECT.md](COLLECT.md) for the model and the git you may want.**
 - **status** reports the current state of the org without changing anything: the
   staff team and its size, and for each assignment (or just `<name>`) how many
   student repositories exist and their visibility, flagging any that contradict

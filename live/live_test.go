@@ -35,6 +35,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -195,6 +196,21 @@ func TestLive(t *testing.T) {
 	}
 	if row := csvRowFor(t, detailCSV, repo); row["feedback"] != "open" {
 		t.Errorf("CSV feedback for %s = %q, want open", repo, row["feedback"])
+	}
+
+	// 3d. collect — shallow-clone the student repo locally and tag it. Exercises
+	// the real gh clone + git tag + manifest path.
+	collectDir := filepath.Join(dir, "collected")
+	mustRunCLI(t, ctx, "collect", name, "--roster", rosterInd, "--out", collectDir, "--label", "livetest")
+	if _, err := os.Stat(filepath.Join(collectDir, student1, ".git")); err != nil {
+		t.Errorf("collect should produce a clone with .git for %s: %v", student1, err)
+	}
+	if row := csvRowFor(t, filepath.Join(collectDir, "collected.csv"), repo); row["label"] != "livetest" || row["sha"] == "" {
+		t.Errorf("collect manifest row wrong for %s: %v", repo, row)
+	}
+	tagOut, err := exec.CommandContext(ctx, "git", "-C", filepath.Join(collectDir, student1), "tag", "-l", "gh-cls/collect/livetest").Output()
+	if err != nil || strings.TrimSpace(string(tagOut)) == "" {
+		t.Errorf("collect should tag the commit gh-cls/collect/livetest (err=%v, out=%q)", err, tagOut)
 	}
 
 	// 4 & 5. freeze + undo. The write->read downgrade is only observable when the
