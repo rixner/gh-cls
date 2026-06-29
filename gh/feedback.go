@@ -71,28 +71,29 @@ func (c *restClient) CreatePR(ctx context.Context, owner, repo, title, head, bas
 	return err
 }
 
-// FindPRByBase returns the number of a pull request (open or closed) targeting
-// base in the repository. The feedback PR is the only one whose base is the
-// feedback branch, so this locates an already-created feedback PR without
+// FindPRByBase returns the number and state ("open"/"closed") of a pull request
+// targeting base in the repository. The feedback PR is the only one whose base is
+// the feedback branch, so this locates an already-created feedback PR without
 // reopening a closed one. found is false (with a nil error) when none matches.
-func (c *restClient) FindPRByBase(ctx context.Context, owner, repo, base string) (int, bool, error) {
+func (c *restClient) FindPRByBase(ctx context.Context, owner, repo, base string) (int, string, bool, error) {
 	path := fmt.Sprintf("repos/%s/%s/pulls?state=all&base=%s&per_page=1",
 		url.PathEscape(owner), url.PathEscape(repo), url.QueryEscape(base))
 	var prs []struct {
-		Number int `json:"number"`
+		Number int    `json:"number"`
+		State  string `json:"state"`
 	}
 	if _, err := c.do(ctx, "GET", path, nil, &prs); err != nil {
-		return 0, false, err
+		return 0, "", false, err
 	}
 	if len(prs) == 0 {
-		return 0, false, nil
+		return 0, "", false, nil
 	}
-	return prs[0].Number, true, nil
+	return prs[0].Number, prs[0].State, true, nil
 }
 
 // PRExists reports whether any pull request (any state) targets base.
 func (c *restClient) PRExists(ctx context.Context, owner, repo, base string) (bool, error) {
-	_, found, err := c.FindPRByBase(ctx, owner, repo, base)
+	_, _, found, err := c.FindPRByBase(ctx, owner, repo, base)
 	return found, err
 }
 
@@ -110,14 +111,15 @@ func (c *restClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	return err
 }
 
-// FindIssueByTitle returns the number of an issue (open or closed) with the
-// given title. The issues endpoint also lists pull requests, which carry a
-// pull_request field and are skipped. found is false (with a nil error) when no
+// FindIssueByTitle returns the number and state ("open"/"closed") of an issue
+// with the given title. The issues endpoint also lists pull requests, which carry
+// a pull_request field and are skipped. found is false (with a nil error) when no
 // issue matches.
-func (c *restClient) FindIssueByTitle(ctx context.Context, owner, repo, title string) (int, bool, error) {
+func (c *restClient) FindIssueByTitle(ctx context.Context, owner, repo, title string) (int, string, bool, error) {
 	type issue struct {
 		Number      int       `json:"number"`
 		Title       string    `json:"title"`
+		State       string    `json:"state"`
 		PullRequest *struct{} `json:"pull_request"`
 	}
 	it, found, err := selectPaged(ctx, c, func(page int) string {
@@ -126,12 +128,12 @@ func (c *restClient) FindIssueByTitle(ctx context.Context, owner, repo, title st
 	}, func(it issue) bool {
 		return it.PullRequest == nil && it.Title == title
 	})
-	return it.Number, found, err
+	return it.Number, it.State, found, err
 }
 
 // IssueExists reports whether an issue (any state) with the given title exists.
 func (c *restClient) IssueExists(ctx context.Context, owner, repo, title string) (bool, error) {
-	_, found, err := c.FindIssueByTitle(ctx, owner, repo, title)
+	_, _, found, err := c.FindIssueByTitle(ctx, owner, repo, title)
 	return found, err
 }
 

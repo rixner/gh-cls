@@ -31,6 +31,7 @@ package live
 import (
 	"bytes"
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -166,6 +167,34 @@ func TestLive(t *testing.T) {
 	}
 	if n := feedbackCommentCount(t, ctx, client, org, repo, fbBody); n != 1 {
 		t.Errorf("re-running feedback must not duplicate the comment, got %d", n)
+	}
+
+	// 3c. status — read-only overview. The student repo was created public (-p)
+	// under the assignment's default-private policy, so status both counts the
+	// one repo and flags the visibility drift. A whole-course run is also
+	// exercised to cover the multi-assignment path.
+	out = mustRunCLI(t, ctx, "status", name)
+	if !strings.Contains(out, "Staff team: staff") {
+		t.Errorf("status should report the staff team, got:\n%s", out)
+	}
+	if !strings.Contains(out, "1 public") {
+		t.Errorf("status should count the one public student repo, got:\n%s", out)
+	}
+	if !strings.Contains(out, "policy") {
+		t.Errorf("status should flag the public repo under a private policy, got:\n%s", out)
+	}
+	mustRunCLI(t, ctx, "status")
+
+	// status --detail scans the repo and writes a per-repo CSV. The feedback issue
+	// exists and is open regardless of whether the student accepted membership, so
+	// assert that; the freeze state depends on membership and is left unasserted.
+	detailCSV := filepath.Join(dir, "status-detail.csv")
+	out = mustRunCLI(t, ctx, "status", name, "--detail", "--out", detailCSV)
+	if !strings.Contains(out, "1 open") {
+		t.Errorf("status --detail should report the open feedback issue, got:\n%s", out)
+	}
+	if row := csvRowFor(t, detailCSV, repo); row["feedback"] != "open" {
+		t.Errorf("CSV feedback for %s = %q, want open", repo, row["feedback"])
 	}
 
 	// 4 & 5. freeze + undo. The write->read downgrade is only observable when the
@@ -386,12 +415,44 @@ func assertTemplate(t *testing.T, ctx context.Context, client gh.Client, org, de
 	}
 }
 
+// csvRowFor reads a status --detail CSV and returns the row for repo as a
+// header->value map, failing if the file or row is absent.
+func csvRowFor(t *testing.T, path, repo string) map[string]string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatalf("opening status CSV %s: %v", path, err)
+	}
+	defer f.Close()
+	recs, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatalf("reading status CSV %s: %v", path, err)
+	}
+	if len(recs) == 0 {
+		t.Fatalf("status CSV %s is empty", path)
+	}
+	header := recs[0]
+	for _, r := range recs[1:] {
+		m := make(map[string]string, len(header))
+		for i, h := range header {
+			if i < len(r) {
+				m[h] = r[i]
+			}
+		}
+		if m["repo"] == repo {
+			return m
+		}
+	}
+	t.Fatalf("no row for %s in %s", repo, path)
+	return nil
+}
+
 // feedbackCommentCount returns how many comments on the repo's feedback issue
 // contain body. It resolves the issue by its title, the same way the feedback
 // command does.
 func feedbackCommentCount(t *testing.T, ctx context.Context, client gh.Client, org, repo, body string) int {
 	t.Helper()
-	number, found, err := client.FindIssueByTitle(ctx, org, repo, "Feedback")
+	number, _, found, err := client.FindIssueByTitle(ctx, org, repo, "Feedback")
 	if err != nil {
 		t.Fatalf("finding feedback issue on %s: %v", repo, err)
 	}

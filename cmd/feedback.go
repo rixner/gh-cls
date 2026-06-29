@@ -38,8 +38,8 @@ const (
 type feedbackClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
-	FindIssueByTitle(ctx context.Context, owner, repo, title string) (int, bool, error)
-	FindPRByBase(ctx context.Context, owner, repo, base string) (int, bool, error)
+	FindIssueByTitle(ctx context.Context, owner, repo, title string) (int, string, bool, error)
+	FindPRByBase(ctx context.Context, owner, repo, base string) (int, string, bool, error)
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]gh.Comment, error)
 	AddComment(ctx context.Context, owner, repo string, number int, body string) (string, error)
 }
@@ -322,12 +322,15 @@ func (o *feedbackOpts) post(ctx context.Context, client feedbackClient, org, nam
 }
 
 // findArtifact returns the number of the repo's feedback artifact for the mode.
+// The artifact state is unused here (posting a comment works on any state).
 func findArtifact(ctx context.Context, client feedbackClient, org, repo, mode string) (int, bool, error) {
 	switch mode {
 	case feedbackIssue:
-		return client.FindIssueByTitle(ctx, org, repo, feedbackTitle)
+		n, _, found, err := client.FindIssueByTitle(ctx, org, repo, feedbackTitle)
+		return n, found, err
 	case feedbackPR:
-		return client.FindPRByBase(ctx, org, repo, feedbackBranch)
+		n, _, found, err := client.FindPRByBase(ctx, org, repo, feedbackBranch)
+		return n, found, err
 	default:
 		return 0, false, fmt.Errorf("unknown feedback mode %q", mode)
 	}

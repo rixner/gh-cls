@@ -67,18 +67,18 @@ type Client interface {
 	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
 	// PRExists reports whether any pull request (any state) targets base.
 	PRExists(ctx context.Context, owner, repo, base string) (bool, error)
-	// FindPRByBase returns the number of a pull request (any state) targeting
-	// base; found is false when none matches.
-	FindPRByBase(ctx context.Context, owner, repo, base string) (number int, found bool, err error)
+	// FindPRByBase returns the number and state ("open"/"closed") of a pull
+	// request (any state) targeting base; found is false when none matches.
+	FindPRByBase(ctx context.Context, owner, repo, base string) (number int, state string, found bool, err error)
 	// EnableIssues turns on the Issues feature for a repository.
 	EnableIssues(ctx context.Context, owner, repo string) error
 	// CreateIssue opens an issue.
 	CreateIssue(ctx context.Context, owner, repo, title, body string) error
 	// IssueExists reports whether an issue (any state) with title exists.
 	IssueExists(ctx context.Context, owner, repo, title string) (bool, error)
-	// FindIssueByTitle returns the number of an issue (any state) with title,
-	// skipping pull requests; found is false when none matches.
-	FindIssueByTitle(ctx context.Context, owner, repo, title string) (number int, found bool, err error)
+	// FindIssueByTitle returns the number and state ("open"/"closed") of an issue
+	// (any state) with title, skipping pull requests; found is false when none matches.
+	FindIssueByTitle(ctx context.Context, owner, repo, title string) (number int, state string, found bool, err error)
 	// ListIssueComments returns every comment on an issue or pull request.
 	ListIssueComments(ctx context.Context, owner, repo string, number int) ([]Comment, error)
 	// AddComment posts a comment to an issue or pull request, returning its HTML URL.

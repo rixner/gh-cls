@@ -218,19 +218,19 @@ func TestIssueExists(t *testing.T) {
 }
 
 func TestFindIssueByTitle(t *testing.T) {
-	t.Run("returns the issue number, skipping a like-titled PR", func(t *testing.T) {
+	t.Run("returns the issue number and state, skipping a like-titled PR", func(t *testing.T) {
 		// First entry is a PR sharing the title (issues endpoint includes them);
-		// the second is the real issue, whose number must be returned.
+		// the second is the real issue, whose number and state must be returned.
 		f := &fakeRequester{steps: []step{{resp: okResp(
-			`[{"number":3,"title":"Feedback","pull_request":{"url":"x"}},{"number":9,"title":"Feedback"}]`)}}}
+			`[{"number":3,"title":"Feedback","state":"open","pull_request":{"url":"x"}},{"number":9,"title":"Feedback","state":"closed"}]`)}}}
 		var waits int
 		c := newTestClient(f, &waits)
-		n, found, err := c.FindIssueByTitle(context.Background(), "org", "hw1-ada", "Feedback")
+		n, state, found, err := c.FindIssueByTitle(context.Background(), "org", "hw1-ada", "Feedback")
 		if err != nil || !found {
 			t.Fatalf("want found, got found=%v err=%v", found, err)
 		}
-		if n != 9 {
-			t.Errorf("number = %d, want 9 (the issue, not the PR)", n)
+		if n != 9 || state != "closed" {
+			t.Errorf("got number=%d state=%q, want 9/closed (the issue, not the PR)", n, state)
 		}
 		if f.paths[0] != "repos/org/hw1-ada/issues?state=all&per_page=100&page=1" {
 			t.Errorf("path = %q", f.paths[0])
@@ -240,24 +240,24 @@ func TestFindIssueByTitle(t *testing.T) {
 		f := &fakeRequester{steps: []step{{resp: okResp(`[]`)}}}
 		var waits int
 		c := newTestClient(f, &waits)
-		n, found, err := c.FindIssueByTitle(context.Background(), "org", "hw1-ada", "Feedback")
-		if err != nil || found || n != 0 {
-			t.Fatalf("empty list should mean not found, got n=%d found=%v err=%v", n, found, err)
+		n, state, found, err := c.FindIssueByTitle(context.Background(), "org", "hw1-ada", "Feedback")
+		if err != nil || found || n != 0 || state != "" {
+			t.Fatalf("empty list should mean not found, got n=%d state=%q found=%v err=%v", n, state, found, err)
 		}
 	})
 }
 
 func TestFindPRByBase(t *testing.T) {
-	t.Run("returns the PR number", func(t *testing.T) {
-		f := &fakeRequester{steps: []step{{resp: okResp(`[{"number":7}]`)}}}
+	t.Run("returns the PR number and state", func(t *testing.T) {
+		f := &fakeRequester{steps: []step{{resp: okResp(`[{"number":7,"state":"open"}]`)}}}
 		var waits int
 		c := newTestClient(f, &waits)
-		n, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
+		n, state, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
 		if err != nil || !found {
 			t.Fatalf("want found, got found=%v err=%v", found, err)
 		}
-		if n != 7 {
-			t.Errorf("number = %d, want 7", n)
+		if n != 7 || state != "open" {
+			t.Errorf("got number=%d state=%q, want 7/open", n, state)
 		}
 		if f.paths[0] != "repos/org/hw1-ada/pulls?state=all&base=feedback&per_page=1" {
 			t.Errorf("path = %q", f.paths[0])
@@ -267,9 +267,9 @@ func TestFindPRByBase(t *testing.T) {
 		f := &fakeRequester{steps: []step{{resp: okResp(`[]`)}}}
 		var waits int
 		c := newTestClient(f, &waits)
-		n, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
-		if err != nil || found || n != 0 {
-			t.Fatalf("empty list should mean not found, got n=%d found=%v err=%v", n, found, err)
+		n, state, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
+		if err != nil || found || n != 0 || state != "" {
+			t.Fatalf("empty list should mean not found, got n=%d state=%q found=%v err=%v", n, state, found, err)
 		}
 	})
 }

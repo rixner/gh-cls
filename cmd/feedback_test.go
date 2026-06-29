@@ -70,18 +70,18 @@ func (f *fakeFeedbackClient) GetRepo(_ context.Context, _, name string) (*gh.Rep
 	return nil, false, nil
 }
 
-func (f *fakeFeedbackClient) FindIssueByTitle(_ context.Context, _, repo, _ string) (int, bool, error) {
+func (f *fakeFeedbackClient) FindIssueByTitle(_ context.Context, _, repo, _ string) (int, string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n, ok := f.issueNum[repo]
-	return n, ok, nil
+	return n, "open", ok, nil
 }
 
-func (f *fakeFeedbackClient) FindPRByBase(_ context.Context, _, repo, _ string) (int, bool, error) {
+func (f *fakeFeedbackClient) FindPRByBase(_ context.Context, _, repo, _ string) (int, string, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	n, ok := f.prNum[repo]
-	return n, ok, nil
+	return n, "open", ok, nil
 }
 
 func (f *fakeFeedbackClient) ListIssueComments(_ context.Context, _, repo string, _ int) ([]gh.Comment, error) {

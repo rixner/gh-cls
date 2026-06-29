@@ -97,6 +97,11 @@ gh cls template hw1-template --source cs101-staff/hw1-dev
 gh cls assign hw1 --roster roster.csv
 gh cls assign project --roster roster.csv --teams teams.yml --branch-protection
 
+# Anytime: a read-only overview of the staff team and each assignment's repos.
+gh cls status
+gh cls status hw1
+gh cls status hw1 --detail   # per-repo freeze/feedback scan, also writes a CSV
+
 # 4. Anytime: reconcile who should be on each repo against who actually is.
 gh cls audit hw1 --roster roster.csv
 gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
@@ -162,6 +167,17 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   Idempotent: a re-run only posts feedback not already present (so a partial or
   `--force` run is finished by re-running), and editing a file posts a new comment
   rather than changing the old one.
+- **status** reports the current state of the org without changing anything: the
+  staff team and its size, and for each assignment (or just `<name>`) how many
+  student repositories exist and their visibility, flagging any that contradict
+  the assignment's policy. With `--detail` it also scans each repo for its freeze
+  state (write vs read for non-admins, including a "mixed" partial freeze) and its
+  feedback issue/PR state (open, closed, or missing), printing per-assignment
+  counts and writing a per-repo CSV. The CSV is a timestamped file in the current
+  directory (or `--out <path>`) and is never overwritten: a same-second re-run
+  rolls to a new name, so a run, fix, re-run loop leaves both files to compare.
+  `--detail` costs one to two API calls per repo; the default summary does not.
+  status reads only, so it needs no org-owner role.
 
 ## Before a real run
 
