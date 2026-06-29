@@ -172,9 +172,14 @@ the **org** shows "Team" (required for `--branch-protection`).
 ## Development
 
 ```sh
-go build ./...   # builds the gh-cls binary
+go build         # builds the gh-cls binary
+go vet ./...     # static checks across all packages
 go test ./...    # all tests run locally against fakes (no network)
 ```
+
+The tests above never touch the network. For exercising `gh cls` end to end
+against a real, disposable org (by hand or via the opt-in `go test -tags live
+./live/`), see [TESTING_LIVE.md](TESTING_LIVE.md).
 
 ## AI Assistance
 
