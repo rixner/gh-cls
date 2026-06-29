@@ -146,6 +146,28 @@ func TestLive(t *testing.T) {
 		t.Errorf("re-running assign should skip the existing repo (want '1 skipped'), got:\n%s", out)
 	}
 
+	// 3b. feedback — post a graded feedback file to the student's feedback issue,
+	// verify the comment landed, then prove a re-run is idempotent (no duplicate).
+	fbDir := filepath.Join(dir, "feedback")
+	if err := os.Mkdir(fbDir, 0o755); err != nil {
+		t.Fatalf("creating feedback dir: %v", err)
+	}
+	fbBody := "Great work on " + name + " — see inline notes."
+	if err := os.WriteFile(filepath.Join(fbDir, student1+".md"), []byte(fbBody), 0o600); err != nil {
+		t.Fatalf("writing feedback file: %v", err)
+	}
+	mustRunCLI(t, ctx, "feedback", name, "-d", fbDir, "-r", rosterInd)
+	if n := feedbackCommentCount(t, ctx, client, org, repo, fbBody); n != 1 {
+		t.Errorf("feedback issue on %s should have exactly one comment with the body, got %d", repo, n)
+	}
+	out = mustRunCLI(t, ctx, "feedback", name, "-d", fbDir, "-r", rosterInd)
+	if !strings.Contains(out, "0 posted, 1 up-to-date") {
+		t.Errorf("re-running feedback should be a no-op (want '0 posted, 1 up-to-date'), got:\n%s", out)
+	}
+	if n := feedbackCommentCount(t, ctx, client, org, repo, fbBody); n != 1 {
+		t.Errorf("re-running feedback must not duplicate the comment, got %d", n)
+	}
+
 	// 4 & 5. freeze + undo. The write->read downgrade is only observable when the
 	// student is a real direct collaborator (an accepted org member) who does not
 	// also hold standing admin: an org owner keeps push on every repo regardless
@@ -263,6 +285,7 @@ assignments:
   %[2]s:
     type: individual
     template: %[2]s-template
+    feedback: issue
   %[3]s:
     type: group
     template: %[3]s-template
@@ -361,6 +384,31 @@ func assertTemplate(t *testing.T, ctx context.Context, client gh.Client, org, de
 			t.Errorf("branch %s of %s has %d commits, want 1 (not squashed)", b.Name, derived, b.Commits)
 		}
 	}
+}
+
+// feedbackCommentCount returns how many comments on the repo's feedback issue
+// contain body. It resolves the issue by its title, the same way the feedback
+// command does.
+func feedbackCommentCount(t *testing.T, ctx context.Context, client gh.Client, org, repo, body string) int {
+	t.Helper()
+	number, found, err := client.FindIssueByTitle(ctx, org, repo, "Feedback")
+	if err != nil {
+		t.Fatalf("finding feedback issue on %s: %v", repo, err)
+	}
+	if !found {
+		t.Fatalf("feedback issue should exist on %s/%s", org, repo)
+	}
+	comments, err := client.ListIssueComments(ctx, org, repo, number)
+	if err != nil {
+		t.Fatalf("listing comments on %s feedback issue: %v", repo, err)
+	}
+	n := 0
+	for _, c := range comments {
+		if strings.Contains(c.Body, body) {
+			n++
+		}
+	}
+	return n
 }
 
 func assertRepoExists(t *testing.T, ctx context.Context, client gh.Client, org, name string) *gh.Repo {

@@ -104,6 +104,10 @@ gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
 # 5. At the deadline: downgrade students from write to read (reverse with -u).
 gh cls freeze hw1
 gh cls freeze hw1 --undo
+
+# 6. After grading: post one feedback file per student/team as a comment on the
+#    repo's feedback issue or PR. Files are named <username>.md / <team>.md.
+gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 ```
 
 - **setup** sets base permission to none, disables member repo/Pages creation
@@ -148,6 +152,16 @@ gh cls freeze hw1 --undo
   the roster, so a drifted roster cannot let anyone escape the freeze. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix
   is never frozen.
+- **feedback** posts one feedback file per student (or team) as a comment on that
+  repo's feedback issue or PR — the artifact assign created, named by the
+  assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or
+  `<key>.txt`, where `<key>` is the GitHub username (individual) or team name
+  (group); contents are rendered as Markdown. The directory must hold exactly one
+  file per student/team — a missing file or a file matching no one is named and
+  aborts, unless `--force` posts the matching subset and reports the rest.
+  Idempotent: a re-run only posts feedback not already present (so a partial or
+  `--force` run is finished by re-running), and editing a file posts a new comment
+  rather than changing the old one.
 
 ## First run against a live org
 

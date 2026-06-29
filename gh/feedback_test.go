@@ -216,3 +216,118 @@ func TestIssueExists(t *testing.T) {
 		}
 	})
 }
+
+func TestFindIssueByTitle(t *testing.T) {
+	t.Run("returns the issue number, skipping a like-titled PR", func(t *testing.T) {
+		// First entry is a PR sharing the title (issues endpoint includes them);
+		// the second is the real issue, whose number must be returned.
+		f := &fakeRequester{steps: []step{{resp: okResp(
+			`[{"number":3,"title":"Feedback","pull_request":{"url":"x"}},{"number":9,"title":"Feedback"}]`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		n, found, err := c.FindIssueByTitle(context.Background(), "org", "hw1-ada", "Feedback")
+		if err != nil || !found {
+			t.Fatalf("want found, got found=%v err=%v", found, err)
+		}
+		if n != 9 {
+			t.Errorf("number = %d, want 9 (the issue, not the PR)", n)
+		}
+		if f.paths[0] != "repos/org/hw1-ada/issues?state=all&per_page=100&page=1" {
+			t.Errorf("path = %q", f.paths[0])
+		}
+	})
+	t.Run("not found on empty list", func(t *testing.T) {
+		f := &fakeRequester{steps: []step{{resp: okResp(`[]`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		n, found, err := c.FindIssueByTitle(context.Background(), "org", "hw1-ada", "Feedback")
+		if err != nil || found || n != 0 {
+			t.Fatalf("empty list should mean not found, got n=%d found=%v err=%v", n, found, err)
+		}
+	})
+}
+
+func TestFindPRByBase(t *testing.T) {
+	t.Run("returns the PR number", func(t *testing.T) {
+		f := &fakeRequester{steps: []step{{resp: okResp(`[{"number":7}]`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		n, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
+		if err != nil || !found {
+			t.Fatalf("want found, got found=%v err=%v", found, err)
+		}
+		if n != 7 {
+			t.Errorf("number = %d, want 7", n)
+		}
+		if f.paths[0] != "repos/org/hw1-ada/pulls?state=all&base=feedback&per_page=1" {
+			t.Errorf("path = %q", f.paths[0])
+		}
+	})
+	t.Run("not found on empty list", func(t *testing.T) {
+		f := &fakeRequester{steps: []step{{resp: okResp(`[]`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		n, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
+		if err != nil || found || n != 0 {
+			t.Fatalf("empty list should mean not found, got n=%d found=%v err=%v", n, found, err)
+		}
+	})
+}
+
+func TestListIssueComments(t *testing.T) {
+	// Two full pages then a short page: getPaged must concatenate all of them.
+	first := make([]string, pageSize)
+	for i := range first {
+		first[i] = `{"body":"a"}`
+	}
+	f := &fakeRequester{steps: []step{
+		{resp: okResp("[" + strings.Join(first, ",") + "]")},
+		{resp: okResp(`[{"body":"marker here"},{"body":"b"}]`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	comments, err := c.ListIssueComments(context.Background(), "org", "hw1-ada", 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(comments) != pageSize+2 {
+		t.Fatalf("got %d comments, want %d (both pages)", len(comments), pageSize+2)
+	}
+	if comments[pageSize].Body != "marker here" {
+		t.Errorf("second page body = %q", comments[pageSize].Body)
+	}
+	if f.paths[0] != "repos/org/hw1-ada/issues/9/comments?per_page=100&page=1" {
+		t.Errorf("path = %q", f.paths[0])
+	}
+}
+
+func TestAddComment(t *testing.T) {
+	t.Run("posts the body and returns the URL", func(t *testing.T) {
+		f := &fakeRequester{steps: []step{{resp: okResp(`{"html_url":"https://github.com/org/hw1-ada/issues/9#issuecomment-1"}`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		url, err := c.AddComment(context.Background(), "org", "hw1-ada", 9, "well done")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if url != "https://github.com/org/hw1-ada/issues/9#issuecomment-1" {
+			t.Errorf("url = %q", url)
+		}
+		if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/issues/9/comments" {
+			t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+		}
+		if !strings.Contains(f.bodies[0], `"body":"well done"`) {
+			t.Errorf("body %s missing comment text", f.bodies[0])
+		}
+	})
+	t.Run("fails when the response carries no URL", func(t *testing.T) {
+		// A 200 with no html_url means the comment cannot be confirmed; the
+		// post-condition must turn that into a loud error, not a silent success.
+		f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		if _, err := c.AddComment(context.Background(), "org", "hw1-ada", 9, "x"); err == nil {
+			t.Fatal("a response without html_url should fail")
+		}
+	})
+}

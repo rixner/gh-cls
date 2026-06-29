@@ -125,6 +125,7 @@ The org and staff team come from a user-authored config file, located with
 		newAssignCmd(g),
 		newFreezeCmd(g),
 		newAuditCmd(g),
+		newFeedbackCmd(g),
 	)
 	return root
 }

@@ -26,23 +26,26 @@ func getPaged[T any](ctx context.Context, c *restClient, pathFor func(page int) 
 	return out, nil
 }
 
-// findPaged scans a paginated GET endpoint page by page and returns true as soon
-// as match reports true for an item, without fetching the remaining pages. Like
-// getPaged it stops once a page returns fewer than pageSize items.
-func findPaged[T any](ctx context.Context, c *restClient, pathFor func(page int) string, match func(T) bool) (bool, error) {
+// selectPaged scans a paginated GET endpoint page by page and returns the first
+// item for which match reports true (with found true), without fetching the
+// remaining pages. Like getPaged it stops once a page returns fewer than
+// pageSize items. When nothing matches it returns the zero value and found false.
+func selectPaged[T any](ctx context.Context, c *restClient, pathFor func(page int) string, match func(T) bool) (T, bool, error) {
 	for page := 1; ; page++ {
 		var batch []T
 		if _, err := c.do(ctx, "GET", pathFor(page), nil, &batch); err != nil {
-			return false, err
+			var zero T
+			return zero, false, err
 		}
 		for _, item := range batch {
 			if match(item) {
-				return true, nil
+				return item, true, nil
 			}
 		}
 		if len(batch) < pageSize {
 			break
 		}
 	}
-	return false, nil
+	var zero T
+	return zero, false, nil
 }

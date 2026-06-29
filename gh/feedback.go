@@ -71,19 +71,29 @@ func (c *restClient) CreatePR(ctx context.Context, owner, repo, title, head, bas
 	return err
 }
 
-// PRExists reports whether any pull request (open or closed) targets base in the
-// repository. The feedback PR is the only one whose base is the feedback branch,
-// so this detects an already-created feedback PR without reopening a closed one.
-func (c *restClient) PRExists(ctx context.Context, owner, repo, base string) (bool, error) {
+// FindPRByBase returns the number of a pull request (open or closed) targeting
+// base in the repository. The feedback PR is the only one whose base is the
+// feedback branch, so this locates an already-created feedback PR without
+// reopening a closed one. found is false (with a nil error) when none matches.
+func (c *restClient) FindPRByBase(ctx context.Context, owner, repo, base string) (int, bool, error) {
 	path := fmt.Sprintf("repos/%s/%s/pulls?state=all&base=%s&per_page=1",
 		url.PathEscape(owner), url.PathEscape(repo), url.QueryEscape(base))
 	var prs []struct {
 		Number int `json:"number"`
 	}
 	if _, err := c.do(ctx, "GET", path, nil, &prs); err != nil {
-		return false, err
+		return 0, false, err
 	}
-	return len(prs) > 0, nil
+	if len(prs) == 0 {
+		return 0, false, nil
+	}
+	return prs[0].Number, true, nil
+}
+
+// PRExists reports whether any pull request (any state) targets base.
+func (c *restClient) PRExists(ctx context.Context, owner, repo, base string) (bool, error) {
+	_, found, err := c.FindPRByBase(ctx, owner, repo, base)
+	return found, err
 }
 
 // EnableIssues turns on the Issues feature for a repository.
@@ -100,18 +110,59 @@ func (c *restClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	return err
 }
 
-// IssueExists reports whether an issue (open or closed) with the given title
-// exists in the repository. The issues endpoint also lists pull requests, which
-// carry a pull_request field and are skipped.
-func (c *restClient) IssueExists(ctx context.Context, owner, repo, title string) (bool, error) {
+// FindIssueByTitle returns the number of an issue (open or closed) with the
+// given title. The issues endpoint also lists pull requests, which carry a
+// pull_request field and are skipped. found is false (with a nil error) when no
+// issue matches.
+func (c *restClient) FindIssueByTitle(ctx context.Context, owner, repo, title string) (int, bool, error) {
 	type issue struct {
+		Number      int       `json:"number"`
 		Title       string    `json:"title"`
 		PullRequest *struct{} `json:"pull_request"`
 	}
-	return findPaged(ctx, c, func(page int) string {
+	it, found, err := selectPaged(ctx, c, func(page int) string {
 		return fmt.Sprintf("repos/%s/%s/issues?state=all&per_page=%d&page=%d",
 			url.PathEscape(owner), url.PathEscape(repo), pageSize, page)
 	}, func(it issue) bool {
 		return it.PullRequest == nil && it.Title == title
 	})
+	return it.Number, found, err
+}
+
+// IssueExists reports whether an issue (any state) with the given title exists.
+func (c *restClient) IssueExists(ctx context.Context, owner, repo, title string) (bool, error) {
+	_, found, err := c.FindIssueByTitle(ctx, owner, repo, title)
+	return found, err
+}
+
+// Comment is the subset of an issue or pull-request comment the tool inspects.
+type Comment struct {
+	Body string `json:"body"`
+}
+
+// ListIssueComments returns every comment on an issue or pull request. The
+// issue-comments endpoint serves pull requests too (a PR is an issue), so it
+// covers both feedback modes.
+func (c *restClient) ListIssueComments(ctx context.Context, owner, repo string, number int) ([]Comment, error) {
+	return getPaged[Comment](ctx, c, func(page int) string {
+		return fmt.Sprintf("repos/%s/%s/issues/%d/comments?per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), number, pageSize, page)
+	})
+}
+
+// AddComment posts a comment to an issue or pull request and returns its HTML
+// URL. The issue-comments endpoint serves pull requests too. The URL is read
+// back from the response so the caller can confirm the comment actually landed.
+func (c *restClient) AddComment(ctx context.Context, owner, repo string, number int, body string) (string, error) {
+	path := fmt.Sprintf("repos/%s/%s/issues/%d/comments", url.PathEscape(owner), url.PathEscape(repo), number)
+	var out struct {
+		HTMLURL string `json:"html_url"`
+	}
+	if _, err := c.do(ctx, "POST", path, map[string]any{"body": body}, &out); err != nil {
+		return "", err
+	}
+	if out.HTMLURL == "" {
+		return "", fmt.Errorf("comment on %s/%s#%d returned no URL; it may not have been created", owner, repo, number)
+	}
+	return out.HTMLURL, nil
 }
