@@ -8,6 +8,39 @@ protection and feedback artifacts, and a hard deadline freeze.
 Written because GitHub Classroom is being decommissioned, and because a CLI fits
 the workflow better than a web interface.
 
+## Compared to GitHub Classroom and Classroom 50
+
+GitHub Classroom is being retired, with its role moving to partner tools. The
+GitHub-recommended open-source successor is
+[Classroom 50](https://github.com/foundation50/classroom50): a full platform with
+a web interface, autograding through GitHub Actions, a gradebook, and student
+self-service. If you want those, you should use it instead of this tool.
+
+gh-cls is deliberately narrower and built on a different philosophy. It is not a
+Classroom 50 competitor, just the GitHub organization-and-repository plumbing one
+course needs, with the rest left out on purpose.
+
+It intentionally does **not** provide (reach for Classroom 50 instead):
+
+- autograding, correctness tests, scores, or a gradebook,
+- a web interface (it is CLI-only),
+- student-facing tooling (students just use git and GitHub as normal).
+
+Where it does overlap, it operates differently:
+
+- **Instructor-driven, not student-accept.** `assign` creates every repository up
+  front; there is no "accept the assignment" step. Classroom 50 has students run
+  `gh student accept`.
+- **A hard deadline.** `freeze` downgrades write to read at the deadline, instead
+  of recording an advisory due date.
+- **One local config file the tool only reads.** No state lives in a config
+  repository in your org, and the roster/teams files stay local and off GitHub.
+- **Idempotent and fail-fast.** Commands re-assert state, verify their own pre-
+  and post-conditions, and abort rather than leave anything half-done.
+- **Local-first grading.** Feedback is posted as issue or PR comments, and
+  `collect` pulls submissions into local shallow clones for hand grading, rather
+  than running an autograder.
+
 ## Install
 
 ```sh
@@ -16,8 +49,9 @@ gh extension install rixner/gh-cls
 
 Requires the [`gh`](https://cli.github.com) CLI (authenticated via `gh auth
 login`). The extension inherits your existing `gh` authentication and never
-handles tokens itself; every command, including `template`, runs purely against
-the GitHub API, so no `git` binary or separate git credentials are needed.
+handles tokens itself. Every command except `collect` runs purely against the
+GitHub API and needs no `git` binary; `collect` clones repositories, so it alone
+also needs `git` on your PATH (see [COLLECT.md](COLLECT.md)).
 
 ## Student Information
 
