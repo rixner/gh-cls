@@ -229,6 +229,14 @@ func TestLive(t *testing.T) {
 		if !strings.Contains(out, "0 collaborator grant(s)") {
 			t.Errorf("a second --undo should change nothing, got:\n%s", out)
 		}
+		// Per-repo extension: scope freeze/undo to a single student's repo by key.
+		// With one individual repo the key selects that same repo, exercising the
+		// key-matching path (case-insensitive, via an upper-cased key) end to end:
+		// re-freeze just this repo, then --undo just it (the extension).
+		mustRunCLI(t, ctx, "freeze", name, strings.ToUpper(student1))
+		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
+		mustRunCLI(t, ctx, "freeze", "-u", name, student1)
+		assertPushGranted(t, ctx, client, org, repo, student1)
 	case studentIsCollaborator:
 		t.Logf("student %q has admin on %s (likely an org owner) — freeze cannot downgrade "+
 			"an owner's inherited push, so the effective push->pull and pull->push reads are "+
@@ -246,6 +254,16 @@ func TestLive(t *testing.T) {
 			"Running freeze/undo without downgrade assertions.", student1, repo, org)
 		mustRunCLI(t, ctx, "freeze", name)
 		mustRunCLI(t, ctx, "freeze", "-u", name)
+	}
+
+	// 5b. A mistyped extension key must abort before any change. This is a
+	// pre-condition check independent of the student's membership, so it runs in
+	// every branch above.
+	bogus := student1 + "zzz"
+	if _, err := runCLI(ctx, "freeze", "-u", name, bogus); err == nil {
+		t.Errorf("freeze with unknown key %q should error, not silently no-op", bogus)
+	} else if !strings.Contains(err.Error(), name+"-"+bogus) {
+		t.Errorf("unknown-key error should name the missing repo %s-%s, got: %v", name, bogus, err)
 	}
 
 	// 6. group flow — exercises the teams resolution and multi-member grants. The

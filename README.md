@@ -143,6 +143,8 @@ gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
 # 5. At the deadline: downgrade students from write to read (reverse with -u).
 gh cls freeze hw1
 gh cls freeze hw1 --undo
+gh cls freeze hw1 alice --undo   # extension: unfreeze just one student/team repo
+gh cls freeze hw1 alice          # re-freeze it when the extension expires
 
 # 6. Collect submissions locally to grade by hand (one shallow clone per student,
 #    tagged each collect; see COLLECT.md for the model and the git you need).
@@ -194,7 +196,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 - **freeze** operates purely on each repo's current direct collaborators, never
   the roster, so a drifted roster cannot let anyone escape the freeze. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix
-  is never frozen.
+  is never frozen. Naming one or more student/team keys (`freeze hw1 alice`)
+  scopes it to just those `<name>-<key>` repos, for granting or ending an
+  individual extension; an unknown key aborts the run before any change.
 - **feedback** posts one feedback file per student (or team) as a comment on that
   repo's feedback issue or PR — the artifact assign created, named by the
   assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or

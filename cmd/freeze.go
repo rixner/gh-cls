@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/rixner/gh-cls/gh"
 	"github.com/spf13/cobra"
@@ -31,23 +32,64 @@ func newFreezeCmd(g *globalOpts) *cobra.Command {
 		newClient: func(context.Context) (freezeClient, error) { return gh.New() },
 	}
 	cmd := &cobra.Command{
-		Use:   "freeze <name>",
+		Use:   "freeze <name> [key...]",
 		Short: "Freeze (or unfreeze) an assignment's repositories",
 		Long: `Downgrade every non-admin direct collaborator on the <name>-* repos from
 write to read, a hard repo-wide deadline freeze. --undo restores push. The
 operation reads each repo's current collaborators and never consults the
-roster, so a drifted roster cannot let a student escape the freeze.`,
+roster, so a drifted roster cannot let a student escape the freeze.
+
+Naming one or more student/team keys restricts the operation to just those
+repos (<name>-<key>), for granting or ending an individual extension: freeze
+the whole assignment at the deadline, then --undo one student's repo for an
+extension and re-freeze it when the extension expires. Keys match repo names
+case-insensitively; if any named key has no repo the run aborts before touching
+anything.`,
 		Example: `  gh cls freeze hw1
-  gh cls freeze hw1 --undo`,
-		Args: cobra.ExactArgs(1),
+  gh cls freeze hw1 --undo
+  gh cls freeze hw1 alice --undo
+  gh cls freeze hw1 alice`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0])
+			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0], args[1:])
 		},
 	}
 	f := cmd.Flags()
 	f.BoolVarP(&o.undo, "undo", "u", false, "reverse a freeze: restore push to non-admin direct collaborators")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "show what would change without doing it")
 	return cmd
+}
+
+// selectRepos narrows repos to the ones named by keys, matching <name>-<key>
+// case-insensitively (as collect does). Every key must resolve to exactly one
+// listed repo; any that does not aborts the whole run with the missing keys
+// named, so the operation changes nothing on a typo or wrong assignment.
+func selectRepos(name, org string, repos []gh.Repo, keys []string) ([]gh.Repo, error) {
+	byKey := make(map[string]gh.Repo, len(repos))
+	for _, r := range repos {
+		lkey := strings.ToLower(strings.TrimPrefix(r.Name, name+"-"))
+		byKey[lkey] = r
+	}
+	var selected []gh.Repo
+	var missing []string
+	seen := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		lkey := strings.ToLower(k)
+		if seen[lkey] {
+			continue // a key repeated on the command line is one repo
+		}
+		seen[lkey] = true
+		r, ok := byKey[lkey]
+		if !ok {
+			missing = append(missing, k)
+			continue
+		}
+		selected = append(selected, r)
+	}
+	if len(missing) > 0 {
+		return nil, fmt.Errorf("no repositories named %s-%s in %s; check the key(s) and assignment name", name, strings.Join(missing, ", "+name+"-"), org)
+	}
+	return selected, nil
 }
 
 // freezeResult records how many collaborators changed on one repo.
@@ -57,7 +99,7 @@ type freezeResult struct {
 	err     error
 }
 
-func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string) error {
+func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys []string) error {
 	org := o.g.org
 
 	client, err := o.newClient(ctx)
@@ -86,6 +128,16 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string) error 
 		// name or the wrong config — not "nothing to do". Fail loudly so a freeze
 		// is never silently a no-op.
 		return fmt.Errorf("no student repositories named %s-* found in %s; check the assignment name and your config's org", name, org)
+	}
+
+	// Restricting to named keys is an individual-extension operation. Resolve the
+	// keys to repos and abort before any mutation if one has no repo, so a
+	// mistyped key never silently freezes (or spares) nothing.
+	if len(keys) > 0 {
+		repos, err = selectRepos(name, org, repos, keys)
+		if err != nil {
+			return err
+		}
 	}
 
 	verb := "Freezing"

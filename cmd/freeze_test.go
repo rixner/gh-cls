@@ -99,7 +99,7 @@ func TestFreezeDowngradesNonAdmins(t *testing.T) {
 	fake := freezeFake("admin")
 	o := newFreezeOpts(t, fake, false, false)
 
-	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if !contains(fake.changes, "hw1-ada:ada=pull") {
@@ -122,7 +122,7 @@ func TestFreezeUndoRestoresPush(t *testing.T) {
 	fake := freezeFake("admin")
 	o := newFreezeOpts(t, fake, true, false)
 
-	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
 	}
 	// alan was pull (frozen); undo restores push. ada already has push: untouched.
@@ -147,7 +147,7 @@ func TestFreezeVerifiesDowngradeTookEffect(t *testing.T) {
 	fake.dontApply = true
 	o := newFreezeOpts(t, fake, false, false)
 
-	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil)
 	if err == nil || !strings.Contains(err.Error(), "failed") {
 		t.Fatalf("freeze should fail when the downgrade did not take, got %v", err)
 	}
@@ -158,7 +158,7 @@ func TestFreezeDryRunMakesNoChanges(t *testing.T) {
 	o := newFreezeOpts(t, fake, false, true)
 
 	var buf bytes.Buffer
-	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.changes) != 0 {
@@ -173,7 +173,7 @@ func TestFreezeDryRunMakesNoChanges(t *testing.T) {
 func TestFreezeOwnerGuard(t *testing.T) {
 	fake := freezeFake("member")
 	o := newFreezeOpts(t, fake, false, false)
-	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil)
 	if err == nil || !strings.Contains(err.Error(), "owner") {
 		t.Fatalf("non-owner should be rejected, got %v", err)
 	}
@@ -184,12 +184,61 @@ func TestFreezeNoMatchingReposIsAnError(t *testing.T) {
 	// fail loudly rather than report a silent no-op success.
 	fake := freezeFake("admin")
 	o := newFreezeOpts(t, fake, false, false)
-	err := o.run(context.Background(), &bytes.Buffer{}, "midterm")
+	err := o.run(context.Background(), &bytes.Buffer{}, "midterm", nil)
 	if err == nil || !strings.Contains(err.Error(), "no student repositories named midterm-*") {
 		t.Fatalf("zero matches should be an error, got %v", err)
 	}
 	if len(fake.changes) != 0 {
 		t.Error("nothing should change when no repos match")
+	}
+}
+
+func TestFreezeKeyRestrictsToNamedRepo(t *testing.T) {
+	// An extension: unfreeze only ada's repo, leaving alan's frozen. Naming a key
+	// must scope the operation to that one repo.
+	fake := freezeFake("admin")
+	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull")} // frozen
+	o := newFreezeOpts(t, fake, true, false)                           // undo
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", []string{"ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.changes, "hw1-ada:ada=push") {
+		t.Errorf("named repo should be unfrozen: %v", fake.changes)
+	}
+	for _, c := range fake.changes {
+		if strings.Contains(c, "alan") {
+			t.Errorf("an unnamed repo must be left alone: %v", fake.changes)
+		}
+	}
+	if !strings.Contains(buf.String(), "1 repo") {
+		t.Errorf("should report a single repo: %s", buf.String())
+	}
+}
+
+func TestFreezeKeyMatchesCaseInsensitively(t *testing.T) {
+	fake := freezeFake("admin")
+	o := newFreezeOpts(t, fake, false, false)
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ADA"}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.changes, "hw1-ada:ada=pull") {
+		t.Errorf("key should match repo case-insensitively: %v", fake.changes)
+	}
+}
+
+func TestFreezeUnknownKeyAbortsWithoutChanges(t *testing.T) {
+	// A mistyped extension key must fail loudly before any mutation, so it never
+	// silently freezes (or spares) nothing.
+	fake := freezeFake("admin")
+	o := newFreezeOpts(t, fake, true, false)
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ada", "adaa"})
+	if err == nil || !strings.Contains(err.Error(), "hw1-adaa") {
+		t.Fatalf("unknown key should be an error naming the missing repo, got %v", err)
+	}
+	if len(fake.changes) != 0 {
+		t.Errorf("nothing should change when any key is unknown, got %v", fake.changes)
 	}
 }
 
@@ -201,7 +250,7 @@ func TestFreezeSkipsTemplateRepo(t *testing.T) {
 	fake.collabs["hw1-template"] = []gh.Collaborator{collab("ada", "push")}
 	o := newFreezeOpts(t, fake, false, false)
 
-	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
 	}
 	for _, ch := range fake.changes {
