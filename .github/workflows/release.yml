@@ -12,8 +12,25 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 pulls the full history and tags so we can diff against
+      # the previous release tag below.
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # Let the action create the release for this tag and upload the binaries.
       - uses: cli/gh-extension-precompile@v2
         with:
           generate_attestations: true
           go_version_file: go.mod
+      # Then rewrite that release's body to the commit subjects since the
+      # previous v* tag. `gh release edit` targets the release the action just
+      # created, so there is no second release and nothing to collide with.
+      - name: Set release notes to the commit list
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          prev="$(git describe --tags --abbrev=0 --match 'v*' "${tag}^" 2>/dev/null || true)"
+          if [ -n "$prev" ]; then range="${prev}..${tag}"; else range="$tag"; fi
+          git log --reverse --no-merges --pretty='- %s' "$range" > notes.md
+          gh release edit "$tag" --notes-file notes.md
