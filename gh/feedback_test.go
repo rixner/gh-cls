@@ -63,6 +63,48 @@ func TestCreateRefRejectsMismatch(t *testing.T) {
 	}
 }
 
+func TestCreateTree(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{"sha":"empty-tree-sha"}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	sha, err := c.CreateTree(context.Background(), "org", "hw1-ada")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "empty-tree-sha" {
+		t.Errorf("sha = %q", sha)
+	}
+	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/git/trees" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	if !strings.Contains(f.bodies[0], `"tree":[]`) {
+		t.Errorf("body %s should request the empty tree", f.bodies[0])
+	}
+}
+
+func TestCreateCommit(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{"sha":"feedback-commit-sha"}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	sha, err := c.CreateCommit(context.Background(), "org", "hw1-ada", "Setting up feedback", "empty-tree-sha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sha != "feedback-commit-sha" {
+		t.Errorf("sha = %q", sha)
+	}
+	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/git/commits" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	// An empty parents list makes it an orphan (root) commit — the property that
+	// keeps the feedback branch divergent from the default branch.
+	for _, want := range []string{`"message":"Setting up feedback"`, `"tree":"empty-tree-sha"`, `"parents":[]`} {
+		if !strings.Contains(f.bodies[0], want) {
+			t.Errorf("body %s missing %s", f.bodies[0], want)
+		}
+	}
+}
+
 func TestCreatePR(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
 	var waits int

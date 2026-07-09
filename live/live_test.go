@@ -281,6 +281,11 @@ func TestLive(t *testing.T) {
 	mustRunCLI(t, ctx, "assign", "-r", rosterGrp, "-T", teamsPath, "-p", grp)
 	grpRepo := grp + "-alpha"
 	assertRepoExists(t, ctx, client, org, grpRepo)
+	// The group assignment uses pr feedback: assert the feedback PR actually
+	// opened. This is the path that regressed when the feedback branch was pinned
+	// at the starter commit — identical to the default branch, so GitHub refused
+	// the PR. The orphan feedback branch keeps the two divergent, so it opens.
+	assertFeedbackPROpen(t, ctx, client, org, grpRepo)
 	assertPushGranted(t, ctx, client, org, grpRepo, student1)
 	// The group's whole point is multi-member grants: verify the second member too,
 	// or say plainly that the single-member run leaves that path uncovered.
@@ -352,6 +357,7 @@ assignments:
   %[3]s:
     type: group
     template: %[3]s-template
+    feedback: pr
 `, org, indName, grpName)
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("writing config %s: %v", path, err)
@@ -479,6 +485,23 @@ func csvRowFor(t *testing.T, path, repo string) map[string]string {
 	}
 	t.Fatalf("no row for %s in %s", repo, path)
 	return nil
+}
+
+// assertFeedbackPROpen fails unless an open feedback pull request (base the
+// feedback branch) exists on the repo, resolving it the same way the feedback
+// command does.
+func assertFeedbackPROpen(t *testing.T, ctx context.Context, client gh.Client, org, repo string) {
+	t.Helper()
+	_, state, found, err := client.FindPRByBase(ctx, org, repo, "feedback")
+	if err != nil {
+		t.Fatalf("finding feedback PR on %s: %v", repo, err)
+	}
+	if !found {
+		t.Fatalf("feedback PR should exist on %s/%s", org, repo)
+	}
+	if state != "open" {
+		t.Errorf("feedback PR on %s/%s state = %q, want open", org, repo, state)
+	}
 }
 
 // feedbackCommentCount returns how many comments on the repo's feedback issue

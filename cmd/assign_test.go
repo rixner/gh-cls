@@ -59,6 +59,8 @@ type fakeAssignClient struct {
 	isTemplate     map[string]bool // "owner/name" -> repo is a template repository
 	rulesets       map[string]bool // repos a protection ruleset was applied to
 	refs           []string        // "repo:ref"
+	refSHAs        []string        // "repo:ref@sha" — the SHA each ref was created at
+	commits        []string        // "repo:tree" — orphan feedback commits created
 	prs            []string        // "repo:head->base"
 	issues         []string        // repo
 	enabled        []string        // repos where issues were enabled
@@ -187,14 +189,22 @@ func (f *fakeAssignClient) ApplyRuleset(_ context.Context, _, repo string) error
 	return nil
 }
 
-func (f *fakeAssignClient) GetRef(_ context.Context, _, _, _ string) (string, error) {
-	return "starter-sha", nil
+func (f *fakeAssignClient) CreateTree(_ context.Context, _, _ string) (string, error) {
+	return "empty-tree-sha", nil
 }
 
-func (f *fakeAssignClient) CreateRef(_ context.Context, _, repo, ref, _ string) error {
+func (f *fakeAssignClient) CreateCommit(_ context.Context, _, repo, _, tree string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.commits = append(f.commits, repo+":"+tree)
+	return "feedback-commit-sha", nil
+}
+
+func (f *fakeAssignClient) CreateRef(_ context.Context, _, repo, ref, sha string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.refs = append(f.refs, repo+":"+ref)
+	f.refSHAs = append(f.refSHAs, repo+":"+ref+"@"+sha)
 	return nil
 }
 
@@ -503,6 +513,17 @@ func TestAssignFeedbackPR(t *testing.T) {
 	}
 	if !contains(fake.refs, "hw1-ada:refs/heads/feedback") {
 		t.Errorf("feedback branch not created: %v", fake.refs)
+	}
+	// Divergence guard: the feedback branch must be an orphan commit over the
+	// empty tree, not a copy of the default branch. A branch pinned at the
+	// starter commit is identical to main, so GitHub rejects the PR ("No commits
+	// between ...") and none is ever opened. Assert the branch points at the
+	// orphan commit, never at the default branch's starter SHA.
+	if !contains(fake.commits, "hw1-ada:empty-tree-sha") {
+		t.Errorf("feedback branch should be an orphan commit over the empty tree: %v", fake.commits)
+	}
+	if !contains(fake.refSHAs, "hw1-ada:refs/heads/feedback@feedback-commit-sha") {
+		t.Errorf("feedback branch must point at the orphan commit, not the default branch: %v", fake.refSHAs)
 	}
 	if !contains(fake.prs, "hw1-ada:main->feedback") {
 		t.Errorf("feedback PR not opened with base feedback: %v", fake.prs)

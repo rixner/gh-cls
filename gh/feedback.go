@@ -44,6 +44,45 @@ func (c *restClient) CreateRef(ctx context.Context, owner, repo, ref, sha string
 	return nil
 }
 
+// CreateTree creates the empty git tree in the repository and returns its SHA.
+// The feedback branch is an orphan (see addFeedback): its root commit points at
+// this empty tree, so a brand-new repo's whole contents show as additions in the
+// feedback PR diff. Creating the tree via the API (rather than hard-coding git's
+// canonical empty-tree SHA) avoids depending on GitHub already knowing that
+// object.
+func (c *restClient) CreateTree(ctx context.Context, owner, repo string) (string, error) {
+	path := fmt.Sprintf("repos/%s/%s/git/trees", url.PathEscape(owner), url.PathEscape(repo))
+	var out struct {
+		SHA string `json:"sha"`
+	}
+	if _, err := c.do(ctx, "POST", path, map[string]any{"tree": []any{}}, &out); err != nil {
+		return "", err
+	}
+	if out.SHA == "" {
+		return "", fmt.Errorf("creating empty tree in %s/%s returned no SHA", owner, repo)
+	}
+	return out.SHA, nil
+}
+
+// CreateCommit creates a root (parent-less) commit with the given message and
+// tree, returning its SHA. An empty parents list makes it an orphan commit whose
+// history is unrelated to the default branch — the property that lets the
+// feedback PR always open and diff the entire project.
+func (c *restClient) CreateCommit(ctx context.Context, owner, repo, message, tree string) (string, error) {
+	path := fmt.Sprintf("repos/%s/%s/git/commits", url.PathEscape(owner), url.PathEscape(repo))
+	var out struct {
+		SHA string `json:"sha"`
+	}
+	body := map[string]any{"message": message, "tree": tree, "parents": []any{}}
+	if _, err := c.do(ctx, "POST", path, body, &out); err != nil {
+		return "", err
+	}
+	if out.SHA == "" {
+		return "", fmt.Errorf("creating feedback commit in %s/%s returned no SHA", owner, repo)
+	}
+	return out.SHA, nil
+}
+
 // BranchExists reports whether a branch exists in the repository. branch is the
 // short name, e.g. "feedback".
 func (c *restClient) BranchExists(ctx context.Context, owner, repo, branch string) (bool, error) {

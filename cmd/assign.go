@@ -31,8 +31,9 @@ const (
 // Feedback artifact constants.
 const (
 	feedbackBranch    = "feedback"
+	feedbackCommitMsg = "Setting up feedback"
 	feedbackTitle     = "Feedback"
-	feedbackPRBody    = "This pull request is where the course staff leaves feedback on your work. Please do not close it. As you push commits to the default branch, your changes against the starter code appear in the diff here."
+	feedbackPRBody    = "This pull request is where the course staff leaves feedback on your work. Please do not close it. Your whole project appears in the diff here, so staff can comment on any line, and it updates automatically as you push to the default branch."
 	feedbackIssueBody = "This issue is where the course staff leaves feedback on your work. Please do not close it."
 )
 
@@ -48,8 +49,9 @@ type assignClient interface {
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
 	ApplyRuleset(ctx context.Context, org, repo string) error
-	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
+	CreateTree(ctx context.Context, owner, repo string) (string, error)
+	CreateCommit(ctx context.Context, owner, repo, message, tree string) (string, error)
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
 	PRExists(ctx context.Context, owner, repo, base string) (bool, error)
@@ -460,18 +462,28 @@ func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org,
 func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, repo string, info *gh.Repo, mode string) error {
 	switch mode {
 	case feedbackPR:
-		// A PR needs two distinct refs sharing history; pin a feedback branch at
-		// the starter commit so the student's later pushes diff against it.
+		// The feedback branch is an orphan: a root commit over the empty tree,
+		// with no history in common with the default branch. That is what
+		// GitHub Classroom does, and it matters for two reasons. A branch pinned
+		// at the starter commit is identical to the default branch, so the PR
+		// endpoint rejects it ("No commits between ..."); the orphan always
+		// differs, so the PR always opens. And because the merge base is empty,
+		// the whole project shows as additions in the diff, letting staff leave
+		// inline comments anchored to any line -- including unchanged starter code.
 		branchExists, err := client.BranchExists(ctx, org, repo, feedbackBranch)
 		if err != nil {
 			return fmt.Errorf("checking feedback branch on %s: %w", repo, err)
 		}
 		if !branchExists {
-			sha, err := client.GetRef(ctx, org, repo, "heads/"+info.DefaultBranch)
+			tree, err := client.CreateTree(ctx, org, repo)
 			if err != nil {
-				return fmt.Errorf("reading starter commit of %s: %w", repo, err)
+				return fmt.Errorf("creating feedback tree on %s: %w", repo, err)
 			}
-			if err := client.CreateRef(ctx, org, repo, "refs/heads/"+feedbackBranch, sha); err != nil {
+			commit, err := client.CreateCommit(ctx, org, repo, feedbackCommitMsg, tree)
+			if err != nil {
+				return fmt.Errorf("creating feedback commit on %s: %w", repo, err)
+			}
+			if err := client.CreateRef(ctx, org, repo, "refs/heads/"+feedbackBranch, commit); err != nil {
 				return fmt.Errorf("creating feedback branch on %s: %w", repo, err)
 			}
 		}
