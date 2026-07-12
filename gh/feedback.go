@@ -133,11 +133,38 @@ func (c *restClient) EnableIssues(ctx context.Context, owner, repo string) error
 	return err
 }
 
-// CreateIssue opens an issue.
+// consistencyChecks bounds how often a just-created resource is re-read while
+// waiting for GitHub's eventually-consistent list endpoints to reflect it. A
+// create is confirmed by re-reading rather than trusted.
+const consistencyChecks = 5
+
+// CreateIssue opens an issue and confirms it is listable before returning.
+// GitHub's issue-list index lags briefly behind the create, so a caller that
+// immediately looks the issue up by title -- as the feedback command does on its
+// own run -- can otherwise miss it and fail with "no feedback issue". Polling the
+// same query consumers use makes the post-condition (the issue is discoverable)
+// hold before assign reports success. The wait is the retry policy's, a no-op
+// under test.
 func (c *restClient) CreateIssue(ctx context.Context, owner, repo, title, body string) error {
 	path := fmt.Sprintf("repos/%s/%s/issues", url.PathEscape(owner), url.PathEscape(repo))
-	_, err := c.do(ctx, "POST", path, map[string]any{"title": title, "body": body}, nil)
-	return err
+	if _, err := c.do(ctx, "POST", path, map[string]any{"title": title, "body": body}, nil); err != nil {
+		return err
+	}
+	for attempt := 1; ; attempt++ {
+		found, err := c.IssueExists(ctx, owner, repo, title)
+		if err != nil {
+			return err
+		}
+		if found {
+			return nil
+		}
+		if attempt >= consistencyChecks {
+			return fmt.Errorf("issue %q created in %s/%s but not listable after %d checks; re-run assign to continue", title, owner, repo, attempt)
+		}
+		if err := c.policy.wait(ctx, backoff(attempt)); err != nil {
+			return err
+		}
+	}
 }
 
 // FindIssueByTitle returns the number and state ("open"/"closed") of an issue

@@ -122,7 +122,13 @@ func TestEnableIssues(t *testing.T) {
 }
 
 func TestCreateIssue(t *testing.T) {
-	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	// The create POSTs, then re-reads the issue list to confirm the issue is
+	// listable before returning: a POST followed by a list that already contains
+	// the issue, so the post-condition holds on the first check (no wait).
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{}`)},
+		{resp: okResp(`[{"number":1,"title":"Feedback","state":"open"}]`)},
+	}}
 	var waits int
 	c := newTestClient(f, &waits)
 	if err := c.CreateIssue(context.Background(), "org", "hw1-ada", "Feedback", "body text"); err != nil {
@@ -135,6 +141,31 @@ func TestCreateIssue(t *testing.T) {
 		if !strings.Contains(f.bodies[0], want) {
 			t.Errorf("body %s missing %s", f.bodies[0], want)
 		}
+	}
+	if f.methods[1] != "GET" || !strings.HasPrefix(f.paths[1], "repos/org/hw1-ada/issues?") {
+		t.Errorf("post-condition should list issues, got %s %s", f.methods[1], f.paths[1])
+	}
+	if waits != 0 {
+		t.Errorf("an immediately-listable issue should not wait, got %d waits", waits)
+	}
+}
+
+// TestCreateIssueWaitsForVisibility covers the eventual-consistency path: the
+// issue is not listable on the first check and only appears after a wait. This is
+// the regression the live test hit as a flaky "no feedback issue" failure.
+func TestCreateIssueWaitsForVisibility(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{}`)},         // POST create
+		{resp: okResp(`[]`)},         // list: not visible yet
+		{resp: okResp(`[{"number":1,"title":"Feedback","state":"open"}]`)}, // list: now visible
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	if err := c.CreateIssue(context.Background(), "org", "hw1-ada", "Feedback", "body text"); err != nil {
+		t.Fatal(err)
+	}
+	if waits != 1 {
+		t.Errorf("a create that becomes visible on the second check should wait once, got %d", waits)
 	}
 }
 
