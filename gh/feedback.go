@@ -47,30 +47,103 @@ func (c *restClient) CreateRef(ctx context.Context, owner, repo, ref, sha string
 // emptyTreeSHA is git's canonical empty tree object, the same constant every git
 // install computes for a tree with no entries. GitHub materializes it on demand
 // when a commit is created against it, so it can be referenced directly without
-// first creating the object. This is the only reliable way to give the feedback
-// orphan an empty base: POST git/trees rejects a zero-entry tree with "422
-// Invalid tree info", so the tree cannot be created through the API.
+// first creating the object -- essential here, because POST git/trees rejects a
+// zero-entry tree with "422 Invalid tree info". It is the tree of the empty root
+// commit the feedback base is built on (see RebaseOntoEmptyRoot).
 const emptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
-// CreateCommit creates the root (parent-less) feedback commit over the empty
-// tree and returns its SHA. An empty parents list makes it an orphan whose
-// history is unrelated to the default branch, and the empty tree makes its merge
-// base with the default branch empty. Together these let the feedback PR always
-// open and show the entire project as additions, so staff can comment on any
-// line, including unchanged starter code.
-func (c *restClient) CreateCommit(ctx context.Context, owner, repo, message string) (string, error) {
+// RebaseOntoEmptyRoot rebuilds branch's initial commit on top of a new empty root
+// commit and returns the root's SHA. The branch's tree is unchanged -- its files
+// are identical -- so only an empty parent commit is inserted beneath its history.
+//
+// This is what makes the feedback PR possible. GitHub opens a pull request only
+// between branches that share history and refuses one whose branches have no
+// common ancestor, so the feedback base cannot be a detached orphan. Pointing the
+// feedback branch at the returned root instead gives it a shared ancestor with
+// branch (so the PR opens) while keeping their merge base empty (so the whole
+// project shows as additions). This mirrors how GitHub Classroom builds its
+// feedback PR.
+//
+// It force-updates branch, so it must run before branch protection is applied and
+// only on a repo with no history worth preserving -- a freshly generated one.
+func (c *restClient) RebaseOntoEmptyRoot(ctx context.Context, owner, repo, branch string) (string, error) {
+	ref := "heads/" + branch
+	tip, err := c.GetRef(ctx, owner, repo, ref)
+	if err != nil {
+		return "", fmt.Errorf("reading %s tip in %s/%s: %w", branch, owner, repo, err)
+	}
+	tree, message, err := c.getCommit(ctx, owner, repo, tip)
+	if err != nil {
+		return "", fmt.Errorf("reading %s commit in %s/%s: %w", branch, owner, repo, err)
+	}
+	root, err := c.createCommit(ctx, owner, repo, message, emptyTreeSHA, nil)
+	if err != nil {
+		return "", fmt.Errorf("creating empty root commit in %s/%s: %w", owner, repo, err)
+	}
+	rebased, err := c.createCommit(ctx, owner, repo, message, tree, []string{root})
+	if err != nil {
+		return "", fmt.Errorf("rebasing %s onto the empty root in %s/%s: %w", branch, owner, repo, err)
+	}
+	if err := c.updateRef(ctx, owner, repo, ref, rebased, true); err != nil {
+		return "", fmt.Errorf("moving %s onto the empty root in %s/%s: %w", branch, owner, repo, err)
+	}
+	// Post-condition: the branch resolves to the rebased commit. GitHub's ref
+	// reads lag its writes, so poll rather than read once. A move that never lands
+	// (e.g. a protected branch) fails here instead of surfacing later as a
+	// confusing "no history in common" PR error.
+	if err := c.awaitConsistent(ctx, func() (bool, error) {
+		got, err := c.GetRef(ctx, owner, repo, ref)
+		return got == rebased, err
+	}); err != nil {
+		return "", fmt.Errorf("moving %s onto the empty root in %s/%s did not land (%w); check for branch protection", branch, owner, repo, err)
+	}
+	return root, nil
+}
+
+// getCommit returns a commit's tree SHA and message.
+func (c *restClient) getCommit(ctx context.Context, owner, repo, sha string) (tree, message string, err error) {
+	var out struct {
+		Tree struct {
+			SHA string `json:"sha"`
+		} `json:"tree"`
+		Message string `json:"message"`
+	}
+	path := fmt.Sprintf("repos/%s/%s/git/commits/%s", url.PathEscape(owner), url.PathEscape(repo), sha)
+	if _, err := c.do(ctx, "GET", path, nil, &out); err != nil {
+		return "", "", err
+	}
+	if out.Tree.SHA == "" {
+		return "", "", fmt.Errorf("commit %s in %s/%s has no tree", sha, owner, repo)
+	}
+	return out.Tree.SHA, out.Message, nil
+}
+
+// createCommit creates a commit with the given tree and parents (an empty parents
+// list makes a root commit) and returns its SHA.
+func (c *restClient) createCommit(ctx context.Context, owner, repo, message, tree string, parents []string) (string, error) {
+	if parents == nil {
+		parents = []string{}
+	}
 	path := fmt.Sprintf("repos/%s/%s/git/commits", url.PathEscape(owner), url.PathEscape(repo))
 	var out struct {
 		SHA string `json:"sha"`
 	}
-	body := map[string]any{"message": message, "tree": emptyTreeSHA, "parents": []any{}}
+	body := map[string]any{"message": message, "tree": tree, "parents": parents}
 	if _, err := c.do(ctx, "POST", path, body, &out); err != nil {
 		return "", err
 	}
 	if out.SHA == "" {
-		return "", fmt.Errorf("creating feedback commit in %s/%s returned no SHA", owner, repo)
+		return "", fmt.Errorf("creating commit in %s/%s returned no SHA", owner, repo)
 	}
 	return out.SHA, nil
+}
+
+// updateRef points an existing ref at sha. ref is given without the leading
+// "refs/", e.g. "heads/main". force permits a non-fast-forward move.
+func (c *restClient) updateRef(ctx context.Context, owner, repo, ref, sha string, force bool) error {
+	path := fmt.Sprintf("repos/%s/%s/git/refs/%s", url.PathEscape(owner), url.PathEscape(repo), ref)
+	_, err := c.do(ctx, "PATCH", path, map[string]any{"sha": sha, "force": force}, nil)
+	return err
 }
 
 // BranchExists reports whether a branch exists in the repository. branch is the
@@ -133,38 +206,51 @@ func (c *restClient) EnableIssues(ctx context.Context, owner, repo string) error
 	return err
 }
 
-// consistencyChecks bounds how often a just-created resource is re-read while
-// waiting for GitHub's eventually-consistent list endpoints to reflect it. A
-// create is confirmed by re-reading rather than trusted.
+// consistencyChecks bounds how often a just-written resource is re-read while
+// waiting for GitHub's eventually-consistent read endpoints to reflect it. A
+// write is confirmed by re-reading rather than trusted.
 const consistencyChecks = 5
 
-// CreateIssue opens an issue and confirms it is listable before returning.
-// GitHub's issue-list index lags briefly behind the create, so a caller that
-// immediately looks the issue up by title -- as the feedback command does on its
-// own run -- can otherwise miss it and fail with "no feedback issue". Polling the
-// same query consumers use makes the post-condition (the issue is discoverable)
-// hold before assign reports success. The wait is the retry policy's, a no-op
-// under test.
-func (c *restClient) CreateIssue(ctx context.Context, owner, repo, title, body string) error {
-	path := fmt.Sprintf("repos/%s/%s/issues", url.PathEscape(owner), url.PathEscape(repo))
-	if _, err := c.do(ctx, "POST", path, map[string]any{"title": title, "body": body}, nil); err != nil {
-		return err
-	}
+// awaitConsistent polls check until it reports true, waiting between attempts so
+// GitHub's eventually-consistent reads can catch up with a just-applied write. It
+// returns a generic error after consistencyChecks failed attempts; callers wrap
+// it with what was being confirmed. The wait is the retry policy's, a no-op under
+// test.
+func (c *restClient) awaitConsistent(ctx context.Context, check func() (bool, error)) error {
 	for attempt := 1; ; attempt++ {
-		found, err := c.IssueExists(ctx, owner, repo, title)
+		ok, err := check()
 		if err != nil {
 			return err
 		}
-		if found {
+		if ok {
 			return nil
 		}
 		if attempt >= consistencyChecks {
-			return fmt.Errorf("issue %q created in %s/%s but not listable after %d checks; re-run assign to continue", title, owner, repo, attempt)
+			return fmt.Errorf("still not reflected after %d checks", attempt)
 		}
 		if err := c.policy.wait(ctx, backoff(attempt)); err != nil {
 			return err
 		}
 	}
+}
+
+// CreateIssue opens an issue and confirms it is listable before returning.
+// GitHub's issue-list index lags briefly behind the create, so a caller that
+// immediately looks the issue up by title -- as the feedback command does on its
+// own run -- can otherwise miss it and fail with "no feedback issue". Confirming
+// it through the same query consumers use makes the post-condition hold before
+// assign reports success.
+func (c *restClient) CreateIssue(ctx context.Context, owner, repo, title, body string) error {
+	path := fmt.Sprintf("repos/%s/%s/issues", url.PathEscape(owner), url.PathEscape(repo))
+	if _, err := c.do(ctx, "POST", path, map[string]any{"title": title, "body": body}, nil); err != nil {
+		return err
+	}
+	if err := c.awaitConsistent(ctx, func() (bool, error) {
+		return c.IssueExists(ctx, owner, repo, title)
+	}); err != nil {
+		return fmt.Errorf("issue %q created in %s/%s but %w; re-run assign to continue", title, owner, repo, err)
+	}
+	return nil
 }
 
 // FindIssueByTitle returns the number and state ("open"/"closed") of an issue

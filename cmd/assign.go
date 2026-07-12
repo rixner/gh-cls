@@ -31,7 +31,6 @@ const (
 // Feedback artifact constants.
 const (
 	feedbackBranch    = "feedback"
-	feedbackCommitMsg = "Setting up feedback"
 	feedbackTitle     = "Feedback"
 	feedbackPRBody    = "This pull request is where the course staff leaves feedback on your work. Please do not close it. Your whole project appears in the diff here, so staff can comment on any line, and it updates automatically as you push to the default branch."
 	feedbackIssueBody = "This issue is where the course staff leaves feedback on your work. Please do not close it."
@@ -50,7 +49,7 @@ type assignClient interface {
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
 	ApplyRuleset(ctx context.Context, org, repo string) error
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
-	CreateCommit(ctx context.Context, owner, repo, message string) (string, error)
+	RebaseOntoEmptyRoot(ctx context.Context, owner, repo, branch string) (string, error)
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
 	PRExists(ctx context.Context, owner, repo, base string) (bool, error)
@@ -354,6 +353,15 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 		return res
 	}
 
+	// Feedback is set up before grants and branch protection: on a freshly created
+	// pr repo it reshapes the default branch (a force update), which ApplyRuleset
+	// would block and which must happen before anyone can push. Each piece is
+	// created only if missing, so a partial failure on a prior run is repaired.
+	if err := o.addFeedback(ctx, client, org, repo, info, policy.Feedback, res.status == "created"); err != nil {
+		res.err = err
+		return res
+	}
+
 	// Re-assert grants so re-running is safe and access is correct.
 	for _, member := range u.Members {
 		if err := client.AddCollaborator(ctx, org, repo, member, "push"); err != nil {
@@ -375,12 +383,6 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 			res.err = fmt.Errorf("applying branch protection to %s: %w", repo, err)
 			return res
 		}
-	}
-	// Feedback is reconciled on every run: each piece is created only if missing,
-	// so a partial failure on a prior run is repaired here.
-	if err := o.addFeedback(ctx, client, org, repo, info, policy.Feedback); err != nil {
-		res.err = err
-		return res
 	}
 
 	// Post-condition: confirm every member actually holds the access we granted.
@@ -458,27 +460,35 @@ func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org,
 // addFeedback ensures the chosen feedback artifact exists, creating only the
 // pieces that are missing. This makes it safe to call on every run: a partial
 // failure is repaired, while an existing (even closed) PR or issue is left be.
-func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, repo string, info *gh.Repo, mode string) error {
+func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, repo string, info *gh.Repo, mode string, created bool) error {
 	switch mode {
 	case feedbackPR:
-		// The feedback branch is an orphan: a root commit over the empty tree,
-		// with no history in common with the default branch. That is what
-		// GitHub Classroom does, and it matters for two reasons. A branch pinned
-		// at the starter commit is identical to the default branch, so the PR
-		// endpoint rejects it ("No commits between ..."); the orphan always
-		// differs, so the PR always opens. And because the merge base is empty,
-		// the whole project shows as additions in the diff, letting staff leave
-		// inline comments anchored to any line -- including unchanged starter code.
+		// The feedback PR shows the whole project as additions so staff can comment
+		// on any line, including unchanged starter code. That needs the PR's base to
+		// share history with the default branch (GitHub refuses a PR between
+		// branches with no common ancestor) yet have an empty merge base with it.
+		// Neither a branch pinned at the starter commit (identical to the default
+		// branch -> "No commits between") nor a detached orphan (no shared history
+		// -> "no history in common") gives both. So, mirroring GitHub Classroom,
+		// rebuild the freshly generated repo's initial commit on top of an empty
+		// root and point the feedback branch at that root: the default branch now
+		// descends from it (the PR opens) and their merge base is empty.
 		branchExists, err := client.BranchExists(ctx, org, repo, feedbackBranch)
 		if err != nil {
 			return fmt.Errorf("checking feedback branch on %s: %w", repo, err)
 		}
 		if !branchExists {
-			commit, err := client.CreateCommit(ctx, org, repo, feedbackCommitMsg)
-			if err != nil {
-				return fmt.Errorf("creating feedback commit on %s: %w", repo, err)
+			if !created {
+				// Building the base force-updates the default branch, a history
+				// rewrite only safe on a repo with no student work. Never do it to an
+				// existing repo.
+				return fmt.Errorf("feedback branch missing on existing repo %s; it is created only when the repo is first generated -- recreate the repo to add feedback", repo)
 			}
-			if err := client.CreateRef(ctx, org, repo, "refs/heads/"+feedbackBranch, commit); err != nil {
+			root, err := client.RebaseOntoEmptyRoot(ctx, org, repo, info.DefaultBranch)
+			if err != nil {
+				return fmt.Errorf("preparing feedback base on %s: %w", repo, err)
+			}
+			if err := client.CreateRef(ctx, org, repo, "refs/heads/"+feedbackBranch, root); err != nil {
 				return fmt.Errorf("creating feedback branch on %s: %w", repo, err)
 			}
 		}

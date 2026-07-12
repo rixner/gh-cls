@@ -282,17 +282,17 @@ func TestLive(t *testing.T) {
 	grpRepo := grp + "-alpha"
 	assertRepoExists(t, ctx, client, org, grpRepo)
 	// The group assignment uses pr feedback: assert the feedback PR actually
-	// opened. This is the path that regressed when the feedback branch was pinned
-	// at the starter commit — identical to the default branch, so GitHub refused
-	// the PR. The orphan feedback branch keeps the two divergent, so it opens.
+	// opened. GitHub refuses a PR whose branches share no common ancestor, so the
+	// base cannot be a detached orphan; assign rebases the default branch onto an
+	// empty root and points feedback at that root, so the two share history (the
+	// PR opens) with an empty merge base (the whole project is the diff).
 	assertFeedbackPROpen(t, ctx, client, org, grpRepo)
-	// And assert the mechanism itself: the branch tip is an orphan (no parents)
-	// over git's empty tree. This pins the two invariants a plain "PR is open"
-	// check misses — divergence from the default branch, and an empty merge base
-	// so the whole project shows in the diff — and fails if the empty base is ever
-	// created via POST git/trees again (which GitHub rejects with "422 Invalid
-	// tree info") or the branch is repinned at the starter commit.
-	assertFeedbackBranchOrphan(t, rc, org, grpRepo)
+	// And assert the mechanism: the feedback branch tip is that empty root -- a
+	// parent-less commit over git's empty tree. With the PR open (which proves the
+	// default branch descends from it), this pins both invariants and fails if the
+	// base is ever built via POST git/trees (rejected "422 Invalid tree info"),
+	// left at the starter commit, or made a detached orphan.
+	assertFeedbackBranchEmptyRoot(t, rc, org, grpRepo)
 	assertPushGranted(t, ctx, client, org, grpRepo, student1)
 	// The group's whole point is multi-member grants: verify the second member too,
 	// or say plainly that the single-member run leaves that path uncovered.
@@ -511,12 +511,13 @@ func assertFeedbackPROpen(t *testing.T, ctx context.Context, client gh.Client, o
 	}
 }
 
-// assertFeedbackBranchOrphan fails unless the feedback branch tip is an orphan
-// commit (no parents) whose tree is git's canonical empty tree. Read straight
-// from the API via the raw client, since gh.Client exposes no commit-object
-// read. emptyTreeSHA is git's well-known constant for a zero-entry tree;
-// asserting it here guarantees the merge base with the default branch is empty.
-func assertFeedbackBranchOrphan(t *testing.T, rc *api.RESTClient, org, repo string) {
+// assertFeedbackBranchEmptyRoot fails unless the feedback branch tip is the empty
+// root the default branch was rebased onto: a parent-less commit whose tree is
+// git's canonical empty tree. Read straight from the API via the raw client,
+// since gh.Client exposes no commit-object read. The empty tree guarantees the
+// merge base with the default branch is empty (whole project in the diff); the
+// parent-less check guarantees it is the root they share.
+func assertFeedbackBranchEmptyRoot(t *testing.T, rc *api.RESTClient, org, repo string) {
 	t.Helper()
 	const emptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 	var c struct {

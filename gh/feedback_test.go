@@ -63,28 +63,100 @@ func TestCreateRefRejectsMismatch(t *testing.T) {
 	}
 }
 
-func TestCreateCommit(t *testing.T) {
-	f := &fakeRequester{steps: []step{{resp: okResp(`{"sha":"feedback-commit-sha"}`)}}}
+func TestRebaseOntoEmptyRoot(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{"object":{"sha":"tip-sha"}}`)},                     // GET main tip
+		{resp: okResp(`{"tree":{"sha":"content-tree"},"message":"Init"}`)}, // GET its commit
+		{resp: okResp(`{"sha":"root-sha"}`)},                               // POST empty root
+		{resp: okResp(`{"sha":"rebased-sha"}`)},                            // POST content on the root
+		{resp: okResp(`{"object":{"sha":"rebased-sha"}}`)},                 // PATCH main (force)
+		{resp: okResp(`{"object":{"sha":"rebased-sha"}}`)},                 // GET main tip (verify)
+	}}
 	var waits int
 	c := newTestClient(f, &waits)
-	sha, err := c.CreateCommit(context.Background(), "org", "hw1-ada", "Setting up feedback")
+	root, err := c.RebaseOntoEmptyRoot(context.Background(), "org", "hw1-ada", "main")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if sha != "feedback-commit-sha" {
-		t.Errorf("sha = %q", sha)
+	// Returns the empty root's SHA: the base the feedback branch is pointed at.
+	if root != "root-sha" {
+		t.Errorf("root = %q, want root-sha", root)
 	}
-	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/git/commits" {
-		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	// The empty root is a parent-less commit over git's canonical empty tree.
+	if f.methods[2] != "POST" || f.paths[2] != "repos/org/hw1-ada/git/commits" {
+		t.Errorf("empty-root request = %s %s", f.methods[2], f.paths[2])
 	}
-	// The commit points at git's canonical empty tree (referenced directly, since
-	// GitHub rejects creating a zero-entry tree), and an empty parents list makes
-	// it an orphan (root) commit — together these keep the feedback branch
-	// divergent from the default branch and its merge base empty.
-	for _, want := range []string{`"message":"Setting up feedback"`, `"tree":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"`, `"parents":[]`} {
-		if !strings.Contains(f.bodies[0], want) {
-			t.Errorf("body %s missing %s", f.bodies[0], want)
+	for _, want := range []string{`"tree":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"`, `"parents":[]`} {
+		if !strings.Contains(f.bodies[2], want) {
+			t.Errorf("empty-root body %s missing %s", f.bodies[2], want)
 		}
+	}
+	// The rebased commit keeps the branch's tree but now descends from the root.
+	for _, want := range []string{`"tree":"content-tree"`, `"parents":["root-sha"]`} {
+		if !strings.Contains(f.bodies[3], want) {
+			t.Errorf("rebased body %s missing %s", f.bodies[3], want)
+		}
+	}
+	// The default branch is force-moved onto the rebased commit.
+	if f.methods[4] != "PATCH" || f.paths[4] != "repos/org/hw1-ada/git/refs/heads/main" {
+		t.Errorf("move request = %s %s", f.methods[4], f.paths[4])
+	}
+	for _, want := range []string{`"sha":"rebased-sha"`, `"force":true`} {
+		if !strings.Contains(f.bodies[4], want) {
+			t.Errorf("move body %s missing %s", f.bodies[4], want)
+		}
+	}
+	// Post-condition: the branch is re-read to confirm the rewrite landed.
+	if f.methods[5] != "GET" || f.paths[5] != "repos/org/hw1-ada/git/ref/heads/main" {
+		t.Errorf("verify request = %s %s", f.methods[5], f.paths[5])
+	}
+}
+
+// TestRebaseOntoEmptyRootDetectsFailedMove guards the post-condition: if the
+// force-move silently does not land (e.g. a protected branch), the branch still
+// resolves to its old tip and the rebase must fail rather than return a root that
+// the default branch does not descend from.
+func TestRebaseOntoEmptyRootDetectsFailedMove(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{"object":{"sha":"tip-sha"}}`)},
+		{resp: okResp(`{"tree":{"sha":"content-tree"},"message":"Init"}`)},
+		{resp: okResp(`{"sha":"root-sha"}`)},
+		{resp: okResp(`{"sha":"rebased-sha"}`)},
+		{resp: okResp(`{"object":{"sha":"rebased-sha"}}`)},
+		{resp: okResp(`{"object":{"sha":"tip-sha"}}`)}, // verify: still the old tip
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	if _, err := c.RebaseOntoEmptyRoot(context.Background(), "org", "hw1-ada", "main"); err == nil {
+		t.Fatal("a branch that did not move should fail the rebase")
+	}
+}
+
+// TestRebaseOntoEmptyRootWaitsForRef covers the ref-read lag the live test hit:
+// the force-move lands, but the branch first reads back as its old tip and only
+// reflects the rebased commit after a wait. The rebase must tolerate that rather
+// than fail.
+func TestRebaseOntoEmptyRootWaitsForRef(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{"object":{"sha":"tip-sha"}}`)},
+		{resp: okResp(`{"tree":{"sha":"content-tree"},"message":"Init"}`)},
+		{resp: okResp(`{"sha":"root-sha"}`)},
+		{resp: okResp(`{"sha":"rebased-sha"}`)},
+		{resp: okResp(`{"object":{"sha":"rebased-sha"}}`)}, // PATCH main
+		{resp: okResp(`{"object":{"sha":"tip-sha"}}`)},     // verify: stale old tip
+		{resp: okResp(`{"object":{"sha":"rebased-sha"}}`)}, // verify: now the rebased commit
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	root, err := c.RebaseOntoEmptyRoot(context.Background(), "org", "hw1-ada", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if root != "root-sha" {
+		t.Errorf("root = %q, want root-sha", root)
+	}
+	if waits != 1 {
+		t.Errorf("a ref reflecting the move on the second read should wait once, got %d", waits)
 	}
 }
 
@@ -155,8 +227,8 @@ func TestCreateIssue(t *testing.T) {
 // the regression the live test hit as a flaky "no feedback issue" failure.
 func TestCreateIssueWaitsForVisibility(t *testing.T) {
 	f := &fakeRequester{steps: []step{
-		{resp: okResp(`{}`)},         // POST create
-		{resp: okResp(`[]`)},         // list: not visible yet
+		{resp: okResp(`{}`)}, // POST create
+		{resp: okResp(`[]`)}, // list: not visible yet
 		{resp: okResp(`[{"number":1,"title":"Feedback","state":"open"}]`)}, // list: now visible
 	}}
 	var waits int

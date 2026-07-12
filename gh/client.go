@@ -61,9 +61,10 @@ type Client interface {
 	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
 	// CreateRef creates a fully-qualified ref (e.g. "refs/heads/feedback").
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
-	// CreateCommit creates the root (parent-less) feedback commit over the empty
-	// tree and returns its SHA.
-	CreateCommit(ctx context.Context, owner, repo, message string) (string, error)
+	// RebaseOntoEmptyRoot rebuilds branch's initial commit on top of a new empty
+	// root commit (force-updating branch) and returns the root's SHA, the base the
+	// feedback branch points at.
+	RebaseOntoEmptyRoot(ctx context.Context, owner, repo, branch string) (string, error)
 	// BranchExists reports whether a branch (short name) exists.
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	// CreatePR opens a pull request.

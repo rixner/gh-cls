@@ -60,7 +60,7 @@ type fakeAssignClient struct {
 	rulesets       map[string]bool // repos a protection ruleset was applied to
 	refs           []string        // "repo:ref"
 	refSHAs        []string        // "repo:ref@sha" — the SHA each ref was created at
-	commits        []string        // repos an orphan feedback commit was created for
+	rebased        []string        // repos whose default branch was rebased onto an empty root
 	prs            []string        // "repo:head->base"
 	issues         []string        // repo
 	enabled        []string        // repos where issues were enabled
@@ -189,11 +189,11 @@ func (f *fakeAssignClient) ApplyRuleset(_ context.Context, _, repo string) error
 	return nil
 }
 
-func (f *fakeAssignClient) CreateCommit(_ context.Context, _, repo, _ string) (string, error) {
+func (f *fakeAssignClient) RebaseOntoEmptyRoot(_ context.Context, _, repo, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.commits = append(f.commits, repo)
-	return "feedback-commit-sha", nil
+	f.rebased = append(f.rebased, repo)
+	return "empty-root-sha", nil
 }
 
 func (f *fakeAssignClient) CreateRef(_ context.Context, _, repo, ref, sha string) error {
@@ -510,16 +510,16 @@ func TestAssignFeedbackPR(t *testing.T) {
 	if !contains(fake.refs, "hw1-ada:refs/heads/feedback") {
 		t.Errorf("feedback branch not created: %v", fake.refs)
 	}
-	// Divergence guard: the feedback branch must be an orphan commit over the
-	// empty tree, not a copy of the default branch. A branch pinned at the
-	// starter commit is identical to main, so GitHub rejects the PR ("No commits
-	// between ...") and none is ever opened. Assert the branch points at the
-	// orphan commit, never at the default branch's starter SHA.
-	if !contains(fake.commits, "hw1-ada") {
-		t.Errorf("feedback branch should be an orphan commit over the empty tree: %v", fake.commits)
+	// Divergence guard: the default branch is rebased onto an empty root and the
+	// feedback branch points at that root, so the two share history (the PR opens)
+	// with an empty merge base (the whole project is the diff). A branch left at
+	// the starter commit would be identical to main -> "No commits between" and no
+	// PR; a detached orphan would share no history -> "no history in common".
+	if !contains(fake.rebased, "hw1-ada") {
+		t.Errorf("default branch should be rebased onto an empty root: %v", fake.rebased)
 	}
-	if !contains(fake.refSHAs, "hw1-ada:refs/heads/feedback@feedback-commit-sha") {
-		t.Errorf("feedback branch must point at the orphan commit, not the default branch: %v", fake.refSHAs)
+	if !contains(fake.refSHAs, "hw1-ada:refs/heads/feedback@empty-root-sha") {
+		t.Errorf("feedback branch must point at the empty root: %v", fake.refSHAs)
 	}
 	if !contains(fake.prs, "hw1-ada:main->feedback") {
 		t.Errorf("feedback PR not opened with base feedback: %v", fake.prs)
