@@ -286,6 +286,13 @@ func TestLive(t *testing.T) {
 	// at the starter commit — identical to the default branch, so GitHub refused
 	// the PR. The orphan feedback branch keeps the two divergent, so it opens.
 	assertFeedbackPROpen(t, ctx, client, org, grpRepo)
+	// And assert the mechanism itself: the branch tip is an orphan (no parents)
+	// over git's empty tree. This pins the two invariants a plain "PR is open"
+	// check misses — divergence from the default branch, and an empty merge base
+	// so the whole project shows in the diff — and fails if the empty base is ever
+	// created via POST git/trees again (which GitHub rejects with "422 Invalid
+	// tree info") or the branch is repinned at the starter commit.
+	assertFeedbackBranchOrphan(t, rc, org, grpRepo)
 	assertPushGranted(t, ctx, client, org, grpRepo, student1)
 	// The group's whole point is multi-member grants: verify the second member too,
 	// or say plainly that the single-member run leaves that path uncovered.
@@ -501,6 +508,35 @@ func assertFeedbackPROpen(t *testing.T, ctx context.Context, client gh.Client, o
 	}
 	if state != "open" {
 		t.Errorf("feedback PR on %s/%s state = %q, want open", org, repo, state)
+	}
+}
+
+// assertFeedbackBranchOrphan fails unless the feedback branch tip is an orphan
+// commit (no parents) whose tree is git's canonical empty tree. Read straight
+// from the API via the raw client, since gh.Client exposes no commit-object
+// read. emptyTreeSHA is git's well-known constant for a zero-entry tree;
+// asserting it here guarantees the merge base with the default branch is empty.
+func assertFeedbackBranchOrphan(t *testing.T, rc *api.RESTClient, org, repo string) {
+	t.Helper()
+	const emptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
+	var c struct {
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
+		Commit struct {
+			Tree struct {
+				SHA string `json:"sha"`
+			} `json:"tree"`
+		} `json:"commit"`
+	}
+	if err := rc.Get(fmt.Sprintf("repos/%s/%s/commits/feedback", org, repo), &c); err != nil {
+		t.Fatalf("reading feedback branch tip on %s/%s: %v", org, repo, err)
+	}
+	if len(c.Parents) != 0 {
+		t.Errorf("feedback branch tip on %s/%s has %d parent(s), want 0 (an orphan root commit)", org, repo, len(c.Parents))
+	}
+	if c.Commit.Tree.SHA != emptyTreeSHA {
+		t.Errorf("feedback branch tip on %s/%s points at tree %s, want the empty tree %s", org, repo, c.Commit.Tree.SHA, emptyTreeSHA)
 	}
 }
 
