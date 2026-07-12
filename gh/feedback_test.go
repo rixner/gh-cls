@@ -63,30 +63,11 @@ func TestCreateRefRejectsMismatch(t *testing.T) {
 	}
 }
 
-func TestCreateTree(t *testing.T) {
-	f := &fakeRequester{steps: []step{{resp: okResp(`{"sha":"empty-tree-sha"}`)}}}
-	var waits int
-	c := newTestClient(f, &waits)
-	sha, err := c.CreateTree(context.Background(), "org", "hw1-ada")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sha != "empty-tree-sha" {
-		t.Errorf("sha = %q", sha)
-	}
-	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/git/trees" {
-		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
-	}
-	if !strings.Contains(f.bodies[0], `"tree":[]`) {
-		t.Errorf("body %s should request the empty tree", f.bodies[0])
-	}
-}
-
 func TestCreateCommit(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`{"sha":"feedback-commit-sha"}`)}}}
 	var waits int
 	c := newTestClient(f, &waits)
-	sha, err := c.CreateCommit(context.Background(), "org", "hw1-ada", "Setting up feedback", "empty-tree-sha")
+	sha, err := c.CreateCommit(context.Background(), "org", "hw1-ada", "Setting up feedback")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,9 +77,11 @@ func TestCreateCommit(t *testing.T) {
 	if f.methods[0] != "POST" || f.paths[0] != "repos/org/hw1-ada/git/commits" {
 		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
 	}
-	// An empty parents list makes it an orphan (root) commit — the property that
-	// keeps the feedback branch divergent from the default branch.
-	for _, want := range []string{`"message":"Setting up feedback"`, `"tree":"empty-tree-sha"`, `"parents":[]`} {
+	// The commit points at git's canonical empty tree (referenced directly, since
+	// GitHub rejects creating a zero-entry tree), and an empty parents list makes
+	// it an orphan (root) commit — together these keep the feedback branch
+	// divergent from the default branch and its merge base empty.
+	for _, want := range []string{`"message":"Setting up feedback"`, `"tree":"4b825dc642cb6eb9a060e54bf8d69288fbee4904"`, `"parents":[]`} {
 		if !strings.Contains(f.bodies[0], want) {
 			t.Errorf("body %s missing %s", f.bodies[0], want)
 		}

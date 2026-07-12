@@ -44,36 +44,26 @@ func (c *restClient) CreateRef(ctx context.Context, owner, repo, ref, sha string
 	return nil
 }
 
-// CreateTree creates the empty git tree in the repository and returns its SHA.
-// The feedback branch is an orphan (see addFeedback): its root commit points at
-// this empty tree, so a brand-new repo's whole contents show as additions in the
-// feedback PR diff. Creating the tree via the API (rather than hard-coding git's
-// canonical empty-tree SHA) avoids depending on GitHub already knowing that
-// object.
-func (c *restClient) CreateTree(ctx context.Context, owner, repo string) (string, error) {
-	path := fmt.Sprintf("repos/%s/%s/git/trees", url.PathEscape(owner), url.PathEscape(repo))
-	var out struct {
-		SHA string `json:"sha"`
-	}
-	if _, err := c.do(ctx, "POST", path, map[string]any{"tree": []any{}}, &out); err != nil {
-		return "", err
-	}
-	if out.SHA == "" {
-		return "", fmt.Errorf("creating empty tree in %s/%s returned no SHA", owner, repo)
-	}
-	return out.SHA, nil
-}
+// emptyTreeSHA is git's canonical empty tree object, the same constant every git
+// install computes for a tree with no entries. GitHub materializes it on demand
+// when a commit is created against it, so it can be referenced directly without
+// first creating the object. This is the only reliable way to give the feedback
+// orphan an empty base: POST git/trees rejects a zero-entry tree with "422
+// Invalid tree info", so the tree cannot be created through the API.
+const emptyTreeSHA = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"
 
-// CreateCommit creates a root (parent-less) commit with the given message and
-// tree, returning its SHA. An empty parents list makes it an orphan commit whose
-// history is unrelated to the default branch — the property that lets the
-// feedback PR always open and diff the entire project.
-func (c *restClient) CreateCommit(ctx context.Context, owner, repo, message, tree string) (string, error) {
+// CreateCommit creates the root (parent-less) feedback commit over the empty
+// tree and returns its SHA. An empty parents list makes it an orphan whose
+// history is unrelated to the default branch, and the empty tree makes its merge
+// base with the default branch empty. Together these let the feedback PR always
+// open and show the entire project as additions, so staff can comment on any
+// line, including unchanged starter code.
+func (c *restClient) CreateCommit(ctx context.Context, owner, repo, message string) (string, error) {
 	path := fmt.Sprintf("repos/%s/%s/git/commits", url.PathEscape(owner), url.PathEscape(repo))
 	var out struct {
 		SHA string `json:"sha"`
 	}
-	body := map[string]any{"message": message, "tree": tree, "parents": []any{}}
+	body := map[string]any{"message": message, "tree": emptyTreeSHA, "parents": []any{}}
 	if _, err := c.do(ctx, "POST", path, body, &out); err != nil {
 		return "", err
 	}

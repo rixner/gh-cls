@@ -60,7 +60,7 @@ type fakeAssignClient struct {
 	rulesets       map[string]bool // repos a protection ruleset was applied to
 	refs           []string        // "repo:ref"
 	refSHAs        []string        // "repo:ref@sha" — the SHA each ref was created at
-	commits        []string        // "repo:tree" — orphan feedback commits created
+	commits        []string        // repos an orphan feedback commit was created for
 	prs            []string        // "repo:head->base"
 	issues         []string        // repo
 	enabled        []string        // repos where issues were enabled
@@ -189,14 +189,10 @@ func (f *fakeAssignClient) ApplyRuleset(_ context.Context, _, repo string) error
 	return nil
 }
 
-func (f *fakeAssignClient) CreateTree(_ context.Context, _, _ string) (string, error) {
-	return "empty-tree-sha", nil
-}
-
-func (f *fakeAssignClient) CreateCommit(_ context.Context, _, repo, _, tree string) (string, error) {
+func (f *fakeAssignClient) CreateCommit(_ context.Context, _, repo, _ string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.commits = append(f.commits, repo+":"+tree)
+	f.commits = append(f.commits, repo)
 	return "feedback-commit-sha", nil
 }
 
@@ -519,7 +515,7 @@ func TestAssignFeedbackPR(t *testing.T) {
 	// starter commit is identical to main, so GitHub rejects the PR ("No commits
 	// between ...") and none is ever opened. Assert the branch points at the
 	// orphan commit, never at the default branch's starter SHA.
-	if !contains(fake.commits, "hw1-ada:empty-tree-sha") {
+	if !contains(fake.commits, "hw1-ada") {
 		t.Errorf("feedback branch should be an orphan commit over the empty tree: %v", fake.commits)
 	}
 	if !contains(fake.refSHAs, "hw1-ada:refs/heads/feedback@feedback-commit-sha") {

@@ -50,8 +50,7 @@ type assignClient interface {
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
 	ApplyRuleset(ctx context.Context, org, repo string) error
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
-	CreateTree(ctx context.Context, owner, repo string) (string, error)
-	CreateCommit(ctx context.Context, owner, repo, message, tree string) (string, error)
+	CreateCommit(ctx context.Context, owner, repo, message string) (string, error)
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
 	PRExists(ctx context.Context, owner, repo, base string) (bool, error)
@@ -475,11 +474,7 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 			return fmt.Errorf("checking feedback branch on %s: %w", repo, err)
 		}
 		if !branchExists {
-			tree, err := client.CreateTree(ctx, org, repo)
-			if err != nil {
-				return fmt.Errorf("creating feedback tree on %s: %w", repo, err)
-			}
-			commit, err := client.CreateCommit(ctx, org, repo, feedbackCommitMsg, tree)
+			commit, err := client.CreateCommit(ctx, org, repo, feedbackCommitMsg)
 			if err != nil {
 				return fmt.Errorf("creating feedback commit on %s: %w", repo, err)
 			}
