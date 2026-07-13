@@ -188,6 +188,24 @@ func TestFeedbackGroupMode(t *testing.T) {
 	})
 }
 
+func TestFeedbackWarnsOnMultiTeamStudent(t *testing.T) {
+	// Regression: feedback used to print the unassigned-student warning but
+	// silently drop the multi-team one, unlike audit. loadUnits/printUnitWarnings
+	// now share the same warning logic, so feedback reports it too.
+	fake := newFakeFeedback("admin", "proj-team-alpha", "proj-team-beta")
+	files := map[string]string{"team-alpha.md": "team a feedback", "team-beta.md": "team b feedback"}
+	teamsMultiTeam := "team-alpha: [student-001, student-003]\nteam-beta: [student-002, student-001]\n"
+	o, _ := newFeedbackOpts(t, fake, files, assignRoster, teamsMultiTeam)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "proj"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "student-001 is on more than one team: team-alpha, team-beta") {
+		t.Errorf("multi-team warning missing:\n%s", buf.String())
+	}
+}
+
 func TestFeedbackIdempotent(t *testing.T) {
 	fake := newFakeFeedback("admin", "hw1-ada")
 	o, dir := newFeedbackOpts(t, fake, map[string]string{"ada.md": "first round"}, fbRosterSolo, "")

@@ -13,8 +13,6 @@ import (
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
-	"github.com/rixner/gh-cls/roster"
-	"github.com/rixner/gh-cls/teams"
 	"github.com/rixner/gh-cls/unit"
 	"github.com/spf13/cobra"
 )
@@ -126,36 +124,11 @@ func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) erro
 		return fmt.Errorf("assignment %q has no feedback artifact: set assignments.%s.feedback to pr or issue and run `gh cls assign %s` to create it before posting feedback", name, name, name)
 	}
 
-	// Type/inputs consistency (mirrors assign): a group assignment needs the
-	// teams file to know its units; an individual one must not get one.
-	switch policy.Type {
-	case config.TypeGroup:
-		if o.teams == "" {
-			return fmt.Errorf("assignment %q is a group assignment: --teams is required", name)
-		}
-	case config.TypeIndividual:
-		if o.teams != "" {
-			return fmt.Errorf("assignment %q is an individual assignment: --teams is not allowed", name)
-		}
-	}
-
-	r, err := roster.ParseFile(o.roster)
+	units, report, _, err := loadUnits(name, policy.Type, o.roster, o.teams)
 	if err != nil {
 		return err
 	}
-	var tm *teams.Teams
-	if policy.Type == config.TypeGroup {
-		if tm, err = teams.ParseFile(o.teams); err != nil {
-			return err
-		}
-	}
-	units, report, err := unit.Resolve(policy.Type, r, tm)
-	if err != nil {
-		return err
-	}
-	for _, id := range report.UnassignedIDs {
-		fmt.Fprintf(out, "warning: enrolled student %s is on no team\n", id)
-	}
+	printUnitWarnings(out, report)
 
 	// Read every file before any API call, so a malformed directory aborts before
 	// a single comment is posted.

@@ -9,8 +9,6 @@ import (
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
-	"github.com/rixner/gh-cls/roster"
-	"github.com/rixner/gh-cls/teams"
 	"github.com/rixner/gh-cls/unit"
 	"github.com/spf13/cobra"
 )
@@ -132,37 +130,11 @@ func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
 		return err
 	}
 
-	switch policy.Type {
-	case config.TypeGroup:
-		if o.teams == "" {
-			return fmt.Errorf("assignment %q is a group assignment: --teams is required", name)
-		}
-	case config.TypeIndividual:
-		if o.teams != "" {
-			return fmt.Errorf("assignment %q is an individual assignment: --teams is not allowed", name)
-		}
-	}
-
-	r, err := roster.ParseFile(o.roster)
+	units, report, r, err := loadUnits(name, policy.Type, o.roster, o.teams)
 	if err != nil {
 		return err
 	}
-	var tm *teams.Teams
-	if policy.Type == config.TypeGroup {
-		if tm, err = teams.ParseFile(o.teams); err != nil {
-			return err
-		}
-	}
-	units, report, err := unit.Resolve(policy.Type, r, tm)
-	if err != nil {
-		return err
-	}
-	for _, id := range report.UnassignedIDs {
-		fmt.Fprintf(out, "warning: enrolled student %s is on no team\n", id)
-	}
-	for _, m := range report.MultiTeam {
-		fmt.Fprintf(out, "warning: student %s is on more than one team: %s\n", m.ID, strings.Join(m.Teams, ", "))
-	}
+	printUnitWarnings(out, report)
 	byUser := r.ByUsername()
 
 	client, err := o.newClient(ctx)

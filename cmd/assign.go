@@ -11,8 +11,6 @@ import (
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
-	"github.com/rixner/gh-cls/roster"
-	"github.com/rixner/gh-cls/teams"
 	"github.com/rixner/gh-cls/unit"
 	"github.com/spf13/cobra"
 )
@@ -162,33 +160,10 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
-	// Preflight 1: type/inputs consistency (not overridable).
-	switch policy.Type {
-	case config.TypeGroup:
-		if o.teams == "" {
-			return fmt.Errorf("assignment %q is a group assignment: --teams is required", name)
-		}
-	case config.TypeIndividual:
-		if o.teams != "" {
-			return fmt.Errorf("assignment %q is an individual assignment: --teams is not allowed", name)
-		}
-	}
-
-	r, err := roster.ParseFile(o.roster)
-	if err != nil {
-		return err
-	}
-	var tm *teams.Teams
-	if policy.Type == config.TypeGroup {
-		if tm, err = teams.ParseFile(o.teams); err != nil {
-			return err
-		}
-	}
-
-	// Preflight 4: unit resolution and roster/teams consistency. A student on no
-	// team or on more than one team aborts before anything is created, so the
+	// Preflight 1 & 4: type/inputs consistency and unit resolution. A student on
+	// no team or on more than one team aborts before anything is created, so the
 	// mistake is fixed before repos exist; --force downgrades it to a warning.
-	units, report, err := unit.Resolve(policy.Type, r, tm)
+	units, report, _, err := loadUnits(name, policy.Type, o.roster, o.teams)
 	if err != nil {
 		return err
 	}
