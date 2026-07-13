@@ -206,6 +206,7 @@ func (o *statusOpts) assignmentStatus(ctx context.Context, client statusClient, 
 		s.err = err
 		return s
 	}
+	all = filterAssignmentRepos(o.g.cfg, n, all)
 	for _, r := range all {
 		if r.IsTemplate {
 			continue
@@ -299,6 +300,7 @@ func (o *statusOpts) runDetail(ctx context.Context, out io.Writer, org string, n
 			problems = append(problems, fmt.Sprintf("%s: listing repositories: %v", n, err))
 			continue
 		}
+		all = filterAssignmentRepos(o.g.cfg, n, all)
 		for _, r := range all {
 			if r.IsTemplate {
 				continue

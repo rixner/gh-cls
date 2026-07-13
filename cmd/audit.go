@@ -179,6 +179,7 @@ func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
 	if err != nil {
 		return fmt.Errorf("listing %s-* repositories: %w", name, err)
 	}
+	repos = filterAssignmentRepos(o.g.cfg, name, repos)
 	exists := make(map[string]bool, len(repos))
 	for _, rp := range repos {
 		exists[rp.Name] = true

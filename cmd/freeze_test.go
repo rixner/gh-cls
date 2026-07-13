@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 )
 
@@ -76,8 +77,13 @@ func (f *fakeFreezeClient) AddCollaborator(_ context.Context, _, repo, username,
 
 func newFreezeOpts(t *testing.T, fake *fakeFreezeClient, undo, dryRun bool) *freezeOpts {
 	t.Helper()
+	return newFreezeOptsG(t, assignGlobals(), fake, undo, dryRun)
+}
+
+func newFreezeOptsG(t *testing.T, g *globalOpts, fake *fakeFreezeClient, undo, dryRun bool) *freezeOpts {
+	t.Helper()
 	return &freezeOpts{
-		g:         &globalOpts{org: "cs101-spring26", concurrency: 4},
+		g:         g,
 		undo:      undo,
 		dryRun:    dryRun,
 		newClient: func(context.Context) (freezeClient, error) { return fake, nil },
@@ -256,6 +262,42 @@ func TestFreezeSkipsTemplateRepo(t *testing.T) {
 	for _, ch := range fake.changes {
 		if strings.HasPrefix(ch, "hw1-template:") {
 			t.Errorf("freeze must not touch the template repo: %v", fake.changes)
+		}
+	}
+}
+
+func TestFreezeExcludesLongerOverlappingAssignmentRepos(t *testing.T) {
+	// "proj" and "proj-final" both configured (a config from before that
+	// combination was rejected, or a mid-semester rename) would otherwise let
+	// `freeze proj` match proj-final's repos too, since they also start with
+	// "proj-". filterAssignmentRepos must exclude them.
+	g := &globalOpts{
+		org:         "cs101-spring26",
+		concurrency: 4,
+		cfg: &config.Config{Assignments: map[string]config.Assignment{
+			"proj":       {Type: config.TypeIndividual},
+			"proj-final": {Type: config.TypeIndividual},
+		}},
+	}
+	fake := &fakeFreezeClient{
+		role:  "admin",
+		repos: []gh.Repo{{Name: "proj-x"}, {Name: "proj-final-y"}},
+		collabs: map[string][]gh.Collaborator{
+			"proj-x":       {collab("x", "push")},
+			"proj-final-y": {collab("y", "push")},
+		},
+	}
+	o := newFreezeOptsG(t, g, fake, false, false)
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "proj", nil); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.changes, "proj-x:x=pull") {
+		t.Errorf("proj-x should be frozen: %v", fake.changes)
+	}
+	for _, ch := range fake.changes {
+		if strings.HasPrefix(ch, "proj-final-y:") {
+			t.Errorf("freeze proj must not touch proj-final's repos: %v", fake.changes)
 		}
 	}
 }

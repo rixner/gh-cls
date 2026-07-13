@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 )
 
@@ -125,6 +126,11 @@ func expiredInvite(id int64, login string) gh.Invitation {
 // dir and the config comes from assignGlobals.
 func newAuditOpts(t *testing.T, fake *fakeAuditClient, rosterCSV, teamsYML string) *auditOpts {
 	t.Helper()
+	return newAuditOptsG(t, assignGlobals(), fake, rosterCSV, teamsYML)
+}
+
+func newAuditOptsG(t *testing.T, g *globalOpts, fake *fakeAuditClient, rosterCSV, teamsYML string) *auditOpts {
+	t.Helper()
 	dir := t.TempDir()
 	rosterPath := filepath.Join(dir, "roster.csv")
 	if err := os.WriteFile(rosterPath, []byte(rosterCSV), 0o644); err != nil {
@@ -138,7 +144,7 @@ func newAuditOpts(t *testing.T, fake *fakeAuditClient, rosterCSV, teamsYML strin
 		}
 	}
 	return &auditOpts{
-		g:         assignGlobals(),
+		g:         g,
 		roster:    rosterPath,
 		teams:     teamsPath,
 		newClient: func(context.Context) (auditClient, error) { return fake, nil },
@@ -358,5 +364,33 @@ func TestAuditRenewAbortsOnAuditError(t *testing.T) {
 	}
 	if len(fake.added) != 0 || len(fake.deleted) != 0 {
 		t.Errorf("no mutation should occur when renew aborts: added=%v deleted=%v", fake.added, fake.deleted)
+	}
+}
+
+func TestAuditExcludesLongerOverlappingAssignmentRepos(t *testing.T) {
+	// "proj" and "proj-final" both configured, with a student on "proj" whose
+	// key happens to collide with a proj-final repo's suffix ("proj-final-y"
+	// matches the "proj-" prefix as key "final-y"). Auditing "proj" must not
+	// treat proj-final's repo as this student's repo.
+	g := &globalOpts{
+		org: "cs101-spring26",
+		cfg: &config.Config{Assignments: map[string]config.Assignment{
+			"proj":       {Type: config.TypeIndividual},
+			"proj-final": {Type: config.TypeIndividual},
+		}},
+		concurrency: 4,
+	}
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"proj-final-y": true}
+	roster := "identifier,username\nstudent-001,final-y\n"
+	o := newAuditOptsG(t, g, fake, roster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "proj"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1 without a repo") {
+		t.Errorf("final-y should show as having no proj repo (proj-final-y belongs to proj-final):\n%s", out)
 	}
 }

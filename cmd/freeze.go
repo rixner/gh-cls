@@ -114,6 +114,7 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys [
 	if err != nil {
 		return fmt.Errorf("listing %s-* repositories: %w", name, err)
 	}
+	all = filterAssignmentRepos(o.g.cfg, name, all)
 	// A template repository can match the <name>-* prefix (e.g. hw1-template) but
 	// is not student work — never freeze it. Skipping every template repo keeps
 	// freeze decoupled from which template an assignment names.

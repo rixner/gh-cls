@@ -4,7 +4,11 @@
 // only reads it, never writes it. It holds no student PII.
 package config
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 // AssignmentType distinguishes the two unit sources: one repo per student, or
 // one repo per team.
@@ -68,6 +72,26 @@ func (c *Config) Validate() error {
 		case FeedbackNone, FeedbackPR, FeedbackIssue:
 		default:
 			return fmt.Errorf("assignment %q: invalid feedback %q (want pr or issue)", name, a.Feedback)
+		}
+	}
+
+	// Every command scopes an assignment's repos by the <name>-* prefix. If one
+	// assignment's name is itself a dash-prefix of another's (e.g. "proj" and
+	// "proj-final"), the shorter assignment's listing also catches the longer
+	// one's repos, silently mixing them into the wrong assignment (freeze,
+	// status counts, audit/collect). Reject that at config load time.
+	names := make([]string, 0, len(c.Assignments))
+	for name := range c.Assignments {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for i, a := range names {
+		aDash := a + "-"
+		for _, b := range names[i+1:] {
+			bDash := b + "-"
+			if strings.HasPrefix(bDash, aDash) || strings.HasPrefix(aDash, bDash) {
+				return fmt.Errorf("assignment names %q and %q overlap: repositories of one would match the other's <name>-* prefix; rename one", a, b)
+			}
 		}
 	}
 	return nil

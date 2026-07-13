@@ -77,6 +77,23 @@ func TestLoad(t *testing.T) {
 			t.Fatal("Load should error on a missing file")
 		}
 	})
+
+	t.Run("non-overlapping assignment names are accepted", func(t *testing.T) {
+		_, err := Load(write(t, "org: x\nstaff_team: staff\nassignments:\n  hw1:\n    type: individual\n  hw2:\n    type: individual\n"))
+		if err != nil {
+			t.Fatalf("hw1/hw2 should not be rejected as overlapping, got %v", err)
+		}
+	})
+
+	t.Run("dash-prefix-overlapping assignment names are rejected", func(t *testing.T) {
+		_, err := Load(write(t, "org: x\nstaff_team: staff\nassignments:\n  proj:\n    type: individual\n  proj-final:\n    type: individual\n"))
+		if err == nil {
+			t.Fatal("Load should reject proj/proj-final: proj-final's repos would match proj's <name>-* prefix")
+		}
+		if !strings.Contains(err.Error(), "proj") || !strings.Contains(err.Error(), "proj-final") {
+			t.Fatalf("overlap error should name both assignments, got %v", err)
+		}
+	})
 }
 
 func TestResolvePrecedence(t *testing.T) {

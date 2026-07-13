@@ -163,6 +163,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	if err != nil {
 		return fmt.Errorf("listing %s-* repositories: %w", name, err)
 	}
+	all = filterAssignmentRepos(o.g.cfg, name, all)
 
 	var items []repoItem
 	present := make(map[string]bool)
