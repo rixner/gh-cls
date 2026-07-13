@@ -139,6 +139,24 @@ func TestLive(t *testing.T) {
 	// then prove idempotency (existing repo skipped).
 	rosterInd := filepath.Join(dir, "roster-individual.csv")
 	writeRoster(t, rosterInd, student1)
+
+	// 3a. Divergence guard: a roster with a non-existent GitHub username must abort
+	// before creating anything. Previously the bogus handle surfaced only when the
+	// invite failed, after its repo had been generated, leaving a stray repo behind.
+	bogusLogin := student1 + "zzznope"
+	rosterBad := filepath.Join(dir, "roster-bogus.csv")
+	writeRoster(t, rosterBad, bogusLogin)
+	if _, err := runCLI(ctx, "assign", "-r", rosterBad, "-p", name); err == nil {
+		t.Error("assign with a bogus roster username should abort, not create a repo")
+	} else if !strings.Contains(err.Error(), bogusLogin) {
+		t.Errorf("the abort should name the bogus username %q, got: %v", bogusLogin, err)
+	}
+	if _, ok, err := client.GetRepo(ctx, org, name+"-"+bogusLogin); err != nil {
+		t.Fatalf("checking for a stray repo: %v", err)
+	} else if ok {
+		t.Errorf("a bogus-username run must leave no repo behind, but %s/%s-%s exists", org, name, bogusLogin)
+	}
+
 	mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "-f", "issue", name)
 	repo := name + "-" + student1
 	assertRepoExists(t, ctx, client, org, repo)

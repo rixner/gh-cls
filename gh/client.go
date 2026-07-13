@@ -15,6 +15,10 @@ type Client interface {
 	// for owners. Used to guard org-mutating commands.
 	OrgRole(ctx context.Context, org string) (string, error)
 
+	// UserExists reports whether a GitHub account with the given login exists.
+	// Used to validate roster usernames before any repository is created.
+	UserExists(ctx context.Context, username string) (bool, error)
+
 	// GetRepo fetches a repository. The bool is false (with a nil error) when
 	// the repo does not exist.
 	GetRepo(ctx context.Context, owner, name string) (*Repo, bool, error)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,6 +40,7 @@ const (
 // assignClient is the narrow set of GitHub operations assign needs.
 type assignClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)
+	UserExists(ctx context.Context, username string) (bool, error)
 	GetTeam(ctx context.Context, org, slug string) (*gh.Team, bool, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
 	SetRepoTemplate(ctx context.Context, owner, name string) error
@@ -253,6 +255,14 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
+	// Preflight 5: every roster username is a real GitHub account. A bogus handle
+	// otherwise fails only at the invite step, after its repo has already been
+	// generated, leaving a stray repo behind. Validate up front, before the first
+	// mutation, so the whole roster can be fixed in one pass.
+	if err := checkRosterUsers(ctx, client, o.g.concurrency, units); err != nil {
+		return err
+	}
+
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) unitResult {
 		return o.provision(ctx, client, org, name, tmplOwner, tmplName, staffTeam, policy, u)
 	})
@@ -303,6 +313,54 @@ func (o *assignOpts) checkSquashed(ctx context.Context, client assignClient, tmp
 	}
 	fmt.Fprintf(&sb, "Aborting. Rebuild it squashed with `gh cls template`, or pass --allow-unsquashed (-U) to proceed anyway.")
 	return errors.New(sb.String())
+}
+
+// checkRosterUsers verifies every unit member is a real GitHub account before any
+// repository is created. Members are deduped case-insensitively (a username may
+// appear on several units) and checked concurrently. Every non-existent handle is
+// collected and reported together so the whole roster can be fixed in one pass,
+// and a lookup error (not a plain "not found") aborts rather than being mistaken
+// for a bad username.
+func checkRosterUsers(ctx context.Context, client assignClient, concurrency int, units []unit.Unit) error {
+	seen := make(map[string]string)
+	for _, u := range units {
+		for _, m := range u.Members {
+			key := strings.ToLower(m)
+			if _, ok := seen[key]; !ok {
+				seen[key] = m
+			}
+		}
+	}
+	usernames := make([]string, 0, len(seen))
+	for _, m := range seen {
+		usernames = append(usernames, m)
+	}
+	sort.Strings(usernames)
+
+	type check struct {
+		user    string
+		missing bool
+		err     error
+	}
+	results := runConcurrent(ctx, concurrency, usernames, func(ctx context.Context, user string) check {
+		exists, err := client.UserExists(ctx, user)
+		return check{user: user, missing: !exists, err: err}
+	})
+
+	var missing []string
+	for _, r := range results {
+		if r.err != nil {
+			return fmt.Errorf("validating roster username %q: %w", r.user, r.err)
+		}
+		if r.missing {
+			missing = append(missing, r.user)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("roster has %d GitHub username(s) that do not exist: %s; fix the roster before assigning (no repositories were created)",
+			len(missing), strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // provision creates (or reuses) one repository and asserts its access grants.

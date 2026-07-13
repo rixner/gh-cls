@@ -179,7 +179,8 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `<repo>` is created in the org; `--source` is always `owner/name`.
 - **assign** runs preflight checks (type/inputs; the assignment's template repo
   exists and is a template repository; all-branches single-commit; roster/teams
-  consistency), then generates each repo from that template concurrently. The
+  consistency; every roster username is a real GitHub account), then generates
+  each repo from that template concurrently. The
   template must be a template repository — `--mark-template` opts into marking it.
   `-b` applies an all-branches ruleset blocking force-push and deletion, which
   only org admins bypass (staff get push but cannot force-push or delete

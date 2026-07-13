@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -44,6 +45,8 @@ type fakeAssignClient struct {
 	mu             sync.Mutex
 	role           string
 	teamMissing    bool // the staff team does not exist (setup not run)
+	unknownUsers   map[string]bool // usernames GitHub reports as non-existent
+	userErr        error           // a lookup failure (not a plain 404) from UserExists
 	hasIssues      bool
 	withholdBranch bool // simulate generation that never lands the default branch
 	forcePublic    bool // generation produces public repos regardless of the request
@@ -67,6 +70,13 @@ type fakeAssignClient struct {
 }
 
 func (f *fakeAssignClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
+
+func (f *fakeAssignClient) UserExists(_ context.Context, username string) (bool, error) {
+	if f.userErr != nil {
+		return false, f.userErr
+	}
+	return !f.unknownUsers[username], nil
+}
 
 func (f *fakeAssignClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
 	if f.teamMissing {
@@ -473,6 +483,52 @@ func TestAssignUnknownTeamMember(t *testing.T) {
 	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
 	if err == nil || !strings.Contains(err.Error(), "student-999") {
 		t.Fatalf("unknown team member should be a hard error, got %v", err)
+	}
+}
+
+func TestAssignRejectsBogusRosterUser(t *testing.T) {
+	// A roster username that does not exist on GitHub must abort before any repo is
+	// generated, rather than surfacing only when the invite fails and leaving a
+	// stray repo behind.
+	fake := newFakeAssign("admin")
+	fake.unknownUsers = map[string]bool{"alan": true}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "alan") {
+		t.Fatalf("a bogus roster username should abort naming it, got %v", err)
+	}
+	if len(fake.generated) != 0 {
+		t.Errorf("no repos should be generated when a roster username is bogus: %v", fake.generated)
+	}
+}
+
+func TestAssignReportsAllBogusRosterUsers(t *testing.T) {
+	// Every non-existent handle is reported together so the whole roster can be
+	// fixed in one pass.
+	fake := newFakeAssign("admin")
+	fake.unknownUsers = map[string]bool{"ada": true, "grace": true}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "ada") || !strings.Contains(err.Error(), "grace") {
+		t.Fatalf("all bogus usernames should be reported together, got %v", err)
+	}
+}
+
+func TestAssignUserLookupErrorAborts(t *testing.T) {
+	// A lookup failure (not a plain 404) must abort rather than be mistaken for a
+	// bogus username and let a real student be skipped.
+	fake := newFakeAssign("admin")
+	fake.userErr = errors.New("boom")
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "validating roster username") {
+		t.Fatalf("a lookup error should abort the run, got %v", err)
+	}
+	if len(fake.generated) != 0 {
+		t.Errorf("no repos should be generated when a lookup errors: %v", fake.generated)
 	}
 }
 
