@@ -33,9 +33,15 @@ type fakeFreezeClient struct {
 	collabs   map[string][]gh.Collaborator
 	changes   []string // "repo:user=permission"
 	dontApply bool     // record the change but leave the permission unchanged
+	apiCalls  int      // count of calls into the fake, to assert an aborted run made none
 }
 
-func (f *fakeFreezeClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
+func (f *fakeFreezeClient) OrgRole(context.Context, string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.apiCalls++
+	return f.role, nil
+}
 
 func (f *fakeFreezeClient) ListOrgReposByPrefix(_ context.Context, _, prefix string) ([]gh.Repo, error) {
 	var out []gh.Repo
@@ -185,11 +191,30 @@ func TestFreezeOwnerGuard(t *testing.T) {
 	}
 }
 
-func TestFreezeNoMatchingReposIsAnError(t *testing.T) {
-	// Zero matches at a deadline is almost always a wrong name/org, so freeze must
-	// fail loudly rather than report a silent no-op success.
+func TestFreezeUnknownAssignmentIsRejected(t *testing.T) {
+	// A typo'd assignment name must be caught before any API call, not left to
+	// the zero-matches fallback below — which a prefix collision (#1) or a stale
+	// assignment could defeat by still matching repos.
 	fake := freezeFake("admin")
 	o := newFreezeOpts(t, fake, false, false)
+	err := o.run(context.Background(), &bytes.Buffer{}, "nosuch", nil)
+	if err == nil || !strings.Contains(err.Error(), `assignment "nosuch" not found in config`) {
+		t.Fatalf("unknown assignment should be rejected, got %v", err)
+	}
+	if fake.apiCalls != 0 {
+		t.Errorf("no API call should be made for an unknown assignment, got %d", fake.apiCalls)
+	}
+}
+
+func TestFreezeNoMatchingReposIsAnError(t *testing.T) {
+	// Zero matches at a deadline is almost always a wrong name/org, so freeze must
+	// fail loudly rather than report a silent no-op success. "midterm" is a
+	// configured assignment (so it passes the not-found-in-config check) with no
+	// matching repos in the fake.
+	fake := freezeFake("admin")
+	g := assignGlobals()
+	g.cfg.Assignments["midterm"] = config.Assignment{Type: config.TypeIndividual}
+	o := newFreezeOptsG(t, g, fake, false, false)
 	err := o.run(context.Background(), &bytes.Buffer{}, "midterm", nil)
 	if err == nil || !strings.Contains(err.Error(), "no student repositories named midterm-*") {
 		t.Fatalf("zero matches should be an error, got %v", err)

@@ -102,6 +102,10 @@ type freezeResult struct {
 func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys []string) error {
 	org := o.g.org
 
+	if _, ok := o.g.cfg.Assignments[name]; !ok {
+		return fmt.Errorf("assignment %q not found in config", name)
+	}
+
 	client, err := o.newClient(ctx)
 	if err != nil {
 		return err
