@@ -182,6 +182,10 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   consistency; every roster username is a real GitHub account), then generates
   each repo from that template concurrently. The
   template must be a template repository — `--mark-template` opts into marking it.
+  Repos are private unless `-p/--public` is given, and only the template's default
+  branch is generated unless `-a/--all-branches` copies them all. The template
+  must be fully squashed (each branch a single commit); `-U/--allow-unsquashed`
+  overrides that preflight and clones the history as-is.
   For a group assignment, an enrolled student on no team, or a student on more
   than one team, aborts the whole run before any repo is created, listing every
   problem so the teams file can be fixed in one pass; `--force` (`-F`) downgrades
@@ -210,7 +214,8 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   repo's feedback issue or PR — the artifact assign created, named by the
   assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or
   `<key>.txt`, where `<key>` is the GitHub username (individual) or team name
-  (group); contents are rendered as Markdown. The directory must hold exactly one
+  (group), resolved from `--roster` (plus `--teams` for a group assignment);
+  contents are rendered as Markdown. The directory must hold exactly one
   file per student/team — a missing file or a file matching no one is named and
   aborts, unless `--force` posts the matching subset and reports the rest.
   Idempotent: a re-run only posts feedback not already present (so a partial or
@@ -220,9 +225,10 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   one shallow clone per repo under `--out`, taking each to its target commit and
   tagging it (`gh-cls/collect/<label>`) so every collection is preserved. The
   default target is the default-branch tip; `--commits <yml>` pins exact SHAs
-  (for grading the deadline state). Re-running a label tops up only repos not yet
-  collected under it; a new label advances the clones and tags the new state,
-  leaving prior tags in place. It is roster-aware (`--roster` for individual,
+  (for grading the deadline state). Each collection's tag is named by `--label`
+  (default: a timestamp). Re-running a label tops up only repos not yet collected
+  under it; a new label advances the clones and tags the new state, leaving prior
+  tags in place. It is roster-aware (`--roster` for individual,
   `--teams` for group), reporting any missing or unexpected repositories, and
   refuses to disturb a clone with local changes so grading-script edits survive.
   Shallow keeps disk small; a clone is a normal git repo, so `git restore .`,
