@@ -532,6 +532,54 @@ func TestAssignUserLookupErrorAborts(t *testing.T) {
 	}
 }
 
+func TestAssignRejectsStudentOnNoTeam(t *testing.T) {
+	// student-003 (grace) is on no team: assign must abort before creating anything.
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster, "team-alpha: [student-001]\nteam-beta: [student-002]\n")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "student-003") || !strings.Contains(err.Error(), "no team") {
+		t.Fatalf("a student on no team should abort naming them, got %v", err)
+	}
+	if len(fake.generated) != 0 {
+		t.Errorf("no repos should be generated when a student is on no team: %v", fake.generated)
+	}
+}
+
+func TestAssignRejectsStudentOnMultipleTeams(t *testing.T) {
+	// student-001 (ada) is on both team-alpha and team-beta: abort before creating.
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster, "team-alpha: [student-001, student-003]\nteam-beta: [student-001, student-002]\n")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "student-001") || !strings.Contains(err.Error(), "more than one team") {
+		t.Fatalf("a student on multiple teams should abort naming them, got %v", err)
+	}
+	if len(fake.generated) != 0 {
+		t.Errorf("no repos should be generated when a student is on multiple teams: %v", fake.generated)
+	}
+}
+
+func TestAssignForceProceedsPastTeamProblems(t *testing.T) {
+	// --force downgrades the roster/teams inconsistency to a warning and proceeds.
+	// student-003 is on no team, so only team-alpha and team-beta are created.
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster, "team-alpha: [student-001]\nteam-beta: [student-002]\n")
+	o.force = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "project", config.Overrides{}); err != nil {
+		t.Fatalf("--force should proceed, got %v", err)
+	}
+	if !contains(fake.generated, "project-team-alpha") || !contains(fake.generated, "project-team-beta") {
+		t.Errorf("--force should create the well-formed teams' repos: %v", fake.generated)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "--force") || !strings.Contains(out, "student-003") {
+		t.Errorf("the force warning should name the skipped-over problem: %s", out)
+	}
+}
+
 func TestAssignOwnerGuard(t *testing.T) {
 	fake := newFakeAssign("member")
 	o := newAssignOpts(t, fake, assignRoster, "")

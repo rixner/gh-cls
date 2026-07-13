@@ -126,6 +126,27 @@ func TestResolveGroupUnassignedWarns(t *testing.T) {
 	}
 }
 
+func TestResolveGroupMultiTeam(t *testing.T) {
+	// student-001 is on both team-alpha and team-gamma. Resolution still proceeds
+	// (the finding is reported, not enforced here), and records the overlap with
+	// the teams in file order.
+	src := "team-alpha: [student-001, student-003]\nteam-beta: [student-002, student-004]\nteam-gamma: [student-001, student-005]\n"
+	units, rep, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustTeams(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(units) != 3 {
+		t.Errorf("got %d units, want 3 (resolution proceeds despite the overlap)", len(units))
+	}
+	want := []unit.MultiTeamMembership{{ID: "student-001", Teams: []string{"team-alpha", "team-gamma"}}}
+	if !reflect.DeepEqual(rep.MultiTeam, want) {
+		t.Errorf("MultiTeam = %+v, want %+v", rep.MultiTeam, want)
+	}
+	if len(rep.UnassignedIDs) > 0 {
+		t.Errorf("no unassigned expected, got %v", rep.UnassignedIDs)
+	}
+}
+
 func TestResolveGroupRequiresTeams(t *testing.T) {
 	if _, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), nil); err == nil {
 		t.Fatal("group assignment without a teams file should error")

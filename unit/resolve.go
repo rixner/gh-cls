@@ -24,7 +24,11 @@ func resolveIndividual(r *roster.Roster) []Unit {
 // from the roster is a fatal error reported across all teams at once; enrolled
 // students on no team are returned as a warning.
 func resolveGroup(r *roster.Roster, t *teams.Teams) ([]Unit, Report, error) {
-	assigned := make(map[string]bool)
+	// teamsByID records, for each identifier, the teams it appears on (in file
+	// order). It drives both findings: zero teams -> unassigned, more than one ->
+	// multi-team. The teams parser guarantees an identifier is unique within a team
+	// and team names are unique, so these are inherently distinct teams.
+	teamsByID := make(map[string][]string)
 	var missing []string
 	units := make([]Unit, 0, t.Len())
 
@@ -40,7 +44,7 @@ func resolveGroup(r *roster.Roster, t *teams.Teams) ([]Unit, Report, error) {
 		ids := t.Members(name)
 		members := make([]string, 0, len(ids))
 		for _, id := range ids {
-			assigned[id] = true
+			teamsByID[id] = append(teamsByID[id], name)
 			username, ok := r.Lookup(id)
 			if !ok {
 				entry := fmt.Sprintf("team %s: %s", name, id)
@@ -61,10 +65,14 @@ func resolveGroup(r *roster.Roster, t *teams.Teams) ([]Unit, Report, error) {
 	}
 
 	var unassigned []string
+	var multi []MultiTeamMembership
 	for _, id := range r.IDs() {
-		if !assigned[id] {
+		switch on := teamsByID[id]; {
+		case len(on) == 0:
 			unassigned = append(unassigned, id)
+		case len(on) > 1:
+			multi = append(multi, MultiTeamMembership{ID: id, Teams: on})
 		}
 	}
-	return units, Report{UnassignedIDs: unassigned}, nil
+	return units, Report{UnassignedIDs: unassigned, MultiTeam: multi}, nil
 }

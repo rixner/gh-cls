@@ -78,6 +78,10 @@ state on GitHub, reporting each student as one of: on repo (accepted), invited
 access nor an invitation), or NO REPO (the repo was never created). It also
 flags any access that is present but not expected.
 
+For a group assignment it also warns (but never aborts) when the teams file
+leaves an enrolled student on no team or puts one on more than one team -- the
+same inconsistencies assign refuses to create repos for without --force.
+
 Students are added as outside collaborators, so a grant becomes an invitation
 they must accept within seven days; --renew re-issues access for everyone whose
 invitation expired or who is missing entirely (it never removes access).`,
@@ -155,6 +159,9 @@ func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
 	}
 	for _, id := range report.UnassignedIDs {
 		fmt.Fprintf(out, "warning: enrolled student %s is on no team\n", id)
+	}
+	for _, m := range report.MultiTeam {
+		fmt.Fprintf(out, "warning: student %s is on more than one team: %s\n", m.ID, strings.Join(m.Teams, ", "))
 	}
 	byUser := r.ByUsername()
 

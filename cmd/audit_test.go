@@ -244,6 +244,27 @@ func TestAuditOwnerGuard(t *testing.T) {
 	}
 }
 
+func TestAuditReportsTeamProblems(t *testing.T) {
+	// Unlike assign, audit never aborts on roster/teams inconsistencies: it reports
+	// them as warnings and audits what it can. Here student-003 is on no team and
+	// student-001 is on two teams.
+	fake := newFakeAudit("admin")
+	teamsYML := "team-alpha: [student-001, student-002]\nteam-beta: [student-001]\n"
+	o := newAuditOpts(t, fake, assignRoster, teamsYML)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "project"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "student-003 is on no team") {
+		t.Errorf("no-team student should be reported: %s", out)
+	}
+	if !strings.Contains(out, "student-001 is on more than one team") || !strings.Contains(out, "team-alpha, team-beta") {
+		t.Errorf("multi-team student should be reported with their teams: %s", out)
+	}
+}
+
 func TestAuditGroupRequiresTeams(t *testing.T) {
 	fake := newFakeAudit("admin")
 	o := newAuditOpts(t, fake, assignRoster, "")

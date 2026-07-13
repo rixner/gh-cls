@@ -72,6 +72,7 @@ type assignOpts struct {
 	allBranches      bool
 	feedback         string
 	allowUnsquashed  bool
+	force            bool
 	markTemplate     bool
 	dryRun           bool
 	newClient        func(context.Context) (assignClient, error)
@@ -90,7 +91,13 @@ func newAssignCmd(g *globalOpts) *cobra.Command {
 		Long: `Create one repository per unit (each student for an individual assignment,
 each team for a group assignment) from the template repository the assignment
 names, granting push to the unit's members and to the staff team. Idempotent:
-existing repos are skipped for generation but their access grants are re-asserted.`,
+existing repos are skipped for generation but their access grants are re-asserted.
+
+For a group assignment, assign aborts before creating anything if the roster and
+teams file are inconsistent -- an enrolled student on no team, or a student on
+more than one team -- so a mistake is fixed before repos exist. Pass --force to
+downgrade those to warnings and proceed anyway (e.g. a student intentionally
+excused from the group work).`,
 		Example: `  gh cls assign hw1 --roster roster.csv
   gh cls assign project --roster roster.csv --teams teams.yml --branch-protection`,
 		Args:    cobra.ExactArgs(1),
@@ -107,6 +114,7 @@ existing repos are skipped for generation but their access grants are re-asserte
 	f.BoolVarP(&o.allBranches, "all-branches", "a", false, "include all template branches (default: default branch only)")
 	f.StringVarP(&o.feedback, "feedback", "f", "", "create a feedback artifact: pr or issue")
 	f.BoolVarP(&o.allowUnsquashed, "allow-unsquashed", "U", false, "proceed even if a template branch has more than one commit")
+	f.BoolVarP(&o.force, "force", "F", false, "proceed even if the roster/teams are inconsistent (a student on no team, or on more than one)")
 	f.BoolVar(&o.markTemplate, "mark-template", false, "mark the assignment's template a template repository if it is not already")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "list what would be created without doing it")
 	_ = cmd.MarkFlagRequired("roster")
@@ -177,13 +185,15 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		}
 	}
 
-	// Preflight 4: unit resolution and roster/teams consistency.
+	// Preflight 4: unit resolution and roster/teams consistency. A student on no
+	// team or on more than one team aborts before anything is created, so the
+	// mistake is fixed before repos exist; --force downgrades it to a warning.
 	units, report, err := unit.Resolve(policy.Type, r, tm)
 	if err != nil {
 		return err
 	}
-	for _, id := range report.UnassignedIDs {
-		fmt.Fprintf(out, "warning: enrolled student %s is on no team\n", id)
+	if err := checkTeamConsistency(out, report, o.force); err != nil {
+		return err
 	}
 
 	// The template repo to clone is named by the assignment; a bare name lives in
@@ -267,6 +277,37 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return o.provision(ctx, client, org, name, tmplOwner, tmplName, staffTeam, policy, u)
 	})
 	return reportResults(out, results)
+}
+
+// checkTeamConsistency enforces the roster/teams consistency findings: an
+// enrolled student on no team, or a student on more than one team. Both are
+// almost always a teams-file mistake, so by default this aborts before any repo
+// is created, listing every problem so the file can be fixed in one pass. --force
+// downgrades them to warnings and proceeds, for the rare intentional case (a
+// student excused from the group work).
+func checkTeamConsistency(out io.Writer, report unit.Report, force bool) error {
+	if len(report.UnassignedIDs) == 0 && len(report.MultiTeam) == 0 {
+		return nil
+	}
+
+	var problems []string
+	if len(report.UnassignedIDs) > 0 {
+		problems = append(problems, "enrolled students on no team:\n  "+strings.Join(report.UnassignedIDs, "\n  "))
+	}
+	if len(report.MultiTeam) > 0 {
+		lines := make([]string, len(report.MultiTeam))
+		for i, m := range report.MultiTeam {
+			lines[i] = fmt.Sprintf("%s: %s", m.ID, strings.Join(m.Teams, ", "))
+		}
+		problems = append(problems, "students on more than one team:\n  "+strings.Join(lines, "\n  "))
+	}
+	joined := strings.Join(problems, "\n")
+
+	if !force {
+		return fmt.Errorf("roster and teams file are inconsistent (fix it, or pass --force to proceed anyway; no repositories were created):\n%s", joined)
+	}
+	fmt.Fprintf(out, "warning: proceeding with --force despite roster/teams inconsistencies:\n%s\n", joined)
+	return nil
 }
 
 // planExtras describes the per-repo protection/feedback a run would add.

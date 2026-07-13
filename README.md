@@ -182,9 +182,13 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   consistency; every roster username is a real GitHub account), then generates
   each repo from that template concurrently. The
   template must be a template repository — `--mark-template` opts into marking it.
-  `-b` applies an all-branches ruleset blocking force-push and deletion, which
-  only org admins bypass (staff get push but cannot force-push or delete
-  protected branches); `-f pr|issue` adds a feedback artifact. Idempotent:
+  For a group assignment, an enrolled student on no team, or a student on more
+  than one team, aborts the whole run before any repo is created, listing every
+  problem so the teams file can be fixed in one pass; `--force` (`-F`) downgrades
+  those to warnings and proceeds (e.g. a student intentionally excused from the
+  group work). `-b` applies an all-branches ruleset blocking force-push and
+  deletion, which only org admins bypass (staff get push but cannot force-push or
+  delete protected branches); `-f pr|issue` adds a feedback artifact. Idempotent:
   existing repos are skipped but access grants are re-asserted.
 - **audit** reconciles the students who should be on the `<name>-*` repos
   (resolved from the roster, plus the teams file for a group assignment) against
@@ -193,7 +197,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   expected. Because students join as outside collaborators — a grant becomes an
   invitation they must accept within seven days — `--renew` re-issues access for
   everyone whose invitation expired or who is missing entirely (it never removes
-  access). `--all` lists everyone, not just those needing attention.
+  access). `--all` lists everyone, not just those needing attention. It also
+  warns (never aborts) when the teams file leaves a student on no team or on more
+  than one — the same inconsistencies assign refuses to create repos for.
 - **freeze** operates purely on each repo's current direct collaborators, never
   the roster, so a drifted roster cannot let anyone escape the freeze. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix
