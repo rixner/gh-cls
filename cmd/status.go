@@ -163,9 +163,15 @@ type assignmentStatus struct {
 }
 
 func (o *statusOpts) runSummary(ctx context.Context, out io.Writer, org string, names []string, client statusClient) error {
-	results := runConcurrent(ctx, o.g.concurrency, names, func(ctx context.Context, n string) assignmentStatus {
-		return o.assignmentStatus(ctx, client, org, n)
-	})
+	reposByName, listErr := o.listRepos(ctx, client, org, names)
+	results := make([]assignmentStatus, len(names))
+	for i, n := range names {
+		if listErr != nil {
+			results[i] = assignmentStatus{name: n, err: listErr}
+			continue
+		}
+		results[i] = o.assignmentStatus(n, reposByName[n])
+	}
 
 	fmt.Fprintln(out)
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
@@ -192,22 +198,17 @@ func (o *statusOpts) runSummary(ctx context.Context, out io.Writer, org string, 
 	return nil
 }
 
-// assignmentStatus counts the student repositories for one assignment, excluding
-// the in-org template repository (as freeze does).
-func (o *statusOpts) assignmentStatus(ctx context.Context, client statusClient, org, n string) assignmentStatus {
+// assignmentStatus counts the student repositories for one assignment from its
+// already-fetched, already-filtered repos, excluding the in-org template
+// repository (as freeze does).
+func (o *statusOpts) assignmentStatus(n string, repos []gh.Repo) assignmentStatus {
 	policy, err := o.g.cfg.Resolve(n, config.Overrides{})
 	if err != nil {
 		return assignmentStatus{name: n, err: err}
 	}
 	s := assignmentStatus{name: n, typ: string(policy.Type), wantPublic: policy.Public}
 
-	all, err := client.ListOrgReposByPrefix(ctx, org, n+"-")
-	if err != nil {
-		s.err = err
-		return s
-	}
-	all = filterAssignmentRepos(o.g.cfg, n, all)
-	for _, r := range all {
+	for _, r := range repos {
 		if r.IsTemplate {
 			continue
 		}
@@ -219,6 +220,38 @@ func (o *statusOpts) assignmentStatus(ctx context.Context, client statusClient, 
 		}
 	}
 	return s
+}
+
+// listRepos returns each requested assignment's student repos, already
+// filtered by #1's longer-prefix exclusion. A single assignment lists by its
+// own prefix (already minimal, one page-through of the org). A whole-course
+// run lists the org once (prefix "") and partitions the result locally,
+// instead of re-listing (and re-paging) the entire org once per assignment.
+func (o *statusOpts) listRepos(ctx context.Context, client statusClient, org string, names []string) (map[string][]gh.Repo, error) {
+	if len(names) == 1 {
+		n := names[0]
+		all, err := client.ListOrgReposByPrefix(ctx, org, n+"-")
+		if err != nil {
+			return nil, err
+		}
+		return map[string][]gh.Repo{n: filterAssignmentRepos(o.g.cfg, n, all)}, nil
+	}
+
+	all, err := client.ListOrgReposByPrefix(ctx, org, "")
+	if err != nil {
+		return nil, err
+	}
+	byName := make(map[string][]gh.Repo, len(names))
+	for _, n := range names {
+		var matched []gh.Repo
+		for _, r := range all {
+			if strings.HasPrefix(r.Name, n+"-") {
+				matched = append(matched, r)
+			}
+		}
+		byName[n] = filterAssignmentRepos(o.g.cfg, n, matched)
+	}
+	return byName, nil
 }
 
 // visibilitySummary describes a repo count's private/public split and flags any
@@ -289,19 +322,18 @@ func (o *statusOpts) runDetail(ctx context.Context, out io.Writer, org string, n
 	}
 	var items []work
 	var problems []string
+	reposByName, listErr := o.listRepos(ctx, client, org, names)
 	for _, n := range names {
 		policy, err := o.g.cfg.Resolve(n, config.Overrides{})
 		if err != nil {
 			problems = append(problems, fmt.Sprintf("%s: %v", n, err))
 			continue
 		}
-		all, err := client.ListOrgReposByPrefix(ctx, org, n+"-")
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("%s: listing repositories: %v", n, err))
+		if listErr != nil {
+			problems = append(problems, fmt.Sprintf("%s: listing repositories: %v", n, listErr))
 			continue
 		}
-		all = filterAssignmentRepos(o.g.cfg, n, all)
-		for _, r := range all {
+		for _, r := range reposByName[n] {
 			if r.IsTemplate {
 				continue
 			}

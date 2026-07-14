@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 	"github.com/rixner/gh-cls/internal/ghtest"
 )
@@ -27,6 +28,8 @@ type fakeStatusClient struct {
 	collaborators map[string][]gh.Collaborator
 	issueState    map[string]string // repo -> state; absent means not found
 	prState       map[string]string
+
+	listCalls int // count of ListOrgReposByPrefix calls, to assert it lists at most once
 }
 
 func (s *fakeStatusClient) fake() *ghtest.Fake {
@@ -41,6 +44,7 @@ func (s *fakeStatusClient) fake() *ghtest.Fake {
 		return s.members, nil
 	}
 	fk.ListOrgReposByPrefixFunc = func(_ context.Context, _, prefix string) ([]gh.Repo, error) {
+		s.listCalls++
 		if s.listErr != nil {
 			return nil, s.listErr
 		}
@@ -103,6 +107,11 @@ func TestStatusWholeCourse(t *testing.T) {
 	if err := newStatusOpts(fake).run(context.Background(), &buf, ""); err != nil {
 		t.Fatalf("run: %v\n%s", err, buf.String())
 	}
+	// A whole-course run must list the org once and partition locally, not
+	// once per assignment.
+	if fake.listCalls != 1 {
+		t.Errorf("whole-course status should list the org exactly once, got %d calls", fake.listCalls)
+	}
 	out := buf.String()
 	if !strings.Contains(out, "Org: cs101-spring26") {
 		t.Errorf("missing org header:\n%s", out)
@@ -123,6 +132,76 @@ func TestStatusWholeCourse(t *testing.T) {
 	// Assignments are reported in sorted order: hw1 before project.
 	if strings.Index(out, "hw1") > strings.Index(out, "project") {
 		t.Errorf("assignments should be sorted (hw1 before project):\n%s", out)
+	}
+}
+
+func TestStatusWholeCourseDetailListsOrgOnce(t *testing.T) {
+	fake := &fakeStatusClient{
+		members: []string{"ta1"},
+		repos: []gh.Repo{
+			{Name: "hw1-ada", Private: true},
+			{Name: "project-team-alpha", Private: true},
+		},
+		collaborators: map[string][]gh.Collaborator{
+			"hw1-ada":            {collab("ada", "push")},
+			"project-team-alpha": {collab("alpha", "push")},
+		},
+	}
+	o := newStatusOptsG(assignGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "whole.csv")
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, ""); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if fake.listCalls != 1 {
+		t.Errorf("whole-course --detail should list the org exactly once, got %d calls", fake.listCalls)
+	}
+}
+
+func TestStatusExcludesLongerOverlappingAssignmentRepos(t *testing.T) {
+	// "proj" and "proj-final" both configured, with proj-final-y also matching
+	// proj's "proj-" prefix. Partitioning the single whole-course listing
+	// locally must still exclude it from "proj", as filterAssignmentRepos did
+	// when each assignment listed separately.
+	g := &globalOpts{
+		org: "cs101-spring26",
+		cfg: &config.Config{
+			StaffTeam: "staff",
+			Assignments: map[string]config.Assignment{
+				"proj":       {Type: config.TypeIndividual},
+				"proj-final": {Type: config.TypeIndividual},
+			},
+		},
+		staffTeam:   "staff",
+		concurrency: 4,
+	}
+	fake := &fakeStatusClient{
+		members: []string{"ta1"},
+		repos:   []gh.Repo{{Name: "proj-x", Private: true}, {Name: "proj-final-y", Private: true}},
+	}
+	o := newStatusOptsG(g, fake)
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, ""); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if fake.listCalls != 1 {
+		t.Errorf("should still list the org exactly once, got %d calls", fake.listCalls)
+	}
+	for _, line := range strings.Split(buf.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+		switch fields[0] {
+		case "proj":
+			if fields[2] != "1" {
+				t.Errorf("proj should count 1 repo (proj-final's repo excluded): %q", line)
+			}
+		case "proj-final":
+			if fields[2] != "1" {
+				t.Errorf("proj-final should count 1 repo (proj's repo excluded): %q", line)
+			}
+		}
 	}
 }
 
