@@ -4,11 +4,11 @@ import (
 	"bytes"
 	"context"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
 // collab builds a Collaborator with a single permission level set, mirroring how
@@ -26,78 +26,84 @@ func collab(login, level string) gh.Collaborator {
 	return c
 }
 
-type fakeFreezeClient struct {
-	mu        sync.Mutex
+// fakeFreezeState configures a ghtest.Fake for freeze tests and captures what
+// it observed.
+type fakeFreezeState struct {
 	role      string
 	repos     []gh.Repo
 	collabs   map[string][]gh.Collaborator
-	changes   []string // "repo:user=permission"
-	dontApply bool     // record the change but leave the permission unchanged
-	apiCalls  int      // count of calls into the fake, to assert an aborted run made none
+	dontApply bool // record the change but leave the permission unchanged
+
+	changes  []string // "repo:user=permission"
+	apiCalls int      // count of calls into the fake, to assert an aborted run made none
 }
 
-func (f *fakeFreezeClient) OrgRole(context.Context, string) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.apiCalls++
-	return f.role, nil
-}
-
-func (f *fakeFreezeClient) ListOrgReposByPrefix(_ context.Context, _, prefix string) ([]gh.Repo, error) {
-	var out []gh.Repo
-	for _, r := range f.repos {
-		if strings.HasPrefix(r.Name, prefix) {
-			out = append(out, r)
-		}
+func (s *fakeFreezeState) fake() *ghtest.Fake {
+	fk := &ghtest.Fake{}
+	fk.OrgRoleFunc = func(context.Context, string) (string, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		s.apiCalls++
+		return s.role, nil
 	}
-	return out, nil
-}
-
-func (f *fakeFreezeClient) ListDirectCollaborators(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	cs := f.collabs[repo]
-	out := make([]gh.Collaborator, len(cs))
-	copy(out, cs)
-	return out, nil
-}
-
-func (f *fakeFreezeClient) AddCollaborator(_ context.Context, _, repo, username, permission string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.changes = append(f.changes, repo+":"+username+"="+permission)
-	if f.dontApply {
+	fk.ListOrgReposByPrefixFunc = func(_ context.Context, _, prefix string) ([]gh.Repo, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		var out []gh.Repo
+		for _, r := range s.repos {
+			if strings.HasPrefix(r.Name, prefix) {
+				out = append(out, r)
+			}
+		}
+		return out, nil
+	}
+	fk.ListDirectCollaboratorsFunc = func(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		cs := s.collabs[repo]
+		out := make([]gh.Collaborator, len(cs))
+		copy(out, cs)
+		return out, nil
+	}
+	fk.AddCollaboratorFunc = func(_ context.Context, _, repo, username, permission string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		s.changes = append(s.changes, repo+":"+username+"="+permission)
+		if s.dontApply {
+			return nil
+		}
+		// Reflect the new permission so a subsequent re-read (the post-condition
+		// verification) sees the change, as the real API would.
+		cs := s.collabs[repo]
+		for i := range cs {
+			if cs[i].Login == username {
+				cs[i] = collab(username, permission)
+			}
+		}
+		s.collabs[repo] = cs
 		return nil
 	}
-	// Reflect the new permission so a subsequent re-read (the post-condition
-	// verification) sees the change, as the real API would.
-	cs := f.collabs[repo]
-	for i := range cs {
-		if cs[i].Login == username {
-			cs[i] = collab(username, permission)
-		}
-	}
-	f.collabs[repo] = cs
-	return nil
+	return fk
 }
 
-func newFreezeOpts(t *testing.T, fake *fakeFreezeClient, undo, dryRun bool) *freezeOpts {
+func newFreezeOpts(t *testing.T, fake *fakeFreezeState, undo, dryRun bool) *freezeOpts {
 	t.Helper()
 	return newFreezeOptsG(t, assignGlobals(), fake, undo, dryRun)
 }
 
-func newFreezeOptsG(t *testing.T, g *globalOpts, fake *fakeFreezeClient, undo, dryRun bool) *freezeOpts {
+func newFreezeOptsG(t *testing.T, g *globalOpts, fake *fakeFreezeState, undo, dryRun bool) *freezeOpts {
 	t.Helper()
+	fk := fake.fake()
 	return &freezeOpts{
 		g:         g,
 		undo:      undo,
 		dryRun:    dryRun,
-		newClient: func(context.Context) (freezeClient, error) { return fake, nil },
+		newClient: func(context.Context) (freezeClient, error) { return fk, nil },
 	}
 }
 
-func freezeFake(role string) *fakeFreezeClient {
-	return &fakeFreezeClient{
+func freezeFake(role string) *fakeFreezeState {
+	return &fakeFreezeState{
 		role:  role,
 		repos: []gh.Repo{{Name: "hw1-ada"}, {Name: "hw1-alan"}, {Name: "project-x"}},
 		collabs: map[string][]gh.Collaborator{
@@ -304,7 +310,7 @@ func TestFreezeExcludesLongerOverlappingAssignmentRepos(t *testing.T) {
 			"proj-final": {Type: config.TypeIndividual},
 		}},
 	}
-	fake := &fakeFreezeClient{
+	fake := &fakeFreezeState{
 		role:  "admin",
 		repos: []gh.Repo{{Name: "proj-x"}, {Name: "proj-final-y"}},
 		collabs: map[string][]gh.Collaborator{

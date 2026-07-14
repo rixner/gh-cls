@@ -12,19 +12,22 @@ import (
 	"time"
 
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
 // fakeCollectClient returns a preset repo list, filtered by prefix.
-type fakeCollectClient struct{ repos []gh.Repo }
-
-func (f fakeCollectClient) ListOrgReposByPrefix(_ context.Context, _, prefix string) ([]gh.Repo, error) {
-	var out []gh.Repo
-	for _, r := range f.repos {
-		if strings.HasPrefix(r.Name, prefix) {
-			out = append(out, r)
-		}
+func fakeCollectClient(repos []gh.Repo) *ghtest.Fake {
+	return &ghtest.Fake{
+		ListOrgReposByPrefixFunc: func(_ context.Context, _, prefix string) ([]gh.Repo, error) {
+			var out []gh.Repo
+			for _, r := range repos {
+				if strings.HasPrefix(r.Name, prefix) {
+					out = append(out, r)
+				}
+			}
+			return out, nil
+		},
 	}
-	return out, nil
 }
 
 // fakeClone is the in-memory state of one cloned repo.
@@ -137,7 +140,7 @@ func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, tea
 		out:       filepath.Join(base, "out"),
 		label:     "test",
 		now:       func() time.Time { return time.Date(2026, 6, 29, 14, 12, 33, 0, time.UTC) },
-		newClient: func(context.Context) (collectClient, error) { return fakeCollectClient{repos}, nil },
+		newClient: func(context.Context) (collectClient, error) { return fakeCollectClient(repos), nil },
 		git:       git,
 	}
 	write := func(name, content string) string {

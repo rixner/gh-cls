@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
-// fakeStatusClient is a stand-in for the read-only status operations. repos is a
-// flat list filtered by prefix, mirroring the real ListOrgReposByPrefix. The
-// collaborators and feedback maps drive the --detail scan, keyed by repo name.
+// fakeStatusClient configures a ghtest.Fake for the read-only status
+// operations. repos is a flat list filtered by prefix, mirroring the real
+// ListOrgReposByPrefix. The collaborators and feedback maps drive the
+// --detail scan, keyed by repo name.
 type fakeStatusClient struct {
 	teamMissing   bool
 	members       []string
@@ -27,48 +29,47 @@ type fakeStatusClient struct {
 	prState       map[string]string
 }
 
-func (f *fakeStatusClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
-	if f.teamMissing {
-		return nil, false, nil
-	}
-	return &gh.Team{ID: 1}, true, nil
-}
-
-func (f *fakeStatusClient) ListTeamMembers(context.Context, string, string) ([]string, error) {
-	return f.members, nil
-}
-
-func (f *fakeStatusClient) ListOrgReposByPrefix(_ context.Context, _, prefix string) ([]gh.Repo, error) {
-	if f.listErr != nil {
-		return nil, f.listErr
-	}
-	var out []gh.Repo
-	for _, r := range f.repos {
-		if strings.HasPrefix(r.Name, prefix) {
-			out = append(out, r)
+func (s *fakeStatusClient) fake() *ghtest.Fake {
+	fk := &ghtest.Fake{}
+	fk.GetTeamFunc = func(context.Context, string, string) (*gh.Team, bool, error) {
+		if s.teamMissing {
+			return nil, false, nil
 		}
+		return &gh.Team{ID: 1}, true, nil
 	}
-	return out, nil
-}
-
-func (f *fakeStatusClient) ListDirectCollaborators(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
-	return f.collaborators[repo], nil
-}
-
-func (f *fakeStatusClient) FindIssueByTitle(_ context.Context, _, repo, _ string) (int, string, bool, error) {
-	s, ok := f.issueState[repo]
-	if !ok {
-		return 0, "", false, nil
+	fk.ListTeamMembersFunc = func(context.Context, string, string) ([]string, error) {
+		return s.members, nil
 	}
-	return 1, s, true, nil
-}
-
-func (f *fakeStatusClient) FindPRByBase(_ context.Context, _, repo, _ string) (int, string, bool, error) {
-	s, ok := f.prState[repo]
-	if !ok {
-		return 0, "", false, nil
+	fk.ListOrgReposByPrefixFunc = func(_ context.Context, _, prefix string) ([]gh.Repo, error) {
+		if s.listErr != nil {
+			return nil, s.listErr
+		}
+		var out []gh.Repo
+		for _, r := range s.repos {
+			if strings.HasPrefix(r.Name, prefix) {
+				out = append(out, r)
+			}
+		}
+		return out, nil
 	}
-	return 2, s, true, nil
+	fk.ListDirectCollaboratorsFunc = func(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
+		return s.collaborators[repo], nil
+	}
+	fk.FindIssueByTitleFunc = func(_ context.Context, _, repo, _ string) (int, string, bool, error) {
+		state, ok := s.issueState[repo]
+		if !ok {
+			return 0, "", false, nil
+		}
+		return 1, state, true, nil
+	}
+	fk.FindPRByBaseFunc = func(_ context.Context, _, repo, _ string) (int, string, bool, error) {
+		state, ok := s.prState[repo]
+		if !ok {
+			return 0, "", false, nil
+		}
+		return 2, state, true, nil
+	}
+	return fk
 }
 
 // fixedClock is the deterministic timestamp the --detail auto filename uses in
@@ -80,10 +81,11 @@ func newStatusOpts(fake *fakeStatusClient) *statusOpts {
 }
 
 func newStatusOptsG(g *globalOpts, fake *fakeStatusClient) *statusOpts {
+	fk := fake.fake()
 	return &statusOpts{
 		g:         g,
 		now:       fixedClock,
-		newClient: func(context.Context) (statusClient, error) { return fake, nil },
+		newClient: func(context.Context) (statusClient, error) { return fk, nil },
 	}
 }
 

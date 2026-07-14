@@ -7,110 +7,118 @@ import (
 	"testing"
 
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
-// fakeSetupClient is a configurable stand-in for the GitHub operations setup
-// uses. Zero values yield an already-hardened org with no Copilot and no team.
-type fakeSetupClient struct {
+// fakeSetupState configures a ghtest.Fake for setup tests and captures what
+// it observed. Zero values yield an already-hardened org with no Copilot and
+// no team.
+type fakeSetupState struct {
 	role           string
 	settings       gh.OrgSettings
 	actions        string
 	copilotSeats   int
 	copilotPresent bool
 	teamExists     bool
-	patched        map[string]any
-	actionsSet     string
-	createdTeam    string
 	ignorePatches  bool // accept PATCH/PUT calls but leave the org state unchanged
+
+	patched     map[string]any
+	actionsSet  string
+	createdTeam string
 }
 
-func (f *fakeSetupClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
-func (f *fakeSetupClient) GetOrg(context.Context, string) (*gh.OrgSettings, error) {
-	s := f.settings
-	return &s, nil
-}
-func (f *fakeSetupClient) PatchOrg(_ context.Context, _ string, fields map[string]any) error {
-	if f.patched == nil {
-		f.patched = map[string]any{}
+func (s *fakeSetupState) fake() *ghtest.Fake {
+	fk := &ghtest.Fake{}
+	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return s.role, nil }
+	fk.GetOrgFunc = func(context.Context, string) (*gh.OrgSettings, error) {
+		settings := s.settings
+		return &settings, nil
 	}
-	for k, v := range fields {
-		f.patched[k] = v
-		if f.ignorePatches {
-			continue
+	fk.PatchOrgFunc = func(_ context.Context, _ string, fields map[string]any) error {
+		if s.patched == nil {
+			s.patched = map[string]any{}
 		}
-		// Apply to the org state so a later GetOrg (the post-condition check) sees
-		// the change, mirroring a tier that honors the setting.
-		switch k {
-		case "default_repository_permission":
-			f.settings.DefaultRepositoryPermission = v.(string)
-		case "members_can_create_repositories":
-			b := v.(bool)
-			f.settings.MembersCanCreateRepositories = &b
-		case "members_can_create_pages":
-			b := v.(bool)
-			f.settings.MembersCanCreatePages = &b
+		for k, v := range fields {
+			s.patched[k] = v
+			if s.ignorePatches {
+				continue
+			}
+			// Apply to the org state so a later GetOrg (the post-condition check) sees
+			// the change, mirroring a tier that honors the setting.
+			switch k {
+			case "default_repository_permission":
+				s.settings.DefaultRepositoryPermission = v.(string)
+			case "members_can_create_repositories":
+				b := v.(bool)
+				s.settings.MembersCanCreateRepositories = &b
+			case "members_can_create_pages":
+				b := v.(bool)
+				s.settings.MembersCanCreatePages = &b
+			}
 		}
+		return nil
 	}
-	return nil
-}
-func (f *fakeSetupClient) GetActionsPermissions(context.Context, string) (*gh.ActionsPermissions, error) {
-	return &gh.ActionsPermissions{EnabledRepositories: f.actions}, nil
-}
-func (f *fakeSetupClient) SetActionsEnabledRepositories(_ context.Context, _, v string) error {
-	f.actionsSet = v
-	if !f.ignorePatches {
-		f.actions = v
+	fk.GetActionsPermissionsFunc = func(context.Context, string) (*gh.ActionsPermissions, error) {
+		return &gh.ActionsPermissions{EnabledRepositories: s.actions}, nil
 	}
-	return nil
-}
-func (f *fakeSetupClient) CopilotSeatCount(context.Context, string) (int, bool, error) {
-	return f.copilotSeats, f.copilotPresent, nil
-}
-func (f *fakeSetupClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
-	if !f.teamExists {
-		return nil, false, nil
+	fk.SetActionsEnabledRepositoriesFunc = func(_ context.Context, _, v string) error {
+		s.actionsSet = v
+		if !s.ignorePatches {
+			s.actions = v
+		}
+		return nil
 	}
-	return &gh.Team{ID: 1}, true, nil
-}
-func (f *fakeSetupClient) CreateTeam(_ context.Context, _, name string) (*gh.Team, error) {
-	f.createdTeam = name
-	return &gh.Team{ID: 2}, nil
+	fk.CopilotSeatCountFunc = func(context.Context, string) (int, bool, error) {
+		return s.copilotSeats, s.copilotPresent, nil
+	}
+	fk.GetTeamFunc = func(context.Context, string, string) (*gh.Team, bool, error) {
+		if !s.teamExists {
+			return nil, false, nil
+		}
+		return &gh.Team{ID: 1}, true, nil
+	}
+	fk.CreateTeamFunc = func(_ context.Context, _, name string) (*gh.Team, error) {
+		s.createdTeam = name
+		return &gh.Team{ID: 2}, nil
+	}
+	return fk
 }
 
-// newSetupOpts builds setupOpts wired to a fake. The org and staff team stand in
+// newSetupOpts builds setupOpts wired to a state. The org and staff team stand in
 // for what the root loads from config before setup runs.
-func newSetupOpts(t *testing.T, fake *fakeSetupClient, org, staffTeam string, dryRun bool) *setupOpts {
+func newSetupOpts(t *testing.T, state *fakeSetupState, org, staffTeam string, dryRun bool) *setupOpts {
 	t.Helper()
+	fk := state.fake()
 	return &setupOpts{
 		g:         &globalOpts{org: org, staffTeam: staffTeam},
 		dryRun:    dryRun,
-		newClient: func(context.Context) (setupClient, error) { return fake, nil },
+		newClient: func(context.Context) (setupClient, error) { return fk, nil },
 	}
 }
 
 func TestSetupOwnerGuard(t *testing.T) {
-	fake := &fakeSetupClient{role: "member"}
-	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
+	state := &fakeSetupState{role: "member"}
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
 
 	err := o.run(context.Background(), &bytes.Buffer{})
 	if err == nil || !strings.Contains(err.Error(), "owner") {
 		t.Fatalf("non-owner should be rejected, got %v", err)
 	}
-	if fake.patched != nil || fake.actionsSet != "" {
+	if state.patched != nil || state.actionsSet != "" {
 		t.Error("no org mutations should occur when the owner guard fails")
 	}
 }
 
 func TestSetupChangesAndReports(t *testing.T) {
 	yes := true
-	fake := &fakeSetupClient{
+	state := &fakeSetupState{
 		role:           "admin",
 		settings:       gh.OrgSettings{DefaultRepositoryPermission: "write", MembersCanCreateRepositories: &yes, MembersCanCreatePages: &yes},
 		actions:        "all",
 		copilotPresent: false,
 		teamExists:     false,
 	}
-	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
@@ -118,16 +126,16 @@ func TestSetupChangesAndReports(t *testing.T) {
 	}
 	out := buf.String()
 
-	if fake.patched["default_repository_permission"] != "none" {
+	if state.patched["default_repository_permission"] != "none" {
 		t.Error("base permission should be set to none")
 	}
-	if fake.patched["members_can_create_repositories"] != false {
+	if state.patched["members_can_create_repositories"] != false {
 		t.Error("member repo creation should be disabled")
 	}
-	if fake.actionsSet != "none" {
+	if state.actionsSet != "none" {
 		t.Error("Actions should be disabled org-wide")
 	}
-	if fake.createdTeam != "staff" {
+	if state.createdTeam != "staff" {
 		t.Error("staff team should be created when absent")
 	}
 	for _, want := range []string{"Hardening cs101-spring26", "changed", "none present", "created staff",
@@ -140,22 +148,22 @@ func TestSetupChangesAndReports(t *testing.T) {
 
 func TestSetupAlreadyHardened(t *testing.T) {
 	no := false
-	fake := &fakeSetupClient{
+	state := &fakeSetupState{
 		role:       "admin",
 		settings:   gh.OrgSettings{DefaultRepositoryPermission: "none", MembersCanCreateRepositories: &no, MembersCanCreatePages: &no},
 		actions:    "none",
 		teamExists: true,
 	}
-	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if fake.patched != nil {
-		t.Errorf("nothing should be patched when already hardened, got %v", fake.patched)
+	if state.patched != nil {
+		t.Errorf("nothing should be patched when already hardened, got %v", state.patched)
 	}
-	if fake.actionsSet != "" || fake.createdTeam != "" {
+	if state.actionsSet != "" || state.createdTeam != "" {
 		t.Error("no changes expected when already in the desired state")
 	}
 	if !strings.Contains(buf.String(), "already") {
@@ -168,13 +176,13 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 	// tiers do). setup must re-read, notice the org is not actually hardened, and
 	// warn loudly rather than report success.
 	yes := true
-	fake := &fakeSetupClient{
+	state := &fakeSetupState{
 		role:          "admin",
 		settings:      gh.OrgSettings{DefaultRepositoryPermission: "write", MembersCanCreateRepositories: &yes},
 		actions:       "all",
 		ignorePatches: true,
 	}
-	o := newSetupOpts(t, fake, "cs101-spring26", "staff", false)
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
@@ -193,14 +201,14 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 }
 
 func TestSetupDryRunMakesNoChanges(t *testing.T) {
-	fake := &fakeSetupClient{role: "admin"}
-	o := newSetupOpts(t, fake, "cs101-spring26", "staff", true)
+	state := &fakeSetupState{role: "admin"}
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", true)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if fake.patched != nil || fake.actionsSet != "" || fake.createdTeam != "" {
+	if state.patched != nil || state.actionsSet != "" || state.createdTeam != "" {
 		t.Error("dry-run must not mutate the org")
 	}
 	if !strings.Contains(buf.String(), "DRY RUN") {

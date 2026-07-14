@@ -7,17 +7,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
-// fakeAuditClient is a concurrency-safe, per-repo configurable stand-in for the
-// audit operations.
-type fakeAuditClient struct {
-	mu      sync.Mutex
+// fakeAuditState configures a ghtest.Fake for audit tests, per-repo
+// configurable, and captures what it observed.
+type fakeAuditState struct {
 	role    string
 	repos   map[string]bool
 	collabs map[string][]gh.Collaborator
@@ -25,13 +24,14 @@ type fakeAuditClient struct {
 	listErr map[string]bool // repos whose collaborator listing fails
 	addErr  map[string]bool // logins whose AddCollaborator fails
 	silent  map[string]bool // logins whose grant records but produces no access
-	added   []string        // "repo:login:perm"
-	deleted []string        // "repo:invID"
 	nextID  int64
+
+	added   []string // "repo:login:perm"
+	deleted []string // "repo:invID"
 }
 
-func newFakeAudit(role string) *fakeAuditClient {
-	return &fakeAuditClient{
+func newFakeAudit(role string) *fakeAuditState {
+	return &fakeAuditState{
 		role:    role,
 		repos:   map[string]bool{},
 		collabs: map[string][]gh.Collaborator{},
@@ -43,64 +43,63 @@ func newFakeAudit(role string) *fakeAuditClient {
 	}
 }
 
-func (f *fakeAuditClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
-
-func (f *fakeAuditClient) ListOrgReposByPrefix(_ context.Context, _, prefix string) ([]gh.Repo, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []gh.Repo
-	for name := range f.repos {
-		if strings.HasPrefix(name, prefix) {
-			out = append(out, gh.Repo{Name: name})
+func (s *fakeAuditState) fake() *ghtest.Fake {
+	fk := &ghtest.Fake{}
+	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return s.role, nil }
+	fk.ListOrgReposByPrefixFunc = func(_ context.Context, _, prefix string) ([]gh.Repo, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		var out []gh.Repo
+		for name := range s.repos {
+			if strings.HasPrefix(name, prefix) {
+				out = append(out, gh.Repo{Name: name})
+			}
 		}
+		return out, nil
 	}
-	return out, nil
-}
-
-func (f *fakeAuditClient) ListDirectCollaborators(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.listErr[repo] {
-		return nil, fmt.Errorf("listing failed for %s", repo)
-	}
-	return append([]gh.Collaborator(nil), f.collabs[repo]...), nil
-}
-
-func (f *fakeAuditClient) ListRepoInvitations(_ context.Context, _, repo string) ([]gh.Invitation, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]gh.Invitation(nil), f.invites[repo]...), nil
-}
-
-func (f *fakeAuditClient) AddCollaborator(_ context.Context, _, repo, login, perm string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.addErr[login] {
-		return fmt.Errorf("add failed for %s", login)
-	}
-	f.added = append(f.added, repo+":"+login+":"+perm)
-	if f.silent[login] {
-		return nil // records the call but leaves no access or invitation
-	}
-	f.nextID++
-	inv := gh.Invitation{ID: f.nextID}
-	inv.Invitee.Login = login
-	f.invites[repo] = append(f.invites[repo], inv) // a fresh, non-expired invitation
-	return nil
-}
-
-func (f *fakeAuditClient) DeleteRepoInvitation(_ context.Context, _, repo string, id int64) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.deleted = append(f.deleted, fmt.Sprintf("%s:%d", repo, id))
-	var rest []gh.Invitation
-	for _, inv := range f.invites[repo] {
-		if inv.ID != id {
-			rest = append(rest, inv)
+	fk.ListDirectCollaboratorsFunc = func(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		if s.listErr[repo] {
+			return nil, fmt.Errorf("listing failed for %s", repo)
 		}
+		return append([]gh.Collaborator(nil), s.collabs[repo]...), nil
 	}
-	f.invites[repo] = rest
-	return nil
+	fk.ListRepoInvitationsFunc = func(_ context.Context, _, repo string) ([]gh.Invitation, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		return append([]gh.Invitation(nil), s.invites[repo]...), nil
+	}
+	fk.AddCollaboratorFunc = func(_ context.Context, _, repo, login, perm string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		if s.addErr[login] {
+			return fmt.Errorf("add failed for %s", login)
+		}
+		s.added = append(s.added, repo+":"+login+":"+perm)
+		if s.silent[login] {
+			return nil // records the call but leaves no access or invitation
+		}
+		s.nextID++
+		inv := gh.Invitation{ID: s.nextID}
+		inv.Invitee.Login = login
+		s.invites[repo] = append(s.invites[repo], inv) // a fresh, non-expired invitation
+		return nil
+	}
+	fk.DeleteRepoInvitationFunc = func(_ context.Context, _, repo string, id int64) error {
+		fk.Lock()
+		defer fk.Unlock()
+		s.deleted = append(s.deleted, fmt.Sprintf("%s:%d", repo, id))
+		var rest []gh.Invitation
+		for _, inv := range s.invites[repo] {
+			if inv.ID != id {
+				rest = append(rest, inv)
+			}
+		}
+		s.invites[repo] = rest
+		return nil
+	}
+	return fk
 }
 
 func pushCollab(login string) gh.Collaborator {
@@ -124,12 +123,12 @@ func expiredInvite(id int64, login string) gh.Invitation {
 
 // newAuditOpts wires auditOpts to a fake; the roster/teams files live in a temp
 // dir and the config comes from assignGlobals.
-func newAuditOpts(t *testing.T, fake *fakeAuditClient, rosterCSV, teamsYML string) *auditOpts {
+func newAuditOpts(t *testing.T, fake *fakeAuditState, rosterCSV, teamsYML string) *auditOpts {
 	t.Helper()
 	return newAuditOptsG(t, assignGlobals(), fake, rosterCSV, teamsYML)
 }
 
-func newAuditOptsG(t *testing.T, g *globalOpts, fake *fakeAuditClient, rosterCSV, teamsYML string) *auditOpts {
+func newAuditOptsG(t *testing.T, g *globalOpts, fake *fakeAuditState, rosterCSV, teamsYML string) *auditOpts {
 	t.Helper()
 	dir := t.TempDir()
 	rosterPath := filepath.Join(dir, "roster.csv")
@@ -143,11 +142,12 @@ func newAuditOptsG(t *testing.T, g *globalOpts, fake *fakeAuditClient, rosterCSV
 			t.Fatal(err)
 		}
 	}
+	fk := fake.fake()
 	return &auditOpts{
 		g:         g,
 		roster:    rosterPath,
 		teams:     teamsPath,
-		newClient: func(context.Context) (auditClient, error) { return fake, nil },
+		newClient: func(context.Context) (auditClient, error) { return fk, nil },
 	}
 }
 

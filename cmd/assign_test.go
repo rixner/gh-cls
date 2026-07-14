@@ -7,12 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
 // assignGlobals is the loaded-config state assign and audit tests run against:
@@ -40,11 +40,11 @@ const assignTeams = `team-alpha: [student-001, student-003]
 team-beta: [student-002]
 `
 
-// fakeAssignClient is a concurrency-safe stand-in for the assign operations.
+// fakeAssignClient configures a ghtest.Fake for the assign operations and
+// captures what it observed.
 type fakeAssignClient struct {
-	mu             sync.Mutex
 	role           string
-	teamMissing    bool // the staff team does not exist (setup not run)
+	teamMissing    bool            // the staff team does not exist (setup not run)
 	unknownUsers   map[string]bool // usernames GitHub reports as non-existent
 	userErr        error           // a lookup failure (not a plain 404) from UserExists
 	hasIssues      bool
@@ -55,207 +55,192 @@ type fakeAssignClient struct {
 	invited        []string        // "repo:username" entries modeled as pending invitations
 	dropGrants     map[string]bool // usernames whose grant silently evaporates
 	branches       []gh.BranchCount
-	generated      []string
-	deleted        []string
-	collabs        []string
-	teamRepos      []string
 	isTemplate     map[string]bool // "owner/name" -> repo is a template repository
-	rulesets       map[string]bool // repos a protection ruleset was applied to
-	refs           []string        // "repo:ref"
-	refSHAs        []string        // "repo:ref@sha" — the SHA each ref was created at
-	rebased        []string        // repos whose default branch was rebased onto an empty root
-	prs            []string        // "repo:head->base"
-	issues         []string        // repo
-	enabled        []string        // repos where issues were enabled
+
+	generated []string
+	deleted   []string
+	collabs   []string
+	teamRepos []string
+	rulesets  map[string]bool // repos a protection ruleset was applied to
+	refs      []string        // "repo:ref"
+	refSHAs   []string        // "repo:ref@sha" — the SHA each ref was created at
+	rebased   []string        // repos whose default branch was rebased onto an empty root
+	prs       []string        // "repo:head->base"
+	issues    []string        // repo
+	enabled   []string        // repos where issues were enabled
 }
 
-func (f *fakeAssignClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
-
-func (f *fakeAssignClient) UserExists(_ context.Context, username string) (bool, error) {
-	if f.userErr != nil {
-		return false, f.userErr
+func (f *fakeAssignClient) fake() *ghtest.Fake {
+	fk := &ghtest.Fake{}
+	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return f.role, nil }
+	fk.UserExistsFunc = func(_ context.Context, username string) (bool, error) {
+		if f.userErr != nil {
+			return false, f.userErr
+		}
+		return !f.unknownUsers[username], nil
 	}
-	return !f.unknownUsers[username], nil
-}
-
-func (f *fakeAssignClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
-	if f.teamMissing {
+	fk.GetTeamFunc = func(context.Context, string, string) (*gh.Team, bool, error) {
+		if f.teamMissing {
+			return nil, false, nil
+		}
+		return &gh.Team{ID: 1}, true, nil
+	}
+	fk.GetRepoFunc = func(_ context.Context, owner, name string) (*gh.Repo, bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		if f.exists[owner+"/"+name] {
+			// Repos default to private (the realistic state of an assign-created repo);
+			// only those recorded in public are public.
+			return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: !f.public[owner+"/"+name], IsTemplate: f.isTemplate[owner+"/"+name]}, true, nil
+		}
 		return nil, false, nil
 	}
-	return &gh.Team{ID: 1}, true, nil
-}
-
-func (f *fakeAssignClient) GetRepo(_ context.Context, owner, name string) (*gh.Repo, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.exists[owner+"/"+name] {
-		// Repos default to private (the realistic state of an assign-created repo);
-		// only those recorded in public are public.
-		return &gh.Repo{Name: name, DefaultBranch: "main", HasIssues: f.hasIssues, Private: !f.public[owner+"/"+name], IsTemplate: f.isTemplate[owner+"/"+name]}, true, nil
-	}
-	return nil, false, nil
-}
-
-func (f *fakeAssignClient) SetRepoTemplate(_ context.Context, owner, name string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.isTemplate == nil {
-		f.isTemplate = map[string]bool{}
-	}
-	f.isTemplate[owner+"/"+name] = true
-	return nil
-}
-
-func (f *fakeAssignClient) ListBranchesWithCommitCount(context.Context, string, string) ([]gh.BranchCount, error) {
-	return f.branches, nil
-}
-
-func (f *fakeAssignClient) GenerateFromTemplate(_ context.Context, _, _, owner, name string, private, _ bool) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.exists[owner+"/"+name] = true
-	if f.public == nil {
-		f.public = map[string]bool{}
-	}
-	f.public[owner+"/"+name] = !private || f.forcePublic
-	f.generated = append(f.generated, name)
-	// Generation lands the default branch; record it so the readiness check
-	// (waitRepoReady -> BranchExists) sees a populated repo. withholdBranch
-	// simulates a generation whose content never appears.
-	if !f.withholdBranch {
-		f.refs = append(f.refs, name+":refs/heads/main")
-	}
-	return nil
-}
-
-func (f *fakeAssignClient) DeleteRepo(_ context.Context, owner, name string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	delete(f.exists, owner+"/"+name)
-	delete(f.public, owner+"/"+name)
-	f.deleted = append(f.deleted, name)
-	return nil
-}
-
-func (f *fakeAssignClient) AddCollaborator(_ context.Context, _, repo, username, _ string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.collabs = append(f.collabs, repo+":"+username)
-	return nil
-}
-
-func (f *fakeAssignClient) ListDirectCollaborators(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []gh.Collaborator
-	for _, entry := range f.collabs {
-		parts := strings.SplitN(entry, ":", 2)
-		if len(parts) != 2 || parts[0] != repo {
-			continue
+	fk.SetRepoTemplateFunc = func(_ context.Context, owner, name string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		if f.isTemplate == nil {
+			f.isTemplate = map[string]bool{}
 		}
-		user := parts[1]
-		// A dropped grant never lands as a collaborator; an invited user is modeled
-		// as a pending invitation instead of live access.
-		if f.dropGrants[user] || contains(f.invited, repo+":"+user) {
-			continue
+		f.isTemplate[owner+"/"+name] = true
+		return nil
+	}
+	fk.ListBranchesWithCommitCountFunc = func(context.Context, string, string) ([]gh.BranchCount, error) {
+		return f.branches, nil
+	}
+	fk.GenerateFromTemplateFunc = func(_ context.Context, _, _, owner, name string, private, _ bool) error {
+		fk.Lock()
+		defer fk.Unlock()
+		f.exists[owner+"/"+name] = true
+		if f.public == nil {
+			f.public = map[string]bool{}
 		}
-		c := gh.Collaborator{Login: user}
-		c.Permissions.Push = true
-		out = append(out, c)
-	}
-	return out, nil
-}
-
-func (f *fakeAssignClient) ListRepoInvitations(_ context.Context, _, repo string) ([]gh.Invitation, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []gh.Invitation
-	for _, entry := range f.invited {
-		parts := strings.SplitN(entry, ":", 2)
-		if len(parts) != 2 || parts[0] != repo {
-			continue
+		f.public[owner+"/"+name] = !private || f.forcePublic
+		f.generated = append(f.generated, name)
+		// Generation lands the default branch; record it so the readiness check
+		// (waitRepoReady -> BranchExists) sees a populated repo. withholdBranch
+		// simulates a generation whose content never appears.
+		if !f.withholdBranch {
+			f.refs = append(f.refs, name+":refs/heads/main")
 		}
-		var inv gh.Invitation
-		inv.Invitee.Login = parts[1]
-		out = append(out, inv)
+		return nil
 	}
-	return out, nil
-}
-
-func (f *fakeAssignClient) AddTeamRepo(_ context.Context, _, _, _, repo, _ string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.teamRepos = append(f.teamRepos, repo)
-	return nil
-}
-
-func (f *fakeAssignClient) ApplyRuleset(_ context.Context, _, repo string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.rulesets == nil {
-		f.rulesets = map[string]bool{}
+	fk.DeleteRepoFunc = func(_ context.Context, owner, name string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		delete(f.exists, owner+"/"+name)
+		delete(f.public, owner+"/"+name)
+		f.deleted = append(f.deleted, name)
+		return nil
 	}
-	f.rulesets[repo] = true
-	return nil
-}
-
-func (f *fakeAssignClient) RebaseOntoEmptyRoot(_ context.Context, _, repo, _ string) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rebased = append(f.rebased, repo)
-	return "empty-root-sha", nil
-}
-
-func (f *fakeAssignClient) CreateRef(_ context.Context, _, repo, ref, sha string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.refs = append(f.refs, repo+":"+ref)
-	f.refSHAs = append(f.refSHAs, repo+":"+ref+"@"+sha)
-	return nil
-}
-
-func (f *fakeAssignClient) BranchExists(_ context.Context, _, repo, branch string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return contains(f.refs, repo+":refs/heads/"+branch), nil
-}
-
-func (f *fakeAssignClient) CreatePR(_ context.Context, _, repo, _, head, base, _ string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.prs = append(f.prs, repo+":"+head+"->"+base)
-	return nil
-}
-
-func (f *fakeAssignClient) PRExists(_ context.Context, _, repo, base string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	for _, p := range f.prs {
-		if strings.HasPrefix(p, repo+":") && strings.HasSuffix(p, "->"+base) {
-			return true, nil
+	fk.AddCollaboratorFunc = func(_ context.Context, _, repo, username, _ string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		f.collabs = append(f.collabs, repo+":"+username)
+		return nil
+	}
+	fk.ListDirectCollaboratorsFunc = func(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		var out []gh.Collaborator
+		for _, entry := range f.collabs {
+			parts := strings.SplitN(entry, ":", 2)
+			if len(parts) != 2 || parts[0] != repo {
+				continue
+			}
+			user := parts[1]
+			// A dropped grant never lands as a collaborator; an invited user is modeled
+			// as a pending invitation instead of live access.
+			if f.dropGrants[user] || contains(f.invited, repo+":"+user) {
+				continue
+			}
+			c := gh.Collaborator{Login: user}
+			c.Permissions.Push = true
+			out = append(out, c)
 		}
+		return out, nil
 	}
-	return false, nil
-}
-
-func (f *fakeAssignClient) EnableIssues(_ context.Context, _, repo string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.enabled = append(f.enabled, repo)
-	return nil
-}
-
-func (f *fakeAssignClient) CreateIssue(_ context.Context, _, repo, _, _ string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.issues = append(f.issues, repo)
-	return nil
-}
-
-func (f *fakeAssignClient) IssueExists(_ context.Context, _, repo, _ string) (bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return contains(f.issues, repo), nil
+	fk.ListRepoInvitationsFunc = func(_ context.Context, _, repo string) ([]gh.Invitation, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		var out []gh.Invitation
+		for _, entry := range f.invited {
+			parts := strings.SplitN(entry, ":", 2)
+			if len(parts) != 2 || parts[0] != repo {
+				continue
+			}
+			var inv gh.Invitation
+			inv.Invitee.Login = parts[1]
+			out = append(out, inv)
+		}
+		return out, nil
+	}
+	fk.AddTeamRepoFunc = func(_ context.Context, _, _, _, repo, _ string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		f.teamRepos = append(f.teamRepos, repo)
+		return nil
+	}
+	fk.ApplyRulesetFunc = func(_ context.Context, _, repo string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		if f.rulesets == nil {
+			f.rulesets = map[string]bool{}
+		}
+		f.rulesets[repo] = true
+		return nil
+	}
+	fk.RebaseOntoEmptyRootFunc = func(_ context.Context, _, repo, _ string) (string, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		f.rebased = append(f.rebased, repo)
+		return "empty-root-sha", nil
+	}
+	fk.CreateRefFunc = func(_ context.Context, _, repo, ref, sha string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		f.refs = append(f.refs, repo+":"+ref)
+		f.refSHAs = append(f.refSHAs, repo+":"+ref+"@"+sha)
+		return nil
+	}
+	fk.BranchExistsFunc = func(_ context.Context, _, repo, branch string) (bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		return contains(f.refs, repo+":refs/heads/"+branch), nil
+	}
+	fk.CreatePRFunc = func(_ context.Context, _, repo, _, head, base, _ string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		f.prs = append(f.prs, repo+":"+head+"->"+base)
+		return nil
+	}
+	fk.PRExistsFunc = func(_ context.Context, _, repo, base string) (bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		for _, p := range f.prs {
+			if strings.HasPrefix(p, repo+":") && strings.HasSuffix(p, "->"+base) {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	fk.EnableIssuesFunc = func(_ context.Context, _, repo string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		f.enabled = append(f.enabled, repo)
+		return nil
+	}
+	fk.CreateIssueFunc = func(_ context.Context, _, repo, _, _ string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		f.issues = append(f.issues, repo)
+		return nil
+	}
+	fk.IssueExistsFunc = func(_ context.Context, _, repo, _ string) (bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		return contains(f.issues, repo), nil
+	}
+	return fk
 }
 
 func newFakeAssign(role string) *fakeAssignClient {
@@ -287,11 +272,12 @@ func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, teamsYML str
 		}
 	}
 
+	fk := fake.fake()
 	return &assignOpts{
 		g:         assignGlobals(),
 		roster:    rosterPath,
 		teams:     teamsPath,
-		newClient: func(context.Context) (assignClient, error) { return fake, nil },
+		newClient: func(context.Context) (assignClient, error) { return fk, nil },
 		sleep:     func(time.Duration) {},
 	}
 }

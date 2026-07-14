@@ -6,11 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
 // feedbackGlobals is the loaded-config state the feedback tests run against: an
@@ -31,10 +31,10 @@ func feedbackGlobals() *globalOpts {
 
 const fbRosterSolo = "identifier,username\nstudent-001,ada\n"
 
-// fakeFeedbackClient is a concurrency-safe stand-in for the feedback operations.
-// Each repo carries a feedback issue and PR number and a list of comment bodies.
-type fakeFeedbackClient struct {
-	mu       sync.Mutex
+// fakeFeedbackState configures a ghtest.Fake for feedback tests and captures
+// what it observed. Each repo carries a feedback issue and PR number and a
+// list of comment bodies.
+type fakeFeedbackState struct {
 	role     string
 	repos    map[string]bool     // repo name -> exists
 	issueNum map[string]int      // repo -> feedback issue number (absent = none)
@@ -43,8 +43,8 @@ type fakeFeedbackClient struct {
 	posts    []string            // repo names AddComment was called on, for assertions
 }
 
-func newFakeFeedback(role string, repos ...string) *fakeFeedbackClient {
-	f := &fakeFeedbackClient{
+func newFakeFeedback(role string, repos ...string) *fakeFeedbackState {
+	s := &fakeFeedbackState{
 		role:     role,
 		repos:    map[string]bool{},
 		issueNum: map[string]int{},
@@ -52,60 +52,59 @@ func newFakeFeedback(role string, repos ...string) *fakeFeedbackClient {
 		comments: map[string][]string{},
 	}
 	for i, r := range repos {
-		f.repos[r] = true
-		f.issueNum[r] = i + 1
-		f.prNum[r] = 100 + i
+		s.repos[r] = true
+		s.issueNum[r] = i + 1
+		s.prNum[r] = 100 + i
 	}
-	return f
+	return s
 }
 
-func (f *fakeFeedbackClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
-
-func (f *fakeFeedbackClient) GetRepo(_ context.Context, _, name string) (*gh.Repo, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.repos[name] {
-		return &gh.Repo{Name: name, DefaultBranch: "main"}, true, nil
+func (s *fakeFeedbackState) fake() *ghtest.Fake {
+	fk := &ghtest.Fake{}
+	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return s.role, nil }
+	fk.GetRepoFunc = func(_ context.Context, _, name string) (*gh.Repo, bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		if s.repos[name] {
+			return &gh.Repo{Name: name, DefaultBranch: "main"}, true, nil
+		}
+		return nil, false, nil
 	}
-	return nil, false, nil
-}
-
-func (f *fakeFeedbackClient) FindIssueByTitle(_ context.Context, _, repo, _ string) (int, string, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n, ok := f.issueNum[repo]
-	return n, "open", ok, nil
-}
-
-func (f *fakeFeedbackClient) FindPRByBase(_ context.Context, _, repo, _ string) (int, string, bool, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	n, ok := f.prNum[repo]
-	return n, "open", ok, nil
-}
-
-func (f *fakeFeedbackClient) ListIssueComments(_ context.Context, _, repo string, _ int) ([]gh.Comment, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []gh.Comment
-	for _, b := range f.comments[repo] {
-		out = append(out, gh.Comment{Body: b})
+	fk.FindIssueByTitleFunc = func(_ context.Context, _, repo, _ string) (int, string, bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		n, ok := s.issueNum[repo]
+		return n, "open", ok, nil
 	}
-	return out, nil
-}
-
-func (f *fakeFeedbackClient) AddComment(_ context.Context, _, repo string, _ int, body string) (string, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.comments[repo] = append(f.comments[repo], body)
-	f.posts = append(f.posts, repo)
-	return "https://github.com/cs101-spring26/" + repo + "#issuecomment-1", nil
+	fk.FindPRByBaseFunc = func(_ context.Context, _, repo, _ string) (int, string, bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		n, ok := s.prNum[repo]
+		return n, "open", ok, nil
+	}
+	fk.ListIssueCommentsFunc = func(_ context.Context, _, repo string, _ int) ([]gh.Comment, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		var out []gh.Comment
+		for _, b := range s.comments[repo] {
+			out = append(out, gh.Comment{Body: b})
+		}
+		return out, nil
+	}
+	fk.AddCommentFunc = func(_ context.Context, _, repo string, _ int, body string) (string, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		s.comments[repo] = append(s.comments[repo], body)
+		s.posts = append(s.posts, repo)
+		return "https://github.com/cs101-spring26/" + repo + "#issuecomment-1", nil
+	}
+	return fk
 }
 
 // newFeedbackOpts wires feedbackOpts to a fake; the feedback dir, roster, and
 // (optional) teams files live in a temp dir. It returns the opts and the dir so
 // a test can rewrite a file to simulate a re-grade.
-func newFeedbackOpts(t *testing.T, fake *fakeFeedbackClient, files map[string]string, rosterCSV, teamsYML string) (*feedbackOpts, string) {
+func newFeedbackOpts(t *testing.T, fake *fakeFeedbackState, files map[string]string, rosterCSV, teamsYML string) (*feedbackOpts, string) {
 	t.Helper()
 	base := t.TempDir()
 	fbdir := filepath.Join(base, "fb")
@@ -128,12 +127,13 @@ func newFeedbackOpts(t *testing.T, fake *fakeFeedbackClient, files map[string]st
 			t.Fatal(err)
 		}
 	}
+	fk := fake.fake()
 	return &feedbackOpts{
 		g:         feedbackGlobals(),
 		dir:       fbdir,
 		roster:    rosterPath,
 		teams:     teamsPath,
-		newClient: func(context.Context) (feedbackClient, error) { return fake, nil },
+		newClient: func(context.Context) (feedbackClient, error) { return fk, nil },
 	}, fbdir
 }
 

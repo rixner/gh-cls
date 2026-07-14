@@ -9,42 +9,45 @@ import (
 	"testing"
 
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/internal/ghtest"
 )
 
-// fakeStaffClient stands in for the GitHub operations staff uses.
-type fakeStaffClient struct {
+// fakeStaffState configures a ghtest.Fake for staff tests and captures what
+// it observed.
+type fakeStaffState struct {
 	role       string
 	teamExists bool
 	members    []string // current team members
 	addState   string   // state AddTeamMembership returns ("active" if empty)
-	added      []string
-	removed    []string
+
+	added   []string
+	removed []string
 }
 
-func (f *fakeStaffClient) OrgRole(context.Context, string) (string, error) { return f.role, nil }
-
-func (f *fakeStaffClient) GetTeam(context.Context, string, string) (*gh.Team, bool, error) {
-	if !f.teamExists {
-		return nil, false, nil
+func (s *fakeStaffState) fake() *ghtest.Fake {
+	fk := &ghtest.Fake{}
+	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return s.role, nil }
+	fk.GetTeamFunc = func(context.Context, string, string) (*gh.Team, bool, error) {
+		if !s.teamExists {
+			return nil, false, nil
+		}
+		return &gh.Team{ID: 1}, true, nil
 	}
-	return &gh.Team{ID: 1}, true, nil
-}
-
-func (f *fakeStaffClient) ListTeamMembers(context.Context, string, string) ([]string, error) {
-	return f.members, nil
-}
-
-func (f *fakeStaffClient) AddTeamMembership(_ context.Context, _, _, user string) (string, error) {
-	f.added = append(f.added, user)
-	if f.addState != "" {
-		return f.addState, nil
+	fk.ListTeamMembersFunc = func(context.Context, string, string) ([]string, error) {
+		return s.members, nil
 	}
-	return "active", nil
-}
-
-func (f *fakeStaffClient) RemoveTeamMembership(_ context.Context, _, _, user string) error {
-	f.removed = append(f.removed, user)
-	return nil
+	fk.AddTeamMembershipFunc = func(_ context.Context, _, _, user string) (string, error) {
+		s.added = append(s.added, user)
+		if s.addState != "" {
+			return s.addState, nil
+		}
+		return "active", nil
+	}
+	fk.RemoveTeamMembershipFunc = func(_ context.Context, _, _, user string) error {
+		s.removed = append(s.removed, user)
+		return nil
+	}
+	return fk
 }
 
 const tasCSV = `identifier,username
@@ -52,35 +55,36 @@ ta-1,ada
 ta-2,newta
 `
 
-func newStaffOpts(t *testing.T, fake *fakeStaffClient, tasContent string, dryRun bool) *staffOpts {
+func newStaffOpts(t *testing.T, state *fakeStaffState, tasContent string, dryRun bool) *staffOpts {
 	t.Helper()
 	tasPath := filepath.Join(t.TempDir(), "tas.csv")
 	if err := os.WriteFile(tasPath, []byte(tasContent), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	fk := state.fake()
 	return &staffOpts{
 		g:         &globalOpts{org: "cs101-spring26", staffTeam: "staff"},
 		tas:       tasPath,
 		dryRun:    dryRun,
-		newClient: func(context.Context) (staffClient, error) { return fake, nil },
+		newClient: func(context.Context) (staffClient, error) { return fk, nil },
 	}
 }
 
 func TestStaffAddsAndWarnsWithoutPrune(t *testing.T) {
 	// Default (no --prune): add the listed TA who is absent, leave the unlisted
 	// member in place, and warn about it pointing at --prune.
-	fake := &fakeStaffClient{role: "admin", teamExists: true, members: []string{"ada", "oldta"}}
-	o := newStaffOpts(t, fake, tasCSV, false)
+	state := &fakeStaffState{role: "admin", teamExists: true, members: []string{"ada", "oldta"}}
+	o := newStaffOpts(t, state, tasCSV, false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.added) != 1 || fake.added[0] != "newta" {
-		t.Errorf("added = %v, want [newta]", fake.added)
+	if len(state.added) != 1 || state.added[0] != "newta" {
+		t.Errorf("added = %v, want [newta]", state.added)
 	}
-	if len(fake.removed) != 0 {
-		t.Errorf("without --prune nothing should be removed, got %v", fake.removed)
+	if len(state.removed) != 0 {
+		t.Errorf("without --prune nothing should be removed, got %v", state.removed)
 	}
 	out := buf.String()
 	for _, want := range []string{"+ newta", "warning:", "oldta", "--prune"} {
@@ -91,19 +95,19 @@ func TestStaffAddsAndWarnsWithoutPrune(t *testing.T) {
 }
 
 func TestStaffPruneRemovesAndNamesThem(t *testing.T) {
-	fake := &fakeStaffClient{role: "admin", teamExists: true, members: []string{"ada", "oldta"}}
-	o := newStaffOpts(t, fake, tasCSV, false)
+	state := &fakeStaffState{role: "admin", teamExists: true, members: []string{"ada", "oldta"}}
+	o := newStaffOpts(t, state, tasCSV, false)
 	o.prune = true
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.added) != 1 || fake.added[0] != "newta" {
-		t.Errorf("added = %v, want [newta]", fake.added)
+	if len(state.added) != 1 || state.added[0] != "newta" {
+		t.Errorf("added = %v, want [newta]", state.added)
 	}
-	if len(fake.removed) != 1 || fake.removed[0] != "oldta" {
-		t.Errorf("removed = %v, want [oldta]", fake.removed)
+	if len(state.removed) != 1 || state.removed[0] != "oldta" {
+		t.Errorf("removed = %v, want [oldta]", state.removed)
 	}
 	out := buf.String()
 	// The removed member is named (so a mistake is easy to undo) and counted.
@@ -120,15 +124,15 @@ func TestStaffPruneRemovesAndNamesThem(t *testing.T) {
 func TestStaffCaseInsensitiveNoChange(t *testing.T) {
 	// "Ada" in the file and "ada" on the team are the same login (GitHub logins
 	// are case-insensitive), so nothing should change.
-	fake := &fakeStaffClient{role: "admin", teamExists: true, members: []string{"ada"}}
-	o := newStaffOpts(t, fake, "identifier,username\nta-1,Ada\n", false)
+	state := &fakeStaffState{role: "admin", teamExists: true, members: []string{"ada"}}
+	o := newStaffOpts(t, state, "identifier,username\nta-1,Ada\n", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.added) != 0 || len(fake.removed) != 0 {
-		t.Errorf("a case-only difference must be no change; added=%v removed=%v", fake.added, fake.removed)
+	if len(state.added) != 0 || len(state.removed) != 0 {
+		t.Errorf("a case-only difference must be no change; added=%v removed=%v", state.added, state.removed)
 	}
 	if !strings.Contains(buf.String(), "already in sync") {
 		t.Errorf("want already-in-sync:\n%s", buf.String())
@@ -136,15 +140,15 @@ func TestStaffCaseInsensitiveNoChange(t *testing.T) {
 }
 
 func TestStaffDryRunMakesNoChanges(t *testing.T) {
-	fake := &fakeStaffClient{role: "admin", teamExists: true, members: []string{"oldta"}}
-	o := newStaffOpts(t, fake, tasCSV, true)
+	state := &fakeStaffState{role: "admin", teamExists: true, members: []string{"oldta"}}
+	o := newStaffOpts(t, state, tasCSV, true)
 	o.prune = true // exercise both add and remove previews
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.added) != 0 || len(fake.removed) != 0 {
+	if len(state.added) != 0 || len(state.removed) != 0 {
 		t.Error("dry-run must not modify membership")
 	}
 	out := buf.String()
@@ -156,8 +160,8 @@ func TestStaffDryRunMakesNoChanges(t *testing.T) {
 }
 
 func TestStaffPendingInviteReported(t *testing.T) {
-	fake := &fakeStaffClient{role: "admin", teamExists: true, addState: "pending"}
-	o := newStaffOpts(t, fake, "identifier,username\nta-1,newta\n", false)
+	state := &fakeStaffState{role: "admin", teamExists: true, addState: "pending"}
+	o := newStaffOpts(t, state, "identifier,username\nta-1,newta\n", false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf); err != nil {
@@ -169,20 +173,20 @@ func TestStaffPendingInviteReported(t *testing.T) {
 }
 
 func TestStaffOwnerGuard(t *testing.T) {
-	fake := &fakeStaffClient{role: "member", teamExists: true}
-	o := newStaffOpts(t, fake, tasCSV, false)
+	state := &fakeStaffState{role: "member", teamExists: true}
+	o := newStaffOpts(t, state, tasCSV, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "owner") {
 		t.Fatalf("non-owner should be rejected, got %v", err)
 	}
-	if len(fake.added) != 0 || len(fake.removed) != 0 {
+	if len(state.added) != 0 || len(state.removed) != 0 {
 		t.Error("no membership changes should occur when the owner guard fails")
 	}
 }
 
 func TestStaffTeamNotFound(t *testing.T) {
-	fake := &fakeStaffClient{role: "admin", teamExists: false}
-	o := newStaffOpts(t, fake, tasCSV, false)
+	state := &fakeStaffState{role: "admin", teamExists: false}
+	o := newStaffOpts(t, state, tasCSV, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("a missing staff team should error, got %v", err)
