@@ -6,17 +6,17 @@ import (
 	"text/tabwriter"
 )
 
-// status classifies the outcome of one idempotent action.
-type status int
+// actionStatus classifies the outcome of one idempotent action.
+type actionStatus int
 
 const (
-	statusAlready  status = iota // already in the desired state
-	statusChanged                // this run changed it
-	statusReported               // informational; nothing to change
-	statusWarning                // needs attention (e.g. a manual step)
+	statusAlready  actionStatus = iota // already in the desired state
+	statusChanged                      // this run changed it
+	statusReported                     // informational; nothing to change
+	statusWarning                      // needs attention (e.g. a manual step)
 )
 
-func (s status) symbol() string {
+func (s actionStatus) symbol() string {
 	switch s {
 	case statusChanged:
 		return "changed"
@@ -32,7 +32,7 @@ func (s status) symbol() string {
 // result is one line of an action report.
 type result struct {
 	label  string
-	status status
+	status actionStatus
 	detail string
 }
 
