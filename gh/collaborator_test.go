@@ -145,3 +145,35 @@ func TestDeleteRepoInvitation(t *testing.T) {
 		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
 	}
 }
+
+func TestCollaboratorPermissionPredicates(t *testing.T) {
+	tests := []struct {
+		name                                string
+		admin, maintain, push, triage, pull bool
+		wantCanPush                         bool
+		wantAboveRead                       bool
+	}{
+		{name: "admin only", admin: true, wantCanPush: true, wantAboveRead: false},
+		{name: "maintain", maintain: true, wantCanPush: true, wantAboveRead: true},
+		{name: "push", push: true, wantCanPush: true, wantAboveRead: true},
+		{name: "triage", triage: true, wantCanPush: false, wantAboveRead: true},
+		{name: "pull", pull: true, wantCanPush: false, wantAboveRead: false},
+		{name: "none", wantCanPush: false, wantAboveRead: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var c Collaborator
+			c.Permissions.Admin = tt.admin
+			c.Permissions.Maintain = tt.maintain
+			c.Permissions.Push = tt.push
+			c.Permissions.Triage = tt.triage
+			c.Permissions.Pull = tt.pull
+			if got := c.CanPush(); got != tt.wantCanPush {
+				t.Errorf("CanPush() = %v, want %v", got, tt.wantCanPush)
+			}
+			if got := c.AboveRead(); got != tt.wantAboveRead {
+				t.Errorf("AboveRead() = %v, want %v", got, tt.wantAboveRead)
+			}
+		})
+	}
+}

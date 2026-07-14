@@ -198,7 +198,7 @@ func (o *auditOpts) auditUnit(ctx context.Context, client auditClient, org, name
 		if c.Permissions.Admin {
 			isAdmin[l] = true
 		}
-		if c.Permissions.Admin || c.Permissions.Maintain || c.Permissions.Push {
+		if c.CanPush() {
 			writeAccess[l] = true
 		}
 	}
@@ -423,7 +423,7 @@ func (o *auditOpts) verifyRenewed(ctx context.Context, client auditClient, org, 
 		return fmt.Errorf("verifying %s on %s after re-inviting: %w", login, repo, err)
 	}
 	for _, c := range collabs {
-		if strings.EqualFold(c.Login, login) && (c.Permissions.Push || c.Permissions.Admin || c.Permissions.Maintain) {
+		if strings.EqualFold(c.Login, login) && c.CanPush() {
 			return nil
 		}
 	}

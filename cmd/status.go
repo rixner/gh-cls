@@ -385,7 +385,7 @@ func classifyFrozen(collabs []gh.Collaborator) string {
 			continue
 		}
 		switch {
-		case c.Permissions.Push || c.Permissions.Maintain || c.Permissions.Triage:
+		case c.AboveRead():
 			write++
 		case c.Permissions.Pull:
 			read++

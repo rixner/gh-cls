@@ -19,6 +19,21 @@ type Collaborator struct {
 	} `json:"permissions"`
 }
 
+// CanPush reports whether the collaborator holds effective write (push)
+// access: push, maintain, or admin. Triage is not write — a triage-only
+// collaborator cannot push.
+func (c Collaborator) CanPush() bool {
+	return c.Permissions.Admin || c.Permissions.Maintain || c.Permissions.Push
+}
+
+// AboveRead reports whether the collaborator holds any permission above
+// plain read: push, maintain, or triage. This is freeze's downgrade set —
+// triage cannot push but is still more than read, so a freeze reduces it to
+// pull. Admin is deliberately excluded: staff keep access through a freeze.
+func (c Collaborator) AboveRead() bool {
+	return c.Permissions.Push || c.Permissions.Maintain || c.Permissions.Triage
+}
+
 // Invitation is a pending repository collaborator invitation. A user added via
 // AddCollaborator who is not an organization member receives an invitation
 // rather than immediate access, and stays here until they accept it or it

@@ -489,7 +489,7 @@ func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org,
 	}
 	hasWrite := make(map[string]bool, len(collaborators))
 	for _, c := range collaborators {
-		if c.Permissions.Admin || c.Permissions.Maintain || c.Permissions.Push {
+		if c.CanPush() {
 			hasWrite[strings.ToLower(c.Login)] = true
 		}
 	}

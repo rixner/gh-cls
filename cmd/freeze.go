@@ -216,7 +216,7 @@ func (o *freezeOpts) verifyResult(ctx context.Context, client freezeClient, org,
 			if !c.Permissions.Push {
 				return fmt.Errorf("unfreeze of %s did not take: %s still lacks push", repo, c.Login)
 			}
-		} else if c.Permissions.Push || c.Permissions.Maintain || c.Permissions.Triage {
+		} else if c.AboveRead() {
 			return fmt.Errorf("freeze of %s did not take: %s still has write access", repo, c.Login)
 		}
 	}
@@ -233,7 +233,7 @@ func (o *freezeOpts) target(c gh.Collaborator) string {
 		}
 		return "push"
 	}
-	if c.Permissions.Push || c.Permissions.Maintain || c.Permissions.Triage {
+	if c.AboveRead() {
 		return "pull"
 	}
 	return ""
