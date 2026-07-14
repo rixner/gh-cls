@@ -210,6 +210,8 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   is never frozen. Naming one or more student/team keys (`freeze hw1 alice`)
   scopes it to just those `<name>-<key>` repos, for granting or ending an
   individual extension; an unknown key aborts the run before any change.
+  `--undo` grants push to every non-admin direct collaborator, including any
+  who were deliberately read-only before the freeze.
 - **feedback** posts one feedback file per student (or team) as a comment on that
   repo's feedback issue or PR — the artifact assign created, named by the
   assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or

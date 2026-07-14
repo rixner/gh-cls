@@ -44,7 +44,11 @@ repos (<name>-<key>), for granting or ending an individual extension: freeze
 the whole assignment at the deadline, then --undo one student's repo for an
 extension and re-freeze it when the extension expires. Keys match repo names
 case-insensitively; if any named key has no repo the run aborts before touching
-anything.`,
+anything.
+
+--undo is not a true inverse: freeze stores no prior state, so it grants push
+to every non-admin direct collaborator, including any who were deliberately
+read-only before the freeze.`,
 		Example: `  gh cls freeze hw1
   gh cls freeze hw1 --undo
   gh cls freeze hw1 alice --undo
