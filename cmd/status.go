@@ -403,34 +403,6 @@ func classifyFrozen(collabs []gh.Collaborator) string {
 	}
 }
 
-// feedbackArtifactState reports the state of a repo's feedback artifact for the
-// assignment's mode: open/closed, "missing" if the artifact is absent, or "none"
-// when the assignment configures no feedback.
-func feedbackArtifactState(ctx context.Context, client statusClient, org, repo, mode string) (string, error) {
-	switch mode {
-	case feedbackIssue:
-		_, state, found, err := client.FindIssueByTitle(ctx, org, repo, feedbackTitle)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "missing", nil
-		}
-		return state, nil
-	case feedbackPR:
-		_, state, found, err := client.FindPRByBase(ctx, org, repo, feedbackBranch)
-		if err != nil {
-			return "", err
-		}
-		if !found {
-			return "missing", nil
-		}
-		return state, nil
-	default:
-		return "none", nil
-	}
-}
-
 // printDetailSummary prints a per-assignment block of freeze and feedback counts.
 func printDetailSummary(out io.Writer, cfg *config.Config, names []string, details []repoDetail) {
 	byAssignment := make(map[string][]repoDetail, len(names))

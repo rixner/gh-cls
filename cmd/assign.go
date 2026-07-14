@@ -15,24 +15,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// feedback modes accepted by -f.
-const (
-	feedbackPR    = "pr"
-	feedbackIssue = "issue"
-)
-
 // How long to wait for an asynchronously-generated repo to become ready.
 const (
 	readyAttempts = 10
 	readyDelay    = 2 * time.Second
-)
-
-// Feedback artifact constants.
-const (
-	feedbackBranch    = "feedback"
-	feedbackTitle     = "Feedback"
-	feedbackPRBody    = "This pull request is where the course staff leaves feedback on your work. Please do not close it. Your whole project appears in the diff here, so staff can comment on any line, and it updates automatically as you push to the default branch."
-	feedbackIssueBody = "This issue is where the course staff leaves feedback on your work. Please do not close it."
 )
 
 // assignClient is the narrow set of GitHub operations assign needs.
@@ -122,9 +108,9 @@ excused from the group work).`,
 // validate checks flag values that don't depend on config or the filesystem.
 func (o *assignOpts) validate() error {
 	switch o.feedback {
-	case "", feedbackPR, feedbackIssue:
+	case config.FeedbackNone, config.FeedbackPR, config.FeedbackIssue:
 	default:
-		return fmt.Errorf("invalid --feedback %q: must be %q or %q", o.feedback, feedbackPR, feedbackIssue)
+		return fmt.Errorf("invalid --feedback %q: must be %q or %q", o.feedback, config.FeedbackPR, config.FeedbackIssue)
 	}
 	return nil
 }
@@ -292,9 +278,9 @@ func planExtras(policy config.Policy) string {
 		parts = append(parts, "an all-branches protection ruleset")
 	}
 	switch policy.Feedback {
-	case feedbackPR:
+	case config.FeedbackPR:
 		parts = append(parts, "a feedback pull request")
-	case feedbackIssue:
+	case config.FeedbackIssue:
 		parts = append(parts, "a feedback issue")
 	}
 	return strings.Join(parts, " and ")
@@ -536,7 +522,7 @@ func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org,
 // failure is repaired, while an existing (even closed) PR or issue is left be.
 func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, repo string, info *gh.Repo, mode string, created bool) error {
 	switch mode {
-	case feedbackPR:
+	case config.FeedbackPR:
 		// The feedback PR shows the whole project as additions so staff can comment
 		// on any line, including unchanged starter code. That needs the PR's base to
 		// share history with the default branch (GitHub refuses a PR between
@@ -575,7 +561,7 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 				return fmt.Errorf("opening feedback PR on %s: %w", repo, err)
 			}
 		}
-	case feedbackIssue:
+	case config.FeedbackIssue:
 		if !info.HasIssues {
 			if err := client.EnableIssues(ctx, org, repo); err != nil {
 				return fmt.Errorf("enabling issues on %s: %w", repo, err)

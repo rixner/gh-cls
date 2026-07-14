@@ -294,33 +294,10 @@ func (o *feedbackOpts) post(ctx context.Context, client feedbackClient, org, nam
 	return res
 }
 
-// findArtifact returns the number of the repo's feedback artifact for the mode.
-// The artifact state is unused here (posting a comment works on any state).
-func findArtifact(ctx context.Context, client feedbackClient, org, repo, mode string) (int, bool, error) {
-	switch mode {
-	case feedbackIssue:
-		n, _, found, err := client.FindIssueByTitle(ctx, org, repo, feedbackTitle)
-		return n, found, err
-	case feedbackPR:
-		n, _, found, err := client.FindPRByBase(ctx, org, repo, feedbackBranch)
-		return n, found, err
-	default:
-		return 0, false, fmt.Errorf("unknown feedback mode %q", mode)
-	}
-}
-
 // feedbackMarker is the per-content idempotency marker embedded in each comment.
 func feedbackMarker(body string) string {
 	sum := sha256.Sum256([]byte(body))
 	return feedbackMarkerPrefix + hex.EncodeToString(sum[:]) + " -->"
-}
-
-// artifactNoun names the feedback artifact for the mode, for messages.
-func artifactNoun(mode string) string {
-	if mode == feedbackPR {
-		return "pull request"
-	}
-	return "issue"
 }
 
 // reportFeedbackDryRun lists what a real run would post, making no API calls.
