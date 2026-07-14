@@ -15,12 +15,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// How long to wait for an asynchronously-generated repo to become ready.
-const (
-	readyAttempts = 10
-	readyDelay    = 2 * time.Second
-)
-
 // assignClient is the narrow set of GitHub operations assign needs.
 type assignClient interface {
 	OrgRole(ctx context.Context, org string) (string, error)

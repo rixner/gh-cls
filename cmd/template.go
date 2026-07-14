@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/rixner/gh-cls/gh"
@@ -199,24 +198,4 @@ func (o *templateOpts) finishTemplate(ctx context.Context, client templateClient
 		return fmt.Errorf("%s/%s was not marked a template repository (the change did not take effect)", owner, name)
 	}
 	return nil
-}
-
-// qualifyTemplate gives a bare template name (no owner) the configured org, so
-// "hw1-template" means "<org>/hw1-template" — the common in-org case. A reference
-// that already names an owner ("owner/name") is returned unchanged, so a template
-// may live in another org.
-func qualifyTemplate(ref, org string) string {
-	if strings.Contains(ref, "/") {
-		return ref
-	}
-	return org + "/" + ref
-}
-
-// splitRepo parses an "owner/name" reference.
-func splitRepo(ref string) (owner, name string, err error) {
-	parts := strings.Split(ref, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-		return "", "", fmt.Errorf("invalid repository %q: want owner/name", ref)
-	}
-	return parts[0], parts[1], nil
 }

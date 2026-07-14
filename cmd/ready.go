@@ -8,6 +8,12 @@ import (
 	"github.com/rixner/gh-cls/gh"
 )
 
+// How long to wait for an asynchronously-generated repo to become ready.
+const (
+	readyAttempts = 10
+	readyDelay    = 2 * time.Second
+)
+
 // repoReady is the client slice needed to confirm a generated repository is
 // usable: that it exists and its default branch has actually landed.
 type repoReady interface {
