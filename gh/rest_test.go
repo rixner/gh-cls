@@ -2,11 +2,14 @@ package gh
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 )
 
 // step is one programmed outcome of the fake requestFunc.
@@ -159,6 +162,26 @@ func TestDoSendsJSONBody(t *testing.T) {
 	}
 	if len(f.bodies) != 1 || !strings.Contains(f.bodies[0], `"permission":"push"`) {
 		t.Errorf("body not sent as JSON: %v", f.bodies)
+	}
+}
+
+func TestEmptyRepoRequiresEmptyMessage(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"409 with empty message", &api.HTTPError{StatusCode: 409, Message: "Git Repository is empty."}, true},
+		{"409 with a different message", &api.HTTPError{StatusCode: 409, Message: "Merge conflict"}, false},
+		{"404", &api.HTTPError{StatusCode: 404, Message: "Git Repository is empty."}, false},
+		{"non-HTTPError", errors.New("boom"), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := emptyRepo(tc.err); got != tc.want {
+				t.Errorf("emptyRepo(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }
 

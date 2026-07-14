@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"github.com/cli/go-gh/v2/pkg/api"
 )
 
 func TestGetRef(t *testing.T) {
@@ -267,12 +269,22 @@ func TestBranchExists(t *testing.T) {
 		// A freshly generated repo briefly answers 409 "Git Repository is empty"
 		// from the ref endpoint. That must read as absent so waitRepoReady keeps
 		// polling instead of surfacing it as fatal and rolling back the new repo.
-		f := &fakeRequester{steps: []step{{err: httpErr(409, nil)}}}
+		f := &fakeRequester{steps: []step{{err: &api.HTTPError{StatusCode: 409, Message: "Git Repository is empty."}}}}
 		var waits int
 		c := newTestClient(f, &waits)
 		ok, err := c.BranchExists(context.Background(), "org", "hw1-ada", "feedback")
 		if err != nil || ok {
 			t.Fatalf("409 empty repo should mean absent without error, got ok=%v err=%v", ok, err)
+		}
+	})
+	t.Run("propagates a 409 that is not the empty-repository message", func(t *testing.T) {
+		// A different 409 on the same endpoint (e.g. a real conflict) must not be
+		// mistaken for "no commits yet" and silently swallowed.
+		f := &fakeRequester{steps: []step{{err: &api.HTTPError{StatusCode: 409, Message: "Merge conflict"}}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		if _, err := c.BranchExists(context.Background(), "org", "hw1-ada", "feedback"); err == nil {
+			t.Fatal("a non-empty-repo 409 should propagate as an error, not be read as absent")
 		}
 	})
 	t.Run("propagates other errors", func(t *testing.T) {

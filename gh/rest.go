@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
@@ -92,11 +93,13 @@ func notFound(err error) bool {
 	return errors.As(err, &he) && he.StatusCode == http.StatusNotFound
 }
 
-// emptyRepo reports whether err is a 409 from the API. The git ref endpoints
-// answer 409 ("Git Repository is empty") for a repository that exists but has no
-// commits yet — the transient state a freshly generated repo passes through
-// before its starter commit lands.
+// emptyRepo reports whether err is the specific 409 ("Git Repository is
+// empty") the API answers for a repository that exists but has no commits
+// yet — the transient state a freshly generated repo passes through before
+// its starter commit lands. The message is checked alongside the status so a
+// different 409 on the same endpoint is treated as a real error rather than
+// mistaken for "no commits yet".
 func emptyRepo(err error) bool {
 	var he *api.HTTPError
-	return errors.As(err, &he) && he.StatusCode == http.StatusConflict
+	return errors.As(err, &he) && he.StatusCode == http.StatusConflict && strings.Contains(he.Message, "empty")
 }
