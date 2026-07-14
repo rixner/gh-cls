@@ -474,6 +474,9 @@ func (execGit) Clone(ctx context.Context, orgName, repo, dir string) error {
 
 func (execGit) run(ctx context.Context, dir string, args ...string) (string, string, error) {
 	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", dir}, args...)...)
+	// Pin the C locale so git's output (e.g. Fetch's "forced update" check) is
+	// stable English regardless of the host's LANG/LC_ALL.
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
