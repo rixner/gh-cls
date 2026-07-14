@@ -53,6 +53,16 @@ handles tokens itself. Every command except `collect` runs purely against the
 GitHub API and needs no `git` binary; `collect` clones repositories, so it alone
 also needs `git` on your PATH (see [COLLECT.md](COLLECT.md)).
 
+`gh auth login`'s default scopes omit two the tool needs: `admin:org` (org
+settings and team management, used by `setup` and `staff`) and `delete_repo`
+(rolling back a repo `assign`/`template` created, e.g. when `template --force`
+overwrites one or a freshly generated repo comes out with the wrong
+visibility). Grant both up front so a command doesn't fail mid-semester on a
+403:
+```sh
+gh auth refresh -s admin:org -s delete_repo
+```
+
 ## Student Information
 
 Mappings between students and GitHub usernames live only in your local
