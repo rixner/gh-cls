@@ -130,8 +130,8 @@ Run each step **with `--dry-run` first**, then for real.
 
 1. **setup** — `gh cls setup`. It reads the org and staff team from the config.
    Re-run; the second run should report `already` for each setting. In the UI
-   verify: base permission *None*, member repo/Pages creation off, Actions
-   disabled, a `staff` team exists.
+   verify: base permission *None*, member repo/Pages creation off, forking of
+   private repositories off, Actions disabled, a `staff` team exists.
 
    **1b. staff (optional)** — write a `tas.csv` (`identifier,username` with a TA
    login, e.g. `ta-1,<TA>`) and run `gh cls staff --tas tas.csv`. Verify `<TA>` is

@@ -37,8 +37,8 @@ func newSetupCmd(g *globalOpts) *cobra.Command {
 		Use:   "setup",
 		Short: "Harden the semester organization named in the config",
 		Long: `Harden the semester organization named in the config: lock down base
-permissions, member repository/Pages creation, and Actions, and ensure the
-staff team exists.
+permissions, member repository/Pages creation, private repository forking, and
+Actions, and ensure the staff team exists.
 
 The org and staff team are read from the config file (-c/--config or
 $GH_CLS_CONFIG); setup never writes the config. All hardening actions are
@@ -64,6 +64,7 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 		fmt.Fprintf(out, "Would harden %s:\n", org)
 		fmt.Fprintln(out, "  - set base repository permission to none")
 		fmt.Fprintln(out, "  - disable members creating repositories and Pages")
+		fmt.Fprintln(out, "  - disable members forking private repositories")
 		fmt.Fprintln(out, "  - disable GitHub Actions org-wide")
 		fmt.Fprintln(out, "  - report Copilot seat status")
 		fmt.Fprintf(out, "  - ensure staff team %q exists\n", staffTeam)
@@ -135,6 +136,14 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 	}
 	results = append(results, r)
 
+	// Members forking private repositories. Student repos are private, so a fork
+	// would put a copy outside the org where none of this hardening applies.
+	r, err = toggleOff(ctx, client, org, "members_can_fork_private_repositories", "private repository forking", cur.MembersCanForkPrivateRepos)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, r)
+
 	// GitHub Actions org-wide.
 	ap, err := client.GetActionsPermissions(ctx, org)
 	if err != nil {
@@ -199,6 +208,9 @@ func verifyHardening(ctx context.Context, client setupClient, org string) []resu
 	}
 	if cur.MembersCanCreatePages != nil && *cur.MembersCanCreatePages {
 		warnings = append(warnings, result{"member Pages creation", statusWarning, "still enabled after the change — set it manually"})
+	}
+	if cur.MembersCanForkPrivateRepos != nil && *cur.MembersCanForkPrivateRepos {
+		warnings = append(warnings, result{"private repository forking", statusWarning, "still enabled after the change — set it manually"})
 	}
 
 	ap, err := client.GetActionsPermissions(ctx, org)

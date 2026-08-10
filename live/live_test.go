@@ -427,6 +427,7 @@ func assertOrgHardened(t *testing.T, ctx context.Context, client gh.Client, org 
 	}
 	assertToggledOff(t, "member repository creation", s.MembersCanCreateRepositories)
 	assertToggledOff(t, "member Pages creation", s.MembersCanCreatePages)
+	assertToggledOff(t, "private repository forking", s.MembersCanForkPrivateRepos)
 	ap, err := client.GetActionsPermissions(ctx, org)
 	if err != nil {
 		t.Fatalf("reading Actions policy: %v", err)

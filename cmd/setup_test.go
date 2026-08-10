@@ -54,6 +54,9 @@ func (s *fakeSetupState) fake() *ghtest.Fake {
 			case "members_can_create_pages":
 				b := v.(bool)
 				s.settings.MembersCanCreatePages = &b
+			case "members_can_fork_private_repositories":
+				b := v.(bool)
+				s.settings.MembersCanForkPrivateRepos = &b
 			}
 		}
 		return nil
@@ -113,7 +116,7 @@ func TestSetupChangesAndReports(t *testing.T) {
 	yes := true
 	state := &fakeSetupState{
 		role:           "admin",
-		settings:       gh.OrgSettings{DefaultRepositoryPermission: "write", MembersCanCreateRepositories: &yes, MembersCanCreatePages: &yes},
+		settings:       gh.OrgSettings{DefaultRepositoryPermission: "write", MembersCanCreateRepositories: &yes, MembersCanCreatePages: &yes, MembersCanForkPrivateRepos: &yes},
 		actions:        "all",
 		copilotPresent: false,
 		teamExists:     false,
@@ -131,6 +134,9 @@ func TestSetupChangesAndReports(t *testing.T) {
 	}
 	if state.patched["members_can_create_repositories"] != false {
 		t.Error("member repo creation should be disabled")
+	}
+	if state.patched["members_can_fork_private_repositories"] != false {
+		t.Error("private repository forking should be disabled")
 	}
 	if state.actionsSet != "none" {
 		t.Error("Actions should be disabled org-wide")
@@ -150,7 +156,7 @@ func TestSetupAlreadyHardened(t *testing.T) {
 	no := false
 	state := &fakeSetupState{
 		role:       "admin",
-		settings:   gh.OrgSettings{DefaultRepositoryPermission: "none", MembersCanCreateRepositories: &no, MembersCanCreatePages: &no},
+		settings:   gh.OrgSettings{DefaultRepositoryPermission: "none", MembersCanCreateRepositories: &no, MembersCanCreatePages: &no, MembersCanForkPrivateRepos: &no},
 		actions:    "none",
 		teamExists: true,
 	}
@@ -178,7 +184,7 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 	yes := true
 	state := &fakeSetupState{
 		role:          "admin",
-		settings:      gh.OrgSettings{DefaultRepositoryPermission: "write", MembersCanCreateRepositories: &yes},
+		settings:      gh.OrgSettings{DefaultRepositoryPermission: "write", MembersCanCreateRepositories: &yes, MembersCanForkPrivateRepos: &yes},
 		actions:       "all",
 		ignorePatches: true,
 	}
@@ -192,6 +198,7 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 	for _, want := range []string{
 		`still "write" after the change`,
 		"member repository creation",
+		"private repository forking",
 		`still "all" after the change`,
 	} {
 		if !strings.Contains(out, want) {

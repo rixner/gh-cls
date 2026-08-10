@@ -165,9 +165,9 @@ gh cls collect hw1 --roster roster.csv --out ./hw1
 gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 ```
 
-- **setup** sets base permission to none, disables member repo/Pages creation
-  and Actions org-wide, reports Copilot status, and ensures the staff team
-  exists. All actions are idempotent and report changed vs already-in-desired-state. It also
+- **setup** sets base permission to none, disables member repo/Pages creation,
+  forking of private repositories, and Actions org-wide, reports Copilot status,
+  and ensures the staff team exists. All actions are idempotent and report changed vs already-in-desired-state. It also
   prints an optional-hardening checklist for member-privilege toggles that exist
   only in the web UI (installing apps, changing repository visibility, deleting or
   transferring repositories, creating teams) — these are the instructor's to

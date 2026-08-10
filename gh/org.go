@@ -13,6 +13,7 @@ type OrgSettings struct {
 	DefaultRepositoryPermission  string `json:"default_repository_permission"`
 	MembersCanCreateRepositories *bool  `json:"members_can_create_repositories"`
 	MembersCanCreatePages        *bool  `json:"members_can_create_pages"`
+	MembersCanForkPrivateRepos   *bool  `json:"members_can_fork_private_repositories"`
 }
 
 // ActionsPermissions is the org-wide GitHub Actions policy.
