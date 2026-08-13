@@ -17,7 +17,7 @@ type freezeClient interface {
 	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]gh.Collaborator, error)
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 	ListRepoInvitations(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
-	UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) error
+	UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) (bool, error)
 	GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
 	GetRepoPropertyValues(ctx context.Context, org, repo string) (map[string]string, error)
 	SetRepoPropertyValue(ctx context.Context, org, repo, name, value string) error
@@ -207,6 +207,42 @@ func (o *freezeOpts) processRepo(ctx context.Context, client freezeClient, org, 
 		}
 	}
 
+	// Invitations are handled before collaborators, and the order is load-bearing.
+	// A student who has not accepted holds no access, so they are in neither list
+	// until they accept, and accepting moves them from one to the other. Doing
+	// collaborators first leaves a window: a student absent from the collaborator
+	// listing who accepts before the invitation listing has their invitation
+	// consumed, so neither pass touches them and they keep write.
+	//
+	// Reversed, every interleaving is safe. Accept after the invitation is
+	// downgraded and they land on the permission the freeze intends. Accept before
+	// this pass, or between the listing and the update below, and they are a
+	// collaborator by the time the collaborator pass runs, which then governs them.
+	invitations, err := client.ListRepoInvitations(ctx, org, repo)
+	if err != nil {
+		res.err = fmt.Errorf("listing pending invitations of %s: %w", repo, err)
+		return res
+	}
+	for _, inv := range invitations {
+		target := o.inviteTarget(inv)
+		if target == "" {
+			continue
+		}
+		if o.dryRun {
+			res.invites++
+			continue
+		}
+		stillPending, err := client.UpdateRepoInvitation(ctx, org, repo, inv.ID, target)
+		if err != nil {
+			res.err = fmt.Errorf("setting %s's pending invitation on %s to %s: %w", inv.Invitee.Login, repo, target, err)
+			return res
+		}
+		if !stillPending {
+			continue // accepted or cancelled in flight; the collaborator pass covers them
+		}
+		res.invites++
+	}
+
 	collaborators, err := client.ListDirectCollaborators(ctx, org, repo)
 	if err != nil {
 		res.err = fmt.Errorf("listing collaborators of %s: %w", repo, err)
@@ -226,30 +262,6 @@ func (o *freezeOpts) processRepo(ctx context.Context, client freezeClient, org, 
 		}
 		if err := client.AddCollaborator(ctx, org, repo, c.Login, target); err != nil {
 			res.err = fmt.Errorf("setting %s on %s: %w", c.Login, repo, err)
-			return res
-		}
-	}
-
-	// A student who has not accepted yet holds no access, so they are not in the
-	// list above -- but their invitation still carries write, and accepting it
-	// after the deadline would grant push. Downgrade the invitation itself, or the
-	// freeze has a hole exactly where the least-engaged students are.
-	invitations, err := client.ListRepoInvitations(ctx, org, repo)
-	if err != nil {
-		res.err = fmt.Errorf("listing pending invitations of %s: %w", repo, err)
-		return res
-	}
-	for _, inv := range invitations {
-		target := o.inviteTarget(inv)
-		if target == "" {
-			continue
-		}
-		res.invites++
-		if o.dryRun {
-			continue
-		}
-		if err := client.UpdateRepoInvitation(ctx, org, repo, inv.ID, target); err != nil {
-			res.err = fmt.Errorf("setting %s's pending invitation on %s to %s: %w", inv.Invitee.Login, repo, target, err)
 			return res
 		}
 	}

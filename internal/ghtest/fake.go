@@ -59,7 +59,7 @@ type Fake struct {
 	ListDirectCollaboratorsFunc       func(ctx context.Context, owner, repo string) ([]gh.Collaborator, error)
 	ListRepoInvitationsFunc           func(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
 	DeleteRepoInvitationFunc          func(ctx context.Context, owner, repo string, id int64) error
-	UpdateRepoInvitationFunc          func(ctx context.Context, owner, repo string, id int64, permission string) error
+	UpdateRepoInvitationFunc          func(ctx context.Context, owner, repo string, id int64, permission string) (bool, error)
 	GetPropertyDefinitionFunc         func(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
 	SetPropertyDefinitionFunc         func(ctx context.Context, org string, def gh.PropertyDefinition) error
 	ListRepoPropertyValuesFunc        func(ctx context.Context, org string) (map[string]map[string]string, error)
@@ -381,7 +381,7 @@ func (f *Fake) DeleteRepoInvitation(ctx context.Context, owner, repo string, id 
 	return f.DeleteRepoInvitationFunc(ctx, owner, repo, id)
 }
 
-func (f *Fake) UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) error {
+func (f *Fake) UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) (bool, error) {
 	f.record("UpdateRepoInvitation")
 	if f.UpdateRepoInvitationFunc == nil {
 		missing("UpdateRepoInvitation")

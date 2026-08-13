@@ -255,7 +255,11 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   not accepted yet is not a collaborator, but their invitation still carries the
   write access it was issued with, so leaving it alone would let them accept after
   the deadline and push. Expired invitations are left as they are, since they can
-  no longer be accepted, and `audit --renew` is how you re-issue one. Each repo's
+  no longer be accepted, and `audit --renew` is how you re-issue one. Invitations
+  are downgraded *before* collaborators, which closes the race where a student
+  accepts mid-run: a student sits in the invitation list until they accept and in
+  the collaborator list afterwards, so doing collaborators first would leave a
+  window in which they appear in neither and keep write. Each repo's
   state is also recorded (see **The freeze record** below), so `freeze` requires
   `setup` to have run and refuses to start otherwise. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix

@@ -151,8 +151,12 @@ func TestUpdateRepoInvitation(t *testing.T) {
 	var waits int
 	c := newTestClient(f, &waits)
 
-	if err := c.UpdateRepoInvitation(context.Background(), "org", "hw1-ada", 555, InvitationRead); err != nil {
+	stillPending, err := c.UpdateRepoInvitation(context.Background(), "org", "hw1-ada", 555, InvitationRead)
+	if err != nil {
 		t.Fatal(err)
+	}
+	if !stillPending {
+		t.Error("a successful update means the invitation was still pending")
 	}
 	if f.methods[0] != "PATCH" || f.paths[0] != "repos/org/hw1-ada/invitations/555" {
 		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
@@ -162,6 +166,24 @@ func TestUpdateRepoInvitation(t *testing.T) {
 	// write while the call still returns 200.
 	if !strings.Contains(f.bodies[0], `"permissions":"read"`) {
 		t.Errorf("body = %q, want the permissions field set to read", f.bodies[0])
+	}
+}
+
+func TestUpdateRepoInvitationAlreadyAccepted(t *testing.T) {
+	// Accepting consumes the invitation, so a PATCH racing an acceptance 404s.
+	// That is not a failure: the invitee is a collaborator now, and freeze's
+	// collaborator pass governs them. Reporting it as an error would abort a
+	// freeze over a normal interleaving.
+	f := &fakeRequester{steps: []step{{err: httpErr(404, nil)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	stillPending, err := c.UpdateRepoInvitation(context.Background(), "org", "hw1-ada", 555, InvitationRead)
+	if err != nil {
+		t.Fatalf("a consumed invitation is not an error: %v", err)
+	}
+	if stillPending {
+		t.Error("a 404 means the invitation is no longer pending")
 	}
 }
 

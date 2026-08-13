@@ -125,10 +125,20 @@ func (c *restClient) DeleteRepoInvitation(ctx context.Context, owner, repo strin
 // UpdateRepoInvitation changes the access a pending invitation will confer once
 // accepted. permission uses the invitation vocabulary (the Invitation* constants
 // above), not the collaborator API's pull/push names.
-func (c *restClient) UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) error {
+//
+// The bool reports whether the invitation was still pending. A 404 means it was
+// accepted (or cancelled) between being listed and this call, which is a normal
+// race rather than a failure: the invitee is a collaborator now, so their access
+// is governed by the collaborator API instead.
+func (c *restClient) UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) (bool, error) {
 	path := fmt.Sprintf("repos/%s/%s/invitations/%d", url.PathEscape(owner), url.PathEscape(repo), id)
-	_, err := c.do(ctx, "PATCH", path, map[string]any{"permissions": permission}, nil)
-	return err
+	if _, err := c.do(ctx, "PATCH", path, map[string]any{"permissions": permission}, nil); err != nil {
+		if notFound(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // ListRepoInvitations returns a repository's pending collaborator invitations:

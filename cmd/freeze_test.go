@@ -49,6 +49,9 @@ type fakeFreezeState struct {
 	// dontRecord accepts the property write but leaves the value unchanged, the
 	// way a silently-ignored API call would.
 	dontRecord bool
+	// acceptOnUpdate maps an invitation id to the login that accepts it the moment
+	// freeze tries to update it, simulating the acceptance race.
+	acceptOnUpdate map[int64]string
 
 	// changes records access changes only ("repo:user=permission" for
 	// collaborators, "repo:user=invite:permission" for invitations). Freeze-record
@@ -109,9 +112,27 @@ func (s *fakeFreezeState) fake() *ghtest.Fake {
 		defer fk.Unlock()
 		return append([]gh.Invitation(nil), s.invites[repo]...), nil
 	}
-	fk.UpdateRepoInvitationFunc = func(_ context.Context, _, repo string, id int64, permission string) error {
+	fk.UpdateRepoInvitationFunc = func(_ context.Context, _, repo string, id int64, permission string) (bool, error) {
 		fk.Lock()
 		defer fk.Unlock()
+		if s.acceptOnUpdate != nil {
+			if login, ok := s.acceptOnUpdate[id]; ok {
+				// The invitee accepted between the listing and this call: the
+				// invitation is consumed and they become a collaborator holding
+				// whatever it conferred at that moment, not what we were about to
+				// set it to.
+				delete(s.acceptOnUpdate, id)
+				level := "pull"
+				for _, inv := range s.invites[repo] {
+					if inv.ID == id && inv.ConfersPush() {
+						level = "push"
+					}
+				}
+				s.dropInvite(repo, id)
+				s.collabs[repo] = append(s.collabs[repo], collab(login, level))
+				return false, nil
+			}
+		}
 		for i, inv := range s.invites[repo] {
 			if inv.ID != id {
 				continue
@@ -120,9 +141,9 @@ func (s *fakeFreezeState) fake() *ghtest.Fake {
 			if !s.dontApply {
 				s.invites[repo][i].Permissions = permission
 			}
-			return nil
+			return true, nil
 		}
-		return fmt.Errorf("no invitation %d on %s", id, repo)
+		return false, fmt.Errorf("no invitation %d on %s", id, repo)
 	}
 	fk.GetPropertyDefinitionFunc = func(_ context.Context, _, name string) (*gh.PropertyDefinition, bool, error) {
 		if s.noProperty {
@@ -436,6 +457,85 @@ func TestFreezeAbortsWithoutTheFreezeProperty(t *testing.T) {
 	}
 }
 
+func TestFreezeDowngradesInvitationsBeforeCollaborators(t *testing.T) {
+	// Ordering is the whole defence against the acceptance race. A student is in
+	// the invitation list until they accept and in the collaborator list after.
+	// Doing collaborators first leaves a window where a student is in neither, so
+	// the invitation pass must run first.
+	fake := freezeFake("admin")
+	fake.invites["hw1-ada"] = []gh.Invitation{invite(7, "bob", gh.InvitationWrite)}
+	var order []string
+	fk := fake.fake()
+	listInv := fk.ListRepoInvitationsFunc
+	fk.ListRepoInvitationsFunc = func(ctx context.Context, org, repo string) ([]gh.Invitation, error) {
+		fk.Lock()
+		order = append(order, "invitations:"+repo)
+		fk.Unlock()
+		return listInv(ctx, org, repo)
+	}
+	listCollab := fk.ListDirectCollaboratorsFunc
+	fk.ListDirectCollaboratorsFunc = func(ctx context.Context, org, repo string) ([]gh.Collaborator, error) {
+		fk.Lock()
+		order = append(order, "collaborators:"+repo)
+		fk.Unlock()
+		return listCollab(ctx, org, repo)
+	}
+	o := &freezeOpts{g: assignGlobals(), newClient: func(context.Context) (freezeClient, error) { return fk, nil }}
+	o.g.concurrency = 1
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) < 2 || order[0] != "invitations:hw1-ada" || order[1] != "collaborators:hw1-ada" {
+		t.Errorf("invitations must be read before collaborators, got %v", order)
+	}
+}
+
+func TestFreezeClosesTheAcceptanceRace(t *testing.T) {
+	// bob accepts his write invitation at the exact moment freeze tries to
+	// downgrade it: the invitation is consumed and he becomes a write
+	// collaborator. Because the collaborator pass runs afterwards, it catches him
+	// and the freeze still holds. With the passes the other way round he would
+	// have been in neither list and kept write.
+	fake := freezeFake("admin")
+	fake.invites["hw1-ada"] = []gh.Invitation{invite(7, "bob", gh.InvitationWrite)}
+	fake.acceptOnUpdate = map[int64]string{7: "bob"}
+	o := newFreezeOpts(t, fake, false, false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
+		t.Fatalf("the race must not fail the freeze: %v\n%s", err, buf.String())
+	}
+	if !contains(fake.changes, "hw1-ada:bob=pull") {
+		t.Errorf("a student who accepted mid-run must still be downgraded: %v", fake.changes)
+	}
+	// He was never counted as an invitation change, since that update found
+	// nothing to change.
+	if strings.Contains(buf.String(), "pending invitation(s)") {
+		t.Errorf("a consumed invitation should not be reported as downgraded:\n%s", buf.String())
+	}
+}
+
+func TestFreezeUndoClosesTheAcceptanceRace(t *testing.T) {
+	// The same race on the way back: bob accepts a read invitation as --undo runs.
+	// The collaborator pass afterwards must grant him push, or his extension gives
+	// him nothing.
+	fake := freezeFake("admin")
+	fake.invites["hw1-ada"] = []gh.Invitation{invite(7, "bob", gh.InvitationRead)}
+	fake.acceptOnUpdate = map[int64]string{7: "bob"}
+	// He lands as a read collaborator, which is what accepting a frozen invite gives.
+	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull"), collab("prof", "admin")}
+	o := newFreezeOpts(t, fake, true, false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
+		t.Fatalf("the race must not fail the undo: %v\n%s", err, buf.String())
+	}
+	if !contains(fake.changes, "hw1-ada:bob=push") {
+		t.Errorf("a student who accepted mid-undo must still get push: %v", fake.changes)
+	}
+}
+
 func TestFreezeVerifiesDowngradeTookEffect(t *testing.T) {
 	// The API accepts the downgrade but it does not actually take effect. The
 	// freeze must re-read, detect the still-open gate, and fail loudly rather than
@@ -610,4 +710,15 @@ func TestFreezeExcludesLongerOverlappingAssignmentRepos(t *testing.T) {
 			t.Errorf("freeze proj must not touch proj-final's repos: %v", fake.changes)
 		}
 	}
+}
+
+// dropInvite removes an invitation from a repo, as accepting it does.
+func (s *fakeFreezeState) dropInvite(repo string, id int64) {
+	var rest []gh.Invitation
+	for _, inv := range s.invites[repo] {
+		if inv.ID != id {
+			rest = append(rest, inv)
+		}
+	}
+	s.invites[repo] = rest
 }

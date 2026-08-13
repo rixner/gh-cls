@@ -101,8 +101,9 @@ type Client interface {
 	// DeleteRepoInvitation cancels a repository invitation by ID.
 	DeleteRepoInvitation(ctx context.Context, owner, repo string, id int64) error
 	// UpdateRepoInvitation changes the access a pending invitation confers on
-	// acceptance, using the invitation vocabulary (the Invitation* constants).
-	UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) error
+	// acceptance, using the invitation vocabulary (the Invitation* constants). The
+	// bool is false when the invitation was already accepted or cancelled.
+	UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) (bool, error)
 
 	// GetPropertyDefinition fetches an org custom property's schema; the bool
 	// reports existence.
