@@ -74,7 +74,7 @@ writes into any repository. Keep these files off version control.
 Reusable, no-PII course structure that **you author**; the tool only reads it,
 never writes it. Point every command at it with `-c/--config <file>` or by
 setting `$GH_CLS_CONFIG`; there is no search path or hidden config directory. The
-file must set `org` and `staff_team` (the team may have no members yet — `setup`
+file must set `org` and `staff_team` (the team may have no members yet; `setup`
 creates it and `assign` grants it access to every repo, so a TA added later
 inherits access to all existing assignments):
 
@@ -98,7 +98,33 @@ An assignment's `template` is the **template repository assign clones** to creat
 each student/team repo. A bare name (`hw1-template`) is taken to live in the
 configured `org`; qualify it with an owner (`other-org/base`) to clone a template
 from another org. Build one with `gh cls template` (below), or point at any
-existing GitHub *template repository* — `gh cls template` is not required.
+existing GitHub *template repository*. `gh cls template` is not required.
+
+`feedback` is optional. Omit the key (or leave it empty) and no feedback artifact
+is created. Use that if you return grades outside GitHub. Only `issue` and `pr`
+create one, so a value you are unsure about is better left off than guessed at:
+`assign` opens the issue or PR on every student repo the first time it runs.
+
+### Assignment names
+
+Every command scopes an assignment to the repositories named `<name>-*`, so **no
+assignment name may be another one followed by a `-`**. `hw1` and `hw1-makeup`
+are rejected at config load, because `hw1`'s prefix (`hw1-`) also matches every
+`hw1-makeup-*` repo, which would quietly mix the makeup repos into `hw1`'s
+freezes, audits and counts.
+
+This bites the common case of an exercise paired with a variant. Separate the
+variant with anything but a dash and both names work:
+
+```yaml
+assignments:
+  lab3:                           # in-class, group
+    type: group
+    template: lab3-template
+  lab3_makeup:                    # asynchronous individual makeup
+    type: individual
+    template: lab3-template
+```
 
 The **roster** is a local CSV mapping student identifier → GitHub username:
 
@@ -148,6 +174,7 @@ gh cls status hw1 --detail   # per-repo freeze/feedback scan, also writes a CSV
 
 # 4. Anytime: reconcile who should be on each repo against who actually is.
 gh cls audit hw1 --roster roster.csv
+gh cls audit project --roster roster.csv --teams teams.yml   # group: --teams too
 gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
 
 # 5. At the deadline: downgrade students from write to read (reverse with -u).
@@ -170,7 +197,7 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   and ensures the staff team exists. All actions are idempotent and report changed vs already-in-desired-state. It also
   prints an optional-hardening checklist for member-privilege toggles that exist
   only in the web UI (installing apps, changing repository visibility, deleting or
-  transferring repositories, creating teams) — these are the instructor's to
+  transferring repositories, creating teams). These are the instructor's to
   apply or leave open, at their discretion.
 - **staff** adds the GitHub usernames in a `--tas` CSV (the same
   `identifier,username` format as the roster) to the staff team. By default it
@@ -184,14 +211,14 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `--source` (via GitHub's template generation) and marks it a template
   repository so assign can clone it. It is optional: assign clones whatever
   template an assignment names, so any existing template repository works. The
-  source must already be a template repository — `--mark-source` opts into
+  source must already be a template repository. `--mark-source` opts into
   marking it rather than failing; `-F` overwrites an existing `<repo>`. A bare
   `<repo>` is created in the org; `--source` is always `owner/name`.
 - **assign** runs preflight checks (type/inputs; the assignment's template repo
   exists and is a template repository; all-branches single-commit; roster/teams
   consistency; every roster username is a real GitHub account), then generates
   each repo from that template concurrently. The
-  template must be a template repository — `--mark-template` opts into marking it.
+  template must be a template repository. `--mark-template` opts into marking it.
   Repos are private unless `-p/--public` is given, and only the template's default
   branch is generated unless `-a/--all-branches` copies them all. The template
   must be fully squashed (each branch a single commit); `-U/--allow-unsquashed`
@@ -204,16 +231,18 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   deletion, which only org admins bypass (staff get push but cannot force-push or
   delete protected branches); `-f pr|issue` adds a feedback artifact. Idempotent:
   existing repos are skipped but access grants are re-asserted.
-- **audit** reconciles the students who should be on the `<name>-*` repos
-  (resolved from the roster, plus the teams file for a group assignment) against
+- **audit** reconciles the students who should be on the `<name>-*` repos against
   the actual state, reporting each as *on repo*, *invited (pending)*, *invited
   (EXPIRED)*, *MISSING*, or *NO REPO*, and flagging access that is present but not
-  expected. Because students join as outside collaborators — a grant becomes an
-  invitation they must accept within seven days — `--renew` re-issues access for
+  expected. `--roster` is always required, and a **group assignment also needs
+  `--teams`**. Audit resolves the expected members of each team repo the same way
+  `assign` does, so it takes the same two files (an individual assignment rejects
+  `--teams`). Because students join as outside collaborators, a grant becomes an
+  invitation they must accept within seven days, so `--renew` re-issues access for
   everyone whose invitation expired or who is missing entirely (it never removes
   access). `--all` lists everyone, not just those needing attention. It also
   warns (never aborts) when the teams file leaves a student on no team or on more
-  than one — the same inconsistencies assign refuses to create repos for.
+  than one, the same inconsistencies assign refuses to create repos for.
 - **freeze** operates purely on each repo's current direct collaborators, never
   the roster, so a drifted roster cannot let anyone escape the freeze. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix
@@ -223,12 +252,12 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `--undo` grants push to every non-admin direct collaborator, including any
   who were deliberately read-only before the freeze.
 - **feedback** posts one feedback file per student (or team) as a comment on that
-  repo's feedback issue or PR — the artifact assign created, named by the
+  repo's feedback issue or PR: the artifact assign created, named by the
   assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or
   `<key>.txt`, where `<key>` is the GitHub username (individual) or team name
   (group), resolved from `--roster` (plus `--teams` for a group assignment);
   contents are rendered as Markdown. The directory must hold exactly one
-  file per student/team — a missing file or a file matching no one is named and
+  file per student/team. A missing file or a file matching no one is named and
   aborts, unless `--force` posts the matching subset and reports the rest.
   Idempotent: a re-run only posts feedback not already present (so a partial or
   `--force` run is finished by re-running), and editing a file posts a new comment
