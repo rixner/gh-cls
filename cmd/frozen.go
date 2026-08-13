@@ -119,8 +119,8 @@ func checkGrantRace(ctx context.Context, client propertyReader, org string, gran
 // grantRaceError renders the failure for repos a concurrent freeze reopened,
 // naming the command that puts them back.
 func grantRaceError(name string, reopened []string) error {
-	return fmt.Errorf("a freeze landed on %s while this run was granting access, so %s may now be writable past the deadline:\n  %s\nre-run `gh cls freeze %s` to re-assert the lock, and avoid running two gh-cls commands against one org at the same time",
-		strings.Join(reopened, ", "), plural(len(reopened), "repository"), strings.Join(reopened, "\n  "), name)
+	return fmt.Errorf("a freeze landed while this run was granting access, so the following may now be writable past the deadline:\n  %s\nre-run `gh cls freeze %s` to re-assert the lock, and do not run two gh-cls commands against one org at the same time",
+		strings.Join(reopened, "\n  "), name)
 }
 
 // readFrozenStates returns each repository's recorded freeze state, or an error

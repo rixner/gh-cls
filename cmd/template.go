@@ -47,7 +47,7 @@ owner/name to create it elsewhere.
 
 This is an optional helper: assign clones whatever template an assignment names,
 so any existing template repository works just as well. Generation runs purely
-against the GitHub API — no local clone, no git binary, no separate credentials.`,
+against the GitHub API: no local clone, no git binary, no separate credentials.`,
 		Example: "  gh cls template hw1-template --source cs101-staff/hw1-dev",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -79,7 +79,7 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, repoArg string) e
 	source := srcOwner + "/" + srcName
 
 	if o.dryRun {
-		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
+		fmt.Fprintf(out, "DRY RUN: no changes will be made\n\n")
 		fmt.Fprintf(out, "Would create %s from %s:\n", dst, source)
 		if o.force {
 			fmt.Fprintf(out, "  - overwrite %s if it already exists\n", dst)
@@ -162,12 +162,12 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, repoArg string) e
 	// or not actually a template), so roll it back rather than leave a broken one.
 	if err := o.finishTemplate(ctx, client, dstOwner, dstName); err != nil {
 		if delErr := client.DeleteRepo(ctx, dstOwner, dstName); delErr != nil {
-			return fmt.Errorf("%w; additionally, rolling back %s failed — delete it manually before retrying: %v", err, dst, delErr)
+			return fmt.Errorf("%w; additionally, rolling back %s failed; delete it manually before retrying: %v", err, dst, delErr)
 		}
 		return fmt.Errorf("%w (rolled back %s; re-run to try again)", err, dst)
 	}
 
-	fmt.Fprintf(out, "Created %s — single commit generated from %s, marked a template repository.\n", dst, source)
+	fmt.Fprintf(out, "Created %s: single commit generated from %s, marked a template repository.\n", dst, source)
 	return nil
 }
 

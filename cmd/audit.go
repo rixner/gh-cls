@@ -328,11 +328,11 @@ func reportAudit(out io.Writer, org, name string, showAll bool, results []repoAu
 		counts[statusOnRepo], frozen, counts[statusPending], counts[statusExpired], counts[statusMissing], counts[statusNoRepo], repos, students)
 
 	if action := counts[statusExpired] + counts[statusMissing]; action > 0 {
-		fmt.Fprintf(out, "Action needed: %d expired + %d missing — re-issue with `gh cls audit %s --roster <file> --renew`.\n",
+		fmt.Fprintf(out, "Action needed: %d expired + %d missing; re-issue with `gh cls audit %s --roster <file> --renew`.\n",
 			counts[statusExpired], counts[statusMissing], name)
 	}
 	if counts[statusNoRepo] > 0 {
-		fmt.Fprintf(out, "Note: %d student(s) have no repo yet — run `gh cls assign %s` to create them.\n", counts[statusNoRepo], name)
+		fmt.Fprintf(out, "Note: %d student(s) have no repo yet; run `gh cls assign %s` to create them.\n", counts[statusNoRepo], name)
 	}
 
 	reportExtras(out, results)
@@ -433,7 +433,7 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 		fmt.Fprintf(out, "note: %d of them are on frozen repos and are being restored to read, not write\n", restoringRead)
 	}
 	if noRepo > 0 {
-		fmt.Fprintf(out, "note: %d student(s) have no repo to renew on — run `gh cls assign %s` first\n", noRepo, name)
+		fmt.Fprintf(out, "note: %d student(s) have no repo to renew on; run `gh cls assign %s` first\n", noRepo, name)
 	}
 	if len(jobs) == 0 {
 		fmt.Fprintln(out, "nothing to re-issue")

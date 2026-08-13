@@ -62,7 +62,7 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 	staffTeam := o.g.staffTeam
 
 	if o.dryRun {
-		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
+		fmt.Fprintf(out, "DRY RUN: no changes will be made\n\n")
 		fmt.Fprintf(out, "Would harden %s:\n", org)
 		fmt.Fprintln(out, "  - set base repository permission to none")
 		fmt.Fprintln(out, "  - disable members creating repositories and Pages")
@@ -167,9 +167,9 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 		return nil, fmt.Errorf("reading Copilot status: %w", err)
 	}
 	if !present {
-		results = append(results, result{"Copilot", statusReported, "none present — nothing to disable"})
+		results = append(results, result{"Copilot", statusReported, "none present, nothing to disable"})
 	} else {
-		results = append(results, result{"Copilot", statusWarning, fmt.Sprintf("%d seat(s) present — cancel manually", count)})
+		results = append(results, result{"Copilot", statusWarning, fmt.Sprintf("%d seat(s) present; cancel manually", count)})
 	}
 
 	// Staff team. Required by the config, so it is always ensured.
@@ -261,16 +261,16 @@ func verifyHardening(ctx context.Context, client setupClient, org string) []resu
 	}
 	if cur.DefaultRepositoryPermission != "none" {
 		warnings = append(warnings, result{"base repository permission", statusWarning,
-			fmt.Sprintf("still %q after the change — your plan may not allow it; set it manually", cur.DefaultRepositoryPermission)})
+			fmt.Sprintf("still %q after the change; your plan may not allow it, so set it manually", cur.DefaultRepositoryPermission)})
 	}
 	if cur.MembersCanCreateRepositories != nil && *cur.MembersCanCreateRepositories {
-		warnings = append(warnings, result{"member repository creation", statusWarning, "still enabled after the change — set it manually"})
+		warnings = append(warnings, result{"member repository creation", statusWarning, "still enabled after the change; set it manually"})
 	}
 	if cur.MembersCanCreatePages != nil && *cur.MembersCanCreatePages {
-		warnings = append(warnings, result{"member Pages creation", statusWarning, "still enabled after the change — set it manually"})
+		warnings = append(warnings, result{"member Pages creation", statusWarning, "still enabled after the change; set it manually"})
 	}
 	if cur.MembersCanForkPrivateRepos != nil && *cur.MembersCanForkPrivateRepos {
-		warnings = append(warnings, result{"private repository forking", statusWarning, "still enabled after the change — set it manually"})
+		warnings = append(warnings, result{"private repository forking", statusWarning, "still enabled after the change; set it manually"})
 	}
 
 	ap, err := client.GetActionsPermissions(ctx, org)
@@ -279,7 +279,7 @@ func verifyHardening(ctx context.Context, client setupClient, org string) []resu
 	}
 	if ap.EnabledRepositories != "none" {
 		warnings = append(warnings, result{"GitHub Actions", statusWarning,
-			fmt.Sprintf("still %q after the change — set it manually", ap.EnabledRepositories)})
+			fmt.Sprintf("still %q after the change; set it manually", ap.EnabledRepositories)})
 	}
 
 	return warnings
@@ -290,7 +290,7 @@ func verifyHardening(ctx context.Context, client setupClient, org string) []resu
 func toggleOff(ctx context.Context, client setupClient, org, field, label string, current *bool) (result, error) {
 	switch {
 	case current == nil:
-		return result{label, statusWarning, "not exposed by this org — set manually"}, nil
+		return result{label, statusWarning, "not exposed by this org; set manually"}, nil
 	case !*current:
 		return result{label, statusAlready, "disabled"}, nil
 	default:

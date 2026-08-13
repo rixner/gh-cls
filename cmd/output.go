@@ -64,5 +64,5 @@ func printManualSteps(w io.Writer, steps []string) {
 // printOptionalHardening lists member-privilege restrictions the tool cannot set
 // (they exist only in the web UI) and that are the instructor's to apply or not.
 func printOptionalHardening(w io.Writer, steps []string) {
-	printSteps(w, "Optional hardening (instructor's discretion — Settings → Member privileges, web UI only):", steps)
+	printSteps(w, "Optional hardening (instructor's discretion; Settings → Member privileges, web UI only):", steps)
 }

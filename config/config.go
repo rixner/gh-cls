@@ -58,7 +58,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("missing required \"org\" key; the config must set at least:\n\n  org: your-semester-org\n  staff_team: your-staff-team-slug")
 	}
 	if c.StaffTeam == "" {
-		return fmt.Errorf("missing required \"staff_team\" key; name the staff team's slug:\n\n  staff_team: your-staff-team-slug\n\nThe team may have no members yet — setup creates it and assign grants it access to every repo, so a TA added later inherits access to all existing assignments.")
+		return fmt.Errorf("missing required \"staff_team\" key; name the staff team's slug:\n\n  staff_team: your-staff-team-slug\n\nThe team may have no members yet; setup creates it and assign grants it access to every repo, so a TA added later inherits access to all existing assignments.")
 	}
 	for name, a := range c.Assignments {
 		switch a.Type {

@@ -62,7 +62,7 @@ func newFeedbackCmd(g *globalOpts) *cobra.Command {
 		Use:   "feedback <name>",
 		Short: "Post graded feedback files as comments on each repo's feedback issue or PR",
 		Long: `Post one feedback file per student (or group) as a comment on that repo's
-feedback issue or pull request — the artifact assign created, named by the
+feedback issue or pull request: the artifact assign created, named by the
 assignment's feedback policy. Each file in --dir is named <key>.md or <key>.txt,
 where <key> is the GitHub username (individual) or group name (group), matching
 the <name>-<key> repository.
@@ -302,7 +302,7 @@ func feedbackMarker(body string) string {
 
 // reportFeedbackDryRun lists what a real run would post, making no API calls.
 func reportFeedbackDryRun(out io.Writer, org, name, mode string, matched []matchedUnit) error {
-	fmt.Fprintf(out, "\nDRY RUN — no comments will be posted\n")
+	fmt.Fprintf(out, "\nDRY RUN: no comments will be posted\n")
 	fmt.Fprintf(out, "Would comment on the feedback %s of %d repo(s) in %s:\n", artifactNoun(mode), len(matched), org)
 	for _, m := range matched {
 		fmt.Fprintf(out, "  %s-%s  <-  %s\n", name, m.unit.Key, m.file.name)

@@ -190,7 +190,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	reportReconcile(out, items, missing)
 
 	if o.dryRun {
-		fmt.Fprintf(out, "\nDRY RUN — nothing cloned\n")
+		fmt.Fprintf(out, "\nDRY RUN: nothing cloned\n")
 		for _, it := range items {
 			fmt.Fprintf(out, "  would collect %s -> %s/%s\n", it.repo, o.out, it.key)
 		}

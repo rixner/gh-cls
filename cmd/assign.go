@@ -171,7 +171,7 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		if policy.Public {
 			visibility = "public"
 		}
-		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
+		fmt.Fprintf(out, "DRY RUN: no changes will be made\n\n")
 		fmt.Fprintf(out, "Would create %d %s repo(s) in %s from %s:\n", len(units), visibility, org, tmpl)
 		if extras := planExtras(policy); extras != "" {
 			fmt.Fprintf(out, "  with %s\n", extras)
@@ -431,7 +431,7 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 		// may already hold student work — so it is only reported.
 		if res.status == "created" {
 			if delErr := client.DeleteRepo(ctx, org, repo); delErr != nil {
-				res.err = fmt.Errorf("%w; additionally, rolling back the leaked repo failed — delete %s/%s manually: %v", err, org, repo, delErr)
+				res.err = fmt.Errorf("%w; additionally, rolling back the leaked repo failed; delete %s/%s manually: %v", err, org, repo, delErr)
 				return res
 			}
 			res.err = fmt.Errorf("%w (rolled back the just-created repo)", err)
@@ -637,7 +637,7 @@ func reportResults(out io.Writer, results []unitResult) error {
 	if pending > 0 {
 		// Outside collaborators must accept the invitation before they have access;
 		// until then the repo is provisioned but the student cannot push.
-		fmt.Fprintf(out, "note: %d student invitation(s) are still pending — those students must accept the GitHub invitation before they can push\n", pending)
+		fmt.Fprintf(out, "note: %d student invitation(s) are still pending; those students must accept the GitHub invitation before they can push\n", pending)
 	}
 	if frozen > 0 {
 		// The opposite of the old hazard: these repos keep their deadline lock

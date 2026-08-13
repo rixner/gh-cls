@@ -38,7 +38,7 @@ func newStaffCmd(g *globalOpts) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "staff",
 		Short: "Add the staff team's members from a TA list",
-		Long: `Add the GitHub usernames in a TA file (an identifier,username CSV — the same
+		Long: `Add the GitHub usernames in a TA file (an identifier,username CSV, the same
 format as the roster) to the staff team. By default it only adds: members not in
 the file are left alone and reported, so an incomplete file can never silently
 remove a TA. Pass --prune to also remove members not in the file; the removals are
@@ -116,11 +116,11 @@ func (o *staffOpts) run(ctx context.Context, out io.Writer) error {
 	sort.Strings(extra)
 
 	if o.dryRun {
-		fmt.Fprintf(out, "DRY RUN — no changes will be made\n\n")
+		fmt.Fprintf(out, "DRY RUN: no changes will be made\n\n")
 	}
 	fmt.Fprintf(out, "Staff team %q in %s ← %s (%d listed):\n", staffTeam, org, o.tas, len(desired))
 	if len(toAdd) == 0 && len(extra) == 0 {
-		fmt.Fprintln(out, "  already in sync — nothing to change")
+		fmt.Fprintln(out, "  already in sync, nothing to change")
 		return nil
 	}
 
@@ -134,7 +134,7 @@ func (o *staffOpts) run(ctx context.Context, out io.Writer) error {
 			return fmt.Errorf("adding %s to %q: %w", u, staffTeam, err)
 		}
 		if state == "pending" {
-			fmt.Fprintf(out, "  + %s  (invited — joins once they accept org membership)\n", u)
+			fmt.Fprintf(out, "  + %s  (invited; joins once they accept org membership)\n", u)
 		} else {
 			fmt.Fprintf(out, "  + %s\n", u)
 		}
@@ -169,7 +169,7 @@ func (o *staffOpts) run(ctx context.Context, out io.Writer) error {
 			// An incomplete file must never silently delete a TA, so unlisted
 			// members are warned about, not removed, with the names so the user can
 			// decide whether to prune.
-			fmt.Fprintf(out, "\nwarning: %d member(s) of %q are not in %s — re-run with --prune to remove them:\n  %s\n",
+			fmt.Fprintf(out, "\nwarning: %d member(s) of %q are not in %s; re-run with --prune to remove them:\n  %s\n",
 				len(extra), staffTeam, o.tas, strings.Join(extra, ", "))
 		}
 	}
