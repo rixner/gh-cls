@@ -92,6 +92,57 @@ A student with no SHA in the file is skipped and reported, so you grade exactly
 the pinned set. This pairs naturally with `gh cls freeze`: once a repo is frozen
 at the deadline its tip is read-only, so the deadline commit stays available.
 
+## A consistent deadline or precise student feedback: pick one
+
+Two things you would like at a deadline are in tension, and no combination of
+these commands gives you both. Decide which you want before the deadline, not
+after a student appeals.
+
+**1. Freeze, then collect: precise feedback, smeared deadline.** Once `freeze`
+has locked a repo, a push to it is rejected, so the student finds out at once
+whether their push counted. Nothing they push is silently discarded. `freeze`
+locks repos concurrently, so a student whose repo is locked last had seconds or
+minutes longer than one locked first; the window is bounded by the freeze's own
+duration, and once the freeze finishes the tips cannot move again.
+
+**2. `--commits` from push events: consistent deadline, silent cutoff.** Take
+each repo's SHA from the push events at the deadline instant and every student is
+cut at exactly the same moment, with no window at all. Nothing tells the student:
+a late push succeeds, they watch it land, and they learn only when grades come
+back that it was not the commit you graded.
+
+**3. Unpinned collect, no freeze: neither.** Each repo's target is its
+default-branch tip as of the moment collect reaches that repo, and collect works
+through repos concurrently (`-j`), so the cut is smeared across the run. The
+student gets no signal either: their push succeeds whether or not it was
+collected, and whether it counted comes down to the order collect walked the
+class. That is the smear of (1) with the silence of (2).
+
+Option (2) needs an input gh-cls does not provide. The tool has no way to gather
+push events, so those SHAs have to come from something you run yourself, and a
+webhook you control is the dependable way to capture them.
+
+Do not build that record on the [events
+API](https://docs.github.com/en/rest/activity/events) (`/repos/{owner}/{repo}/events`).
+GitHub documents it as unsuitable for this: it retains only 30 days, returns at
+most 300 events, and states that it "is not built to serve real-time use cases"
+with latency "anywhere from 30s to 6h". A deadline record polled from it can be
+hours stale and silently truncated.
+
+[List repository
+activities](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
+(`/repos/{owner}/{repo}/activity`) is much better shaped for the job, returning
+each ref change with its before and after SHAs, actor, timestamp and type
+(`push`, `force_push`, and so on), filterable by ref. What GitHub does not
+document for it is retention, completeness, or latency, so it is not something to
+rest a deadline on without checking it against your own records first.
+
+Collect only reads from GitHub (it lists repos, then clones and fetches), so
+unlike `assign`, `freeze` and `audit --renew` it never competes with another
+`gh cls` command for the same state. Running it while a freeze is in progress
+cannot corrupt the freeze; it just collects a moving target. See the concurrency
+warning in [README.md](README.md) for the commands that do conflict.
+
 ## Force-pushes are safe, and you are warned
 
 A student may rewrite history with a force-push (unless you used branch
