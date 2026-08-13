@@ -231,6 +231,56 @@ func TestLive(t *testing.T) {
 		t.Errorf("collect should tag the commit gh-cls/collect/livetest (err=%v, out=%q)", err, tagOut)
 	}
 
+	// 3e. activity + the pin it feeds to collect --commits. GitHub documents no
+	// ingestion latency for the activity record, so the repo created moments ago
+	// may not be in it yet. Rather than assume either way, wait a bounded time and
+	// assert whichever outcome is correct: caught up, -p pins the current tip and
+	// collect takes exactly that commit; still behind, -p must refuse and say so.
+	mustRunCLI(t, ctx, "activity", name)
+	mustRunCLI(t, ctx, "activity", name, "-a")
+	mustRunCLI(t, ctx, "activity", name, "-f", "-d")
+
+	info, _, err := client.GetRepo(ctx, org, repo)
+	if err != nil {
+		t.Fatalf("reading %s/%s: %v", org, repo, err)
+	}
+	tip, err := client.GetRef(ctx, org, repo, "heads/"+info.DefaultBranch)
+	if err != nil {
+		t.Fatalf("reading %s tip of %s: %v", info.DefaultBranch, repo, err)
+	}
+	pinPath := filepath.Join(dir, "pin.yml")
+	if waitForActivity(t, ctx, client, org, repo, info.DefaultBranch, tip, 90*time.Second) {
+		out = mustRunCLI(t, ctx, "activity", name, "-p", "-o", pinPath)
+		if !strings.Contains(out, student1+": "+tip) {
+			t.Errorf("activity -p should pin %s at its current tip %s, got:\n%s", student1, tip, out)
+		}
+		body, rerr := os.ReadFile(pinPath)
+		if rerr != nil {
+			t.Fatalf("reading the pin file: %v", rerr)
+		}
+		if !strings.Contains(string(body), student1+": "+tip) {
+			t.Errorf("pin file should map %s to %s:\n%s", student1, tip, body)
+		}
+		// The pin is only worth anything if collect can act on it.
+		pinnedDir := filepath.Join(dir, "pinned")
+		mustRunCLI(t, ctx, "collect", name, "--roster", rosterInd, "--out", pinnedDir,
+			"--commits", pinPath, "--label", "pinned")
+		headOut, herr := exec.CommandContext(ctx, "git", "-C", filepath.Join(pinnedDir, student1), "rev-parse", "HEAD").Output()
+		if herr != nil {
+			t.Errorf("reading HEAD of the pinned clone: %v", herr)
+		} else if got := strings.TrimSpace(string(headOut)); got != tip {
+			t.Errorf("the pinned clone is at %s, want the pinned commit %s", got, tip)
+		}
+	} else {
+		// The freshness guard is the point: a record that has not caught up must
+		// produce a refusal, never a pin taken from a stale picture.
+		if _, perr := runCLI(ctx, "activity", name, "-p", "-o", pinPath); perr == nil {
+			t.Error("with the activity record behind the current tip, -p must refuse to write a pin file")
+		} else if !strings.Contains(perr.Error(), "behind") {
+			t.Errorf("-p should refuse because the record is behind, got: %v", perr)
+		}
+	}
+
 	// 4 & 5. freeze + undo. The write->read downgrade is only observable when the
 	// student is a real direct collaborator (an accepted org member) who does not
 	// also hold standing admin: an org owner keeps push on every repo regardless
@@ -624,6 +674,33 @@ func assertPushGranted(t *testing.T, ctx context.Context, client gh.Client, org,
 		t.Errorf("%s should have push on %s/%s", login, org, repo)
 	}
 	return true
+}
+
+// waitForActivity polls GitHub's ref-change record until it contains tip, giving
+// up after limit. It reports whether tip appeared, and logs how long that took:
+// GitHub documents no ingestion latency for this endpoint, so this elapsed time
+// is the only measurement of it the suite produces. Worth reading in the log
+// even when the test passes.
+func waitForActivity(t *testing.T, ctx context.Context, client gh.Client, org, repo, branch, tip string, limit time.Duration) bool {
+	t.Helper()
+	start := time.Now()
+	for {
+		acts, err := client.ListRepoActivity(ctx, org, repo, "refs/heads/"+branch)
+		if err != nil {
+			t.Fatalf("reading activity of %s/%s: %v", org, repo, err)
+		}
+		for _, a := range acts {
+			if a.After == tip {
+				t.Logf("activity record caught up with %s after %s", tip[:7], time.Since(start).Round(time.Second))
+				return true
+			}
+		}
+		if time.Since(start) > limit {
+			t.Logf("activity record still lacks %s after %s; asserting -p refuses instead", tip[:7], limit)
+			return false
+		}
+		time.Sleep(5 * time.Second)
+	}
 }
 
 // assertFrozenRecord requires the repository's recorded freeze state to be want.

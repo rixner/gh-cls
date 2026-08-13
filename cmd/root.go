@@ -128,6 +128,7 @@ The org and staff team come from a user-authored config file, located with
 		newFeedbackCmd(g),
 		newStatusCmd(g),
 		newCollectCmd(g),
+		newActivityCmd(g),
 	)
 	return root
 }

@@ -118,6 +118,12 @@ type Client interface {
 	// SetRepoPropertyValue sets a single custom property on a repo, leaving the
 	// repo's other property values untouched.
 	SetRepoPropertyValue(ctx context.Context, org, repo, name, value string) error
+
+	// ListRepoActivity returns a repo's recorded ref changes, newest first,
+	// optionally restricted to one ref.
+	ListRepoActivity(ctx context.Context, owner, repo, ref string) ([]Activity, error)
+	// CommitExists reports whether a commit is still retrievable.
+	CommitExists(ctx context.Context, owner, repo, sha string) (bool, error)
 }
 
 // Repo is the subset of a repository's fields the tool inspects.

@@ -73,9 +73,16 @@ tags each repo's collected commit `gh-cls/collect/midterm`.
 
 ## Grading exactly the deadline commit
 
-If you record each repo's commit at the deadline, give collect a YAML file of
-`key: sha` and it checks out exactly those commits, regardless of anything pushed
-afterward:
+Give collect a YAML file of `key: sha` and it checks out exactly those commits,
+regardless of anything pushed afterward. `gh cls activity -p` writes that file
+from GitHub's own record of when each push landed:
+
+```sh
+gh cls activity hw1 -p -u 2026-03-01T23:59:59-06:00 -o deadline.yml
+```
+
+The file is just a mapping, so you can also write it by hand or edit one to give
+a student a later commit:
 
 ```yaml
 # deadline.yml
@@ -118,24 +125,32 @@ student gets no signal either: their push succeeds whether or not it was
 collected, and whether it counted comes down to the order collect walked the
 class. That is the smear of (1) with the silence of (2).
 
-Option (2) needs an input gh-cls does not provide. The tool has no way to gather
-push events, so those SHAs have to come from something you run yourself, and a
-webhook you control is the dependable way to capture them.
+`gh cls activity -p` produces option (2)'s input for you:
 
-Do not build that record on the [events
-API](https://docs.github.com/en/rest/activity/events) (`/repos/{owner}/{repo}/events`).
-GitHub documents it as unsuitable for this: it retains only 30 days, returns at
-most 300 events, and states that it "is not built to serve real-time use cases"
-with latency "anywhere from 30s to 6h". A deadline record polled from it can be
-hours stale and silently truncated.
+```sh
+gh cls activity hw1 -p -u 2026-03-01T23:59:59-06:00 -o deadline.yml
+gh cls collect hw1 --roster roster.csv --out ./hw1-final --commits deadline.yml --label final
+```
 
-[List repository
-activities](https://docs.github.com/en/rest/repos/repos#list-repository-activities)
-(`/repos/{owner}/{repo}/activity`) is much better shaped for the job, returning
-each ref change with its before and after SHAs, actor, timestamp and type
-(`push`, `force_push`, and so on), filterable by ref. What GitHub does not
-document for it is retention, completeness, or latency, so it is not something to
-rest a deadline on without checking it against your own records first.
+It reads GitHub's own record of ref changes, takes each repo's commit as of
+`--until`, and writes the pin file. The timestamps are GitHub's server-side
+record of when each push landed, so they are neither commit dates (which the
+pusher controls and can backdate) nor webhook receipt times (which trail the
+push, and by far more when GitHub retries a failed delivery).
+
+That record is [`/repos/{owner}/{repo}/activity`](https://docs.github.com/en/rest/repos/repos#list-repository-activities),
+for which GitHub documents no retention, completeness or latency guarantee. So
+`-p` verifies rather than assumes. It refuses to write a pin file if GitHub's
+record has not yet caught up with a branch's current tip, which is how a lagging
+record is caught instead of silently yielding an earlier commit, and it refuses
+to pin any commit that is no longer retrievable. Both fail the run rather than
+handing back an artifact that would break on collection day.
+
+Do not build such a record on the [events
+API](https://docs.github.com/en/rest/activity/events) (`/repos/{owner}/{repo}/events`)
+instead. GitHub documents that one as unsuitable: it retains only 30 days,
+returns at most 300 events, and states that it "is not built to serve real-time
+use cases" with latency "anywhere from 30s to 6h".
 
 Collect only reads from GitHub (it lists repos, then clones and fetches), so
 unlike `assign`, `freeze` and `audit --renew` it never competes with another

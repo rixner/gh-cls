@@ -65,6 +65,8 @@ type Fake struct {
 	ListRepoPropertyValuesFunc        func(ctx context.Context, org string) (map[string]map[string]string, error)
 	GetRepoPropertyValuesFunc         func(ctx context.Context, org, repo string) (map[string]string, error)
 	SetRepoPropertyValueFunc          func(ctx context.Context, org, repo, name, value string) error
+	ListRepoActivityFunc              func(ctx context.Context, owner, repo, ref string) ([]gh.Activity, error)
+	CommitExistsFunc                  func(ctx context.Context, owner, repo, sha string) (bool, error)
 }
 
 var _ gh.Client = (*Fake)(nil)
@@ -427,4 +429,20 @@ func (f *Fake) SetRepoPropertyValue(ctx context.Context, org, repo, name, value 
 		missing("SetRepoPropertyValue")
 	}
 	return f.SetRepoPropertyValueFunc(ctx, org, repo, name, value)
+}
+
+func (f *Fake) ListRepoActivity(ctx context.Context, owner, repo, ref string) ([]gh.Activity, error) {
+	f.record("ListRepoActivity")
+	if f.ListRepoActivityFunc == nil {
+		missing("ListRepoActivity")
+	}
+	return f.ListRepoActivityFunc(ctx, owner, repo, ref)
+}
+
+func (f *Fake) CommitExists(ctx context.Context, owner, repo, sha string) (bool, error) {
+	f.record("CommitExists")
+	if f.CommitExistsFunc == nil {
+		missing("CommitExists")
+	}
+	return f.CommitExistsFunc(ctx, owner, repo, sha)
 }

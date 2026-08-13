@@ -73,6 +73,14 @@ GH_CLS_STUDENT2=<optional-second-login> \
   go test -tags live -run TestLive -timeout 20m -v ./live/
 ```
 
+The `activity` step is the one that can legitimately take time: GitHub documents
+no ingestion latency for its ref-change record, so the test waits up to 90s for
+the repo it just created to appear. Whichever way that goes it asserts something,
+pinning the current tip and collecting it if the record caught up, or requiring
+`-p` to refuse if it did not. Either way the log line reporting how long it took
+is the only measurement of that latency the suite produces, so it is worth
+reading even on a pass.
+
 It runs the full arc in-process against the real API — seed a source template →
 `setup` → `template` → `assign` (individual) → `freeze` → `--undo` → a group
 `assign` — asserting each step via the API and re-running each command to check
@@ -198,6 +206,27 @@ Run each step **with `--dry-run` first**, then for real.
    re-issue, since a student on a frozen repo is a settled state. Re-freeze, then
    remove `<STU>`'s access by hand in the web UI and re-run: the renew should
    restore **read**, not write, because the repo is recorded frozen.
+
+7c. **`gh cls activity hw1`**: a per-repo summary of what `<STU>` pushed. Repos
+   with no activity are counted, not listed, so a quiet class shows one line
+   rather than a wall of zeroes. Then `gh cls activity hw1 -a` for a per-actor
+   breakdown, and `-f -d` for force pushes and branch deletions (both should be
+   zero unless you made some; force-push to test, since a free org cannot block
+   them on private repos).
+
+7d. **`gh cls activity hw1 -p -u <a time after your last push> -o pin.yml`**:
+   writes `key: sha` for each repo and prints the same mapping. Check the SHA
+   matches `git rev-parse` on the student's branch. Then feed it forward:
+   `gh cls collect hw1 -r roster.csv --out ./hw1-pinned --commits pin.yml`, and
+   confirm the clone is at exactly that commit. Re-running `-p` with an `--until`
+   *before* any push should report the repo as having no activity in the window
+   rather than pinning something arbitrary.
+
+   `-p` refuses to write if GitHub's record has not caught up with the branch's
+   current tip. That is worth provoking once: push, then immediately run `-p`. If
+   it errors saying the record is behind, retry a few seconds later; the delay
+   before it succeeds is this endpoint's ingestion latency, which GitHub does not
+   document.
 
 8. **Group assignment (optional)** — build a group template
    (`gh cls template proj-template -s $ORG/hw1-src`), add a `group` assignment with

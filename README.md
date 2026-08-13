@@ -172,6 +172,11 @@ gh cls status
 gh cls status hw1
 gh cls status hw1 --detail   # per-repo freeze/feedback scan, also writes a CSV
 
+# Anytime: GitHub's record of who moved which branch when.
+gh cls activity hw1                       # per-repo summary
+gh cls activity hw1 -a                    # every change, by who made it
+gh cls activity hw1 -f -d                 # force pushes and branch deletions
+
 # 4. Anytime: reconcile who should be on each repo against who actually is.
 gh cls audit hw1 --roster roster.csv
 gh cls audit project --roster roster.csv --groups groups.yml   # group: --groups too
@@ -186,6 +191,11 @@ gh cls freeze hw1 alice          # re-freeze it when the extension expires
 # 6. Collect submissions locally to grade by hand (one shallow clone per student,
 #    tagged each collect; see COLLECT.md for the model and the git you need).
 gh cls collect hw1 --roster roster.csv --out ./hw1
+
+# 6b. Or pin the deadline commit for every repo first, then collect exactly
+#     those, so every student is cut at the same instant (see COLLECT.md).
+gh cls activity hw1 -p -u 2026-03-01T23:59:59-06:00 -o deadline.yml
+gh cls collect hw1 --roster roster.csv --out ./hw1-final --commits deadline.yml
 
 # 7. After grading: post one feedback file per student/group as a comment on the
 #    repo's feedback issue or PR. Files are named <username>.md / <group>.md.
@@ -236,6 +246,23 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   deletion, which only org admins bypass (staff get push but cannot force-push or
   delete protected branches); `-f pr|issue` adds a feedback artifact. Idempotent:
   existing repos are skipped but access grants are re-asserted.
+- **activity** reports GitHub's own record of who moved which branch when. With
+  no mode flag it prints a per-repo summary; `-a` summarizes every recorded
+  change by who made it, answering "who has been pushing to this repo", and with
+  `-o` writes every individual change as CSV; `-f` lists force pushes and `-d`
+  lists branch deletions. Those two matter most on a **free organization**, where
+  the `--branch-protection` ruleset cannot apply to private repositories and so
+  cannot block either: this is how you see what you are unable to prevent. A
+  deletion's `before` commit is the tip that was removed, which is often still
+  fetchable, so the report doubles as a route back to deleted work. `-p` writes a
+  pin file of each repo's commit as of `--until`, ready for
+  `collect --commits`, which is how you get a deadline that is identical for
+  every student (see **The freeze record** and COLLECT.md). Before writing one it
+  checks that GitHub's record has caught up with each branch's current tip and
+  that every pinned commit is still retrievable, so it never hands back a pin
+  file that cannot be collected. `-s`/`-u` bound the window (`-u` defaults to
+  now), `-b` picks a branch, and `-o` writes the artifact to a file. Reads only,
+  so it needs no org-owner role.
 - **audit** reconciles the students who should be on the `<name>-*` repos against
   the actual state, reporting each as *on repo*, *invited (pending)*, *invited
   (EXPIRED)*, *MISSING*, or *NO REPO*, and flagging access that is present but not
@@ -287,7 +314,8 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   one shallow clone per repo under `--out`, taking each to its target commit and
   tagging it (`gh-cls/collect/<label>`) so every collection is preserved. The
   default target is the default-branch tip; `--commits <yml>` pins exact SHAs
-  (for grading the deadline state). Each collection's tag is named by `--label`
+  (for grading the deadline state), and `gh cls activity -p` is what produces
+  that file. Each collection's tag is named by `--label`
   (default: a timestamp). Re-running a label tops up only repos not yet collected
   under it; a new label advances the clones and tags the new state, leaving prior
   tags in place. It is roster-aware (`--roster` for individual,
@@ -380,7 +408,8 @@ Either way you get a non-zero exit and a named repair, never a clean-looking run
 A `freeze` is also not instantaneous: it works through repositories concurrently,
 so on a large class there are seconds to minutes between the first repository
 being locked and the last. Treat the deadline as "when freeze finishes", and
-prefer `collect --commits` to pin exact SHAs if you need a precise cut-off.
+prefer `gh cls activity -p` to pin exact SHAs, then `collect --commits`, if you
+need a precise cut-off.
 
 ### What students do concurrently is safe
 
@@ -395,8 +424,9 @@ Student activity is not a hazard for these commands, with one exception:
   two.
 - **`collect`** is the one command a push can race, by design: the default target
   is the default-branch tip, so a push during collection is simply collected.
-  Pin exact commits with `--commits` when that matters, and note that `collect`
-  reports a forced (history-rewriting) update rather than silently accepting it.
+  Pin exact commits with `gh cls activity -p` and `collect --commits` when that
+  matters, and note that `collect` reports a forced (history-rewriting) update
+  rather than silently accepting it.
 
 ## Before a real run
 
