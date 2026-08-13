@@ -48,9 +48,9 @@ Pending invitations are downgraded too. A student who has not yet accepted is
 not a collaborator, but their invitation carries the write access it was issued
 with; leaving it alone would let them accept after the deadline and push.
 --undo restores those to write. Expired invitations are left alone, since they
-can no longer be accepted (use `+"`gh cls audit --renew`"+` to re-issue one).
+can no longer be accepted (use ` + "`gh cls audit --renew`" + ` to re-issue one).
 
-Naming one or more student/team keys restricts the operation to just those
+Naming one or more student/group keys restricts the operation to just those
 repos (<name>-<key>), for granting or ending an individual extension: freeze
 the whole assignment at the deadline, then --undo one student's repo for an
 extension and re-freeze it when the extension expires. Keys match repo names

@@ -84,12 +84,12 @@ func TestLocalFlagMatrix(t *testing.T) {
 		"setup":    {"n": "dry-run"},
 		"staff":    {"t": "tas", "n": "dry-run"},
 		"template": {"s": "source", "F": "force", "n": "dry-run"},
-		"assign":   {"r": "roster", "T": "teams", "p": "public", "b": "branch-protection", "a": "all-branches", "f": "feedback", "U": "allow-unsquashed", "n": "dry-run"},
+		"assign":   {"r": "roster", "G": "groups", "p": "public", "b": "branch-protection", "a": "all-branches", "f": "feedback", "U": "allow-unsquashed", "n": "dry-run"},
 		"freeze":   {"u": "undo", "n": "dry-run"},
-		"audit":    {"r": "roster", "T": "teams", "n": "dry-run"},
-		"feedback": {"d": "dir", "r": "roster", "T": "teams", "F": "force", "n": "dry-run"},
+		"audit":    {"r": "roster", "G": "groups", "n": "dry-run"},
+		"feedback": {"d": "dir", "r": "roster", "G": "groups", "F": "force", "n": "dry-run"},
 		"status":   {"o": "out"},
-		"collect":  {"o": "out", "r": "roster", "T": "teams", "n": "dry-run"},
+		"collect":  {"o": "out", "r": "roster", "G": "groups", "n": "dry-run"},
 	}
 	for name, want := range cases {
 		cmd := subcommand(t, name)

@@ -16,8 +16,8 @@ import (
 	gh2 "github.com/cli/go-gh/v2"
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
+	"github.com/rixner/gh-cls/groups"
 	"github.com/rixner/gh-cls/roster"
-	"github.com/rixner/gh-cls/teams"
 	"github.com/spf13/cobra"
 	"gopkg.in/yaml.v3"
 )
@@ -51,7 +51,7 @@ type gitRunner interface {
 type collectOpts struct {
 	g         *globalOpts
 	roster    string
-	teams     string
+	groups    string
 	commits   string
 	out       string
 	label     string
@@ -71,7 +71,7 @@ func newCollectCmd(g *globalOpts) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collect <name>",
 		Short: "Clone each student's repository locally for grading",
-		Long: `Maintain one shallow clone per student (or team) under --out, taking each repo
+		Long: `Maintain one shallow clone per student (or group) under --out, taking each repo
 to a target commit and tagging it so every collection is preserved. The default
 target is the repo's default-branch tip; --commits pins exact SHAs. Re-running
 the same --label tops up only repos not yet collected under it; a new label
@@ -79,14 +79,14 @@ updates the clones to the new target and tags the new state, leaving prior tags
 in place so no collected state is ever lost.
 
 Roster-aware: it collects every <name>-* repo and reports any that are missing
-(a student with no repo) or unexpected (a repo matching no roster/teams entry).
+(a student with no repo) or unexpected (a repo matching no roster/groups entry).
 A clone with local changes is left untouched, so grading-script edits survive.
 
 This is the one command that uses git: clones go through gh, updates through git.
 See COLLECT.md for the model and the git you need.`,
 		Example: `  gh cls collect hw1 --roster roster.csv --out ./hw1
   gh cls collect hw1 --roster roster.csv --out ./hw1-final --commits deadline.yml --label final
-  gh cls collect project --teams teams.yml --out ./project`,
+  gh cls collect project --groups groups.yml --out ./project`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0])
@@ -95,7 +95,7 @@ See COLLECT.md for the model and the git you need.`,
 	f := cmd.Flags()
 	f.StringVarP(&o.out, "out", "o", "", "destination directory; one clone per repo at <out>/<key> (required)")
 	f.StringVarP(&o.roster, "roster", "r", "", "roster CSV (required for an individual assignment)")
-	f.StringVarP(&o.teams, "teams", "T", "", "teams file (required for a group assignment)")
+	f.StringVarP(&o.groups, "groups", "G", "", "groups file (required for a group assignment)")
 	f.StringVar(&o.commits, "commits", "", "YAML of key->commit SHA; collect exactly those commits")
 	f.StringVar(&o.label, "label", "", "name for this collection's tag (default: a timestamp)")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "resolve and reconcile without cloning anything")
@@ -216,7 +216,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 }
 
 // expectedKeys returns the lower-cased->display key set the assignment's type
-// defines (usernames from the roster for individual, team names from the teams
+// defines (usernames from the roster for individual, group names from the groups
 // file for group), validating that the right file was given.
 func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[string]string, error) {
 	switch typ {
@@ -224,8 +224,8 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 		if o.roster == "" {
 			return nil, fmt.Errorf("assignment %q is individual: --roster is required", name)
 		}
-		if o.teams != "" {
-			return nil, fmt.Errorf("assignment %q is individual: --teams is not allowed", name)
+		if o.groups != "" {
+			return nil, fmt.Errorf("assignment %q is individual: --groups is not allowed", name)
 		}
 		r, err := roster.ParseFile(o.roster)
 		if err != nil {
@@ -233,18 +233,18 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 		}
 		return r.UsersByLowercase(), nil
 	case config.TypeGroup:
-		if o.teams == "" {
-			return nil, fmt.Errorf("assignment %q is a group assignment: --teams is required", name)
+		if o.groups == "" {
+			return nil, fmt.Errorf("assignment %q is a group assignment: --groups is required", name)
 		}
 		if o.roster != "" {
-			return nil, fmt.Errorf("assignment %q is a group assignment: --roster is not allowed (team names are the keys)", name)
+			return nil, fmt.Errorf("assignment %q is a group assignment: --roster is not allowed (group names are the keys)", name)
 		}
-		tm, err := teams.ParseFile(o.teams)
+		g, err := groups.ParseFile(o.groups)
 		if err != nil {
 			return nil, err
 		}
-		keys := make(map[string]string, tm.Len())
-		for _, n := range tm.Names() {
+		keys := make(map[string]string, g.Len())
+		for _, n := range g.Names() {
 			keys[strings.ToLower(n)] = n
 		}
 		return keys, nil
@@ -388,10 +388,10 @@ func reportReconcile(out io.Writer, items []repoItem, missing []string) {
 	}
 	sort.Strings(unexpected)
 	if len(missing) > 0 {
-		fmt.Fprintf(out, "missing (no repo) for %d student/team(s):\n  %s\n", len(missing), strings.Join(missing, "\n  "))
+		fmt.Fprintf(out, "missing (no repo) for %d student/group(s):\n  %s\n", len(missing), strings.Join(missing, "\n  "))
 	}
 	if len(unexpected) > 0 {
-		fmt.Fprintf(out, "unexpected (not in roster/teams), collected anyway:\n  %s\n", strings.Join(unexpected, "\n  "))
+		fmt.Fprintf(out, "unexpected (not in roster/groups), collected anyway:\n  %s\n", strings.Join(unexpected, "\n  "))
 	}
 }
 
@@ -425,7 +425,7 @@ func reportCollect(out io.Writer, results []collectResult, missing []string) err
 	fmt.Fprintf(out, "\n%d collected, %d updated, %d up-to-date, %d skipped, %d failed\n",
 		collected, updated, upToDate, skipped, failed)
 	if len(missing) > 0 {
-		fmt.Fprintf(out, "note: %d student/team(s) have no repo (see above)\n", len(missing))
+		fmt.Fprintf(out, "note: %d student/group(s) have no repo (see above)\n", len(missing))
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d repo(s) failed", failed)

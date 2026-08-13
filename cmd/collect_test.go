@@ -132,7 +132,7 @@ func (f *fakeGit) CreateTag(_ context.Context, dir, tag, _ string) error {
 	return nil
 }
 
-func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, teamsYML, commitsYML string) *collectOpts {
+func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, groupsYML, commitsYML string) *collectOpts {
 	t.Helper()
 	base := t.TempDir()
 	o := &collectOpts{
@@ -153,8 +153,8 @@ func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, tea
 	if rosterCSV != "" {
 		o.roster = write("roster.csv", rosterCSV)
 	}
-	if teamsYML != "" {
-		o.teams = write("teams.yml", teamsYML)
+	if groupsYML != "" {
+		o.groups = write("groups.yml", groupsYML)
 	}
 	if commitsYML != "" {
 		o.commits = write("commits.yml", commitsYML)
@@ -308,16 +308,16 @@ func TestCollectReconcile(t *testing.T) {
 	}
 }
 
-func TestCollectGroupNeedsTeams(t *testing.T) {
+func TestCollectGroupNeedsGroups(t *testing.T) {
 	git := newFakeGit()
-	o := newCollectOpts(t, git, nil, "", "team-alpha: [student-001]\n", "")
-	// project is a group assignment; passing --teams (no roster) is correct.
+	o := newCollectOpts(t, git, nil, "", "group-alpha: [student-001]\n", "")
+	// project is a group assignment; passing --groups (no roster) is correct.
 	if err := o.run(context.Background(), &bytes.Buffer{}, "project"); err != nil {
-		t.Fatalf("group with --teams should be accepted, got %v", err)
+		t.Fatalf("group with --groups should be accepted, got %v", err)
 	}
 
 	// A roster on a group assignment is rejected.
-	o2 := newCollectOpts(t, newFakeGit(), nil, assignRoster, "team-alpha: [student-001]\n", "")
+	o2 := newCollectOpts(t, newFakeGit(), nil, assignRoster, "group-alpha: [student-001]\n", "")
 	if err := o2.run(context.Background(), &bytes.Buffer{}, "project"); err == nil || !strings.Contains(err.Error(), "--roster is not allowed") {
 		t.Fatalf("a roster on a group assignment should be rejected, got %v", err)
 	}

@@ -153,24 +153,24 @@ func expiredInvite(id int64, login string) gh.Invitation {
 	return i
 }
 
-// newAuditOpts wires auditOpts to a fake; the roster/teams files live in a temp
+// newAuditOpts wires auditOpts to a fake; the roster/groups files live in a temp
 // dir and the config comes from assignGlobals.
-func newAuditOpts(t *testing.T, fake *fakeAuditState, rosterCSV, teamsYML string) *auditOpts {
+func newAuditOpts(t *testing.T, fake *fakeAuditState, rosterCSV, groupsYML string) *auditOpts {
 	t.Helper()
-	return newAuditOptsG(t, assignGlobals(), fake, rosterCSV, teamsYML)
+	return newAuditOptsG(t, assignGlobals(), fake, rosterCSV, groupsYML)
 }
 
-func newAuditOptsG(t *testing.T, g *globalOpts, fake *fakeAuditState, rosterCSV, teamsYML string) *auditOpts {
+func newAuditOptsG(t *testing.T, g *globalOpts, fake *fakeAuditState, rosterCSV, groupsYML string) *auditOpts {
 	t.Helper()
 	dir := t.TempDir()
 	rosterPath := filepath.Join(dir, "roster.csv")
 	if err := os.WriteFile(rosterPath, []byte(rosterCSV), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	teamsPath := ""
-	if teamsYML != "" {
-		teamsPath = filepath.Join(dir, "teams.yml")
-		if err := os.WriteFile(teamsPath, []byte(teamsYML), 0o644); err != nil {
+	groupsPath := ""
+	if groupsYML != "" {
+		groupsPath = filepath.Join(dir, "groups.yml")
+		if err := os.WriteFile(groupsPath, []byte(groupsYML), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -178,7 +178,7 @@ func newAuditOptsG(t *testing.T, g *globalOpts, fake *fakeAuditState, rosterCSV,
 	return &auditOpts{
 		g:         g,
 		roster:    rosterPath,
-		teams:     teamsPath,
+		groups:    groupsPath,
 		newClient: func(context.Context) (auditClient, error) { return fk, nil },
 	}
 }
@@ -282,33 +282,33 @@ func TestAuditOwnerGuard(t *testing.T) {
 	}
 }
 
-func TestAuditReportsTeamProblems(t *testing.T) {
-	// Unlike assign, audit never aborts on roster/teams inconsistencies: it reports
-	// them as warnings and audits what it can. Here student-003 is on no team and
-	// student-001 is on two teams.
+func TestAuditReportsGroupProblems(t *testing.T) {
+	// Unlike assign, audit never aborts on roster/groups inconsistencies: it reports
+	// them as warnings and audits what it can. Here student-003 is in no group and
+	// student-001 is in two groups.
 	fake := newFakeAudit("admin")
-	teamsYML := "team-alpha: [student-001, student-002]\nteam-beta: [student-001]\n"
-	o := newAuditOpts(t, fake, assignRoster, teamsYML)
+	groupsYML := "group-alpha: [student-001, student-002]\ngroup-beta: [student-001]\n"
+	o := newAuditOpts(t, fake, assignRoster, groupsYML)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "project"); err != nil {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "student-003 is on no team") {
-		t.Errorf("no-team student should be reported: %s", out)
+	if !strings.Contains(out, "student-003 is in no group") {
+		t.Errorf("no-group student should be reported: %s", out)
 	}
-	if !strings.Contains(out, "student-001 is on more than one team") || !strings.Contains(out, "team-alpha, team-beta") {
-		t.Errorf("multi-team student should be reported with their teams: %s", out)
+	if !strings.Contains(out, "student-001 is in more than one group") || !strings.Contains(out, "group-alpha, group-beta") {
+		t.Errorf("multi-group student should be reported with their groups: %s", out)
 	}
 }
 
-func TestAuditGroupRequiresTeams(t *testing.T) {
+func TestAuditGroupRequiresGroups(t *testing.T) {
 	fake := newFakeAudit("admin")
 	o := newAuditOpts(t, fake, assignRoster, "")
 	err := o.run(context.Background(), &bytes.Buffer{}, "project")
-	if err == nil || !strings.Contains(err.Error(), "--teams is required") {
-		t.Fatalf("group audit without teams should error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "--groups is required") {
+		t.Fatalf("group audit without groups should error, got %v", err)
 	}
 }
 

@@ -102,9 +102,9 @@ func (s *fakeFeedbackState) fake() *ghtest.Fake {
 }
 
 // newFeedbackOpts wires feedbackOpts to a fake; the feedback dir, roster, and
-// (optional) teams files live in a temp dir. It returns the opts and the dir so
+// (optional) groups files live in a temp dir. It returns the opts and the dir so
 // a test can rewrite a file to simulate a re-grade.
-func newFeedbackOpts(t *testing.T, fake *fakeFeedbackState, files map[string]string, rosterCSV, teamsYML string) (*feedbackOpts, string) {
+func newFeedbackOpts(t *testing.T, fake *fakeFeedbackState, files map[string]string, rosterCSV, groupsYML string) (*feedbackOpts, string) {
 	t.Helper()
 	base := t.TempDir()
 	fbdir := filepath.Join(base, "fb")
@@ -120,10 +120,10 @@ func newFeedbackOpts(t *testing.T, fake *fakeFeedbackState, files map[string]str
 	if err := os.WriteFile(rosterPath, []byte(rosterCSV), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	teamsPath := ""
-	if teamsYML != "" {
-		teamsPath = filepath.Join(base, "teams.yml")
-		if err := os.WriteFile(teamsPath, []byte(teamsYML), 0o644); err != nil {
+	groupsPath := ""
+	if groupsYML != "" {
+		groupsPath = filepath.Join(base, "groups.yml")
+		if err := os.WriteFile(groupsPath, []byte(groupsYML), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -132,7 +132,7 @@ func newFeedbackOpts(t *testing.T, fake *fakeFeedbackState, files map[string]str
 		g:         feedbackGlobals(),
 		dir:       fbdir,
 		roster:    rosterPath,
-		teams:     teamsPath,
+		groups:    groupsPath,
 		newClient: func(context.Context) (feedbackClient, error) { return fk, nil },
 	}, fbdir
 }
@@ -164,45 +164,45 @@ func TestFeedbackPostsToEveryUnit(t *testing.T) {
 }
 
 func TestFeedbackGroupMode(t *testing.T) {
-	fake := newFakeFeedback("admin", "proj-team-alpha", "proj-team-beta")
-	files := map[string]string{"team-alpha.md": "team a feedback", "team-beta.md": "team b feedback"}
+	fake := newFakeFeedback("admin", "proj-group-alpha", "proj-group-beta")
+	files := map[string]string{"group-alpha.md": "group a feedback", "group-beta.md": "group b feedback"}
 
-	t.Run("posts to each team's PR", func(t *testing.T) {
-		o, _ := newFeedbackOpts(t, fake, files, assignRoster, assignTeams)
+	t.Run("posts to each group's PR", func(t *testing.T) {
+		o, _ := newFeedbackOpts(t, fake, files, assignRoster, assignGroups)
 		var buf bytes.Buffer
 		if err := o.run(context.Background(), &buf, "proj"); err != nil {
 			t.Fatalf("run: %v\n%s", err, buf.String())
 		}
-		if len(fake.comments["proj-team-alpha"]) != 1 || len(fake.comments["proj-team-beta"]) != 1 {
-			t.Errorf("each team PR should get one comment, got %v", fake.comments)
+		if len(fake.comments["proj-group-alpha"]) != 1 || len(fake.comments["proj-group-beta"]) != 1 {
+			t.Errorf("each group PR should get one comment, got %v", fake.comments)
 		}
 	})
 
-	t.Run("group assignment requires --teams", func(t *testing.T) {
+	t.Run("group assignment requires --groups", func(t *testing.T) {
 		o, _ := newFeedbackOpts(t, fake, files, assignRoster, "")
-		o.teams = ""
+		o.groups = ""
 		var buf bytes.Buffer
-		if err := o.run(context.Background(), &buf, "proj"); err == nil || !strings.Contains(err.Error(), "--teams is required") {
-			t.Fatalf("want a --teams error, got %v", err)
+		if err := o.run(context.Background(), &buf, "proj"); err == nil || !strings.Contains(err.Error(), "--groups is required") {
+			t.Fatalf("want a --groups error, got %v", err)
 		}
 	})
 }
 
-func TestFeedbackWarnsOnMultiTeamStudent(t *testing.T) {
+func TestFeedbackWarnsOnMultiGroupStudent(t *testing.T) {
 	// Regression: feedback used to print the unassigned-student warning but
-	// silently drop the multi-team one, unlike audit. loadUnits/printUnitWarnings
+	// silently drop the multi-group one, unlike audit. loadUnits/printUnitWarnings
 	// now share the same warning logic, so feedback reports it too.
-	fake := newFakeFeedback("admin", "proj-team-alpha", "proj-team-beta")
-	files := map[string]string{"team-alpha.md": "team a feedback", "team-beta.md": "team b feedback"}
-	teamsMultiTeam := "team-alpha: [student-001, student-003]\nteam-beta: [student-002, student-001]\n"
-	o, _ := newFeedbackOpts(t, fake, files, assignRoster, teamsMultiTeam)
+	fake := newFakeFeedback("admin", "proj-group-alpha", "proj-group-beta")
+	files := map[string]string{"group-alpha.md": "group a feedback", "group-beta.md": "group b feedback"}
+	groupsMultiGroup := "group-alpha: [student-001, student-003]\ngroup-beta: [student-002, student-001]\n"
+	o, _ := newFeedbackOpts(t, fake, files, assignRoster, groupsMultiGroup)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "proj"); err != nil {
 		t.Fatalf("run: %v\n%s", err, buf.String())
 	}
-	if !strings.Contains(buf.String(), "student-001 is on more than one team: team-alpha, team-beta") {
-		t.Errorf("multi-team warning missing:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "student-001 is in more than one group: group-alpha, group-beta") {
+		t.Errorf("multi-group warning missing:\n%s", buf.String())
 	}
 }
 
@@ -359,7 +359,7 @@ func TestFeedbackFileValidation(t *testing.T) {
 
 	t.Run("two files for the same key are rejected", func(t *testing.T) {
 		o, _ := newFeedbackOpts(t, fake, map[string]string{"ada.md": "x", "ada.txt": "y"}, fbRosterSolo, "")
-		if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err == nil || !strings.Contains(err.Error(), "same student/team") {
+		if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err == nil || !strings.Contains(err.Error(), "same student/group") {
 			t.Fatalf("a duplicate key should be rejected, got %v", err)
 		}
 	})

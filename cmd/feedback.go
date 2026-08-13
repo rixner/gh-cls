@@ -47,7 +47,7 @@ type feedbackOpts struct {
 	g         *globalOpts
 	dir       string
 	roster    string
-	teams     string
+	groups    string
 	force     bool
 	dryRun    bool
 	newClient func(context.Context) (feedbackClient, error)
@@ -61,30 +61,30 @@ func newFeedbackCmd(g *globalOpts) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "feedback <name>",
 		Short: "Post graded feedback files as comments on each repo's feedback issue or PR",
-		Long: `Post one feedback file per student (or team) as a comment on that repo's
+		Long: `Post one feedback file per student (or group) as a comment on that repo's
 feedback issue or pull request — the artifact assign created, named by the
 assignment's feedback policy. Each file in --dir is named <key>.md or <key>.txt,
-where <key> is the GitHub username (individual) or team name (group), matching
+where <key> is the GitHub username (individual) or group name (group), matching
 the <name>-<key> repository.
 
-The directory must hold exactly one file per student/team. A missing file
+The directory must hold exactly one file per student/group. A missing file
 (forgotten feedback) or a file matching no student (a typo) is reported by name
 and aborts, unless --force posts the matching subset and skips the rest. Posting
 is idempotent: a re-run only posts feedback not already present, so a partial
 run or a --force subset can be completed by re-running. Editing a file posts a
 new comment; existing comments are never changed.`,
 		Example: `  gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
-  gh cls feedback project --dir ./proj-feedback --roster roster.csv --teams teams.yml --force`,
+  gh cls feedback project --dir ./proj-feedback --roster roster.csv --groups groups.yml --force`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0])
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.dir, "dir", "d", "", "directory of feedback files, one per student/team named <key>.md or <key>.txt (required)")
+	f.StringVarP(&o.dir, "dir", "d", "", "directory of feedback files, one per student/group named <key>.md or <key>.txt (required)")
 	f.StringVarP(&o.roster, "roster", "r", "", "path to the roster CSV (required)")
-	f.StringVarP(&o.teams, "teams", "T", "", "path to the teams file (required for group, rejected for individual)")
-	f.BoolVarP(&o.force, "force", "F", false, "post the matching subset even when the directory is not exactly one file per student/team")
+	f.StringVarP(&o.groups, "groups", "G", "", "path to the groups file (required for group, rejected for individual)")
+	f.BoolVarP(&o.force, "force", "F", false, "post the matching subset even when the directory is not exactly one file per student/group")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "show what would be posted without doing it")
 	_ = cmd.MarkFlagRequired("dir")
 	_ = cmd.MarkFlagRequired("roster")
@@ -124,7 +124,7 @@ func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) erro
 		return fmt.Errorf("assignment %q has no feedback artifact: set assignments.%s.feedback to pr or issue and run `gh cls assign %s` to create it before posting feedback", name, name, name)
 	}
 
-	units, report, _, err := loadUnits(name, policy.Type, o.roster, o.teams)
+	units, report, _, err := loadUnits(name, policy.Type, o.roster, o.groups)
 	if err != nil {
 		return err
 	}
@@ -144,12 +144,12 @@ func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) erro
 
 	if len(missing) > 0 || len(unmatched) > 0 {
 		if !o.force {
-			return fmt.Errorf("feedback directory is not exactly one file per student/team: %d missing, %d unmatched (see above); fix it, or pass -F/--force to post the %d matching file(s) and skip the rest", len(missing), len(unmatched), len(matched))
+			return fmt.Errorf("feedback directory is not exactly one file per student/group: %d missing, %d unmatched (see above); fix it, or pass -F/--force to post the %d matching file(s) and skip the rest", len(missing), len(unmatched), len(matched))
 		}
 		fmt.Fprintf(out, "\n--force: posting the %d matching file(s); the %d missing and %d unmatched above are skipped\n", len(matched), len(missing), len(unmatched))
 	}
 	if len(matched) == 0 {
-		return fmt.Errorf("no feedback file matches a student/team in %s; nothing to post", o.dir)
+		return fmt.Errorf("no feedback file matches a student/group in %s; nothing to post", o.dir)
 	}
 
 	if o.dryRun {
@@ -195,7 +195,7 @@ func readFeedbackDir(dir string) (map[string]feedbackFile, []string, error) {
 		key := strings.TrimSuffix(name, filepath.Ext(name))
 		lkey := strings.ToLower(key)
 		if prev, ok := files[lkey]; ok {
-			return nil, nil, fmt.Errorf("two feedback files map to the same student/team %q: %s and %s; remove one", key, prev.name, name)
+			return nil, nil, fmt.Errorf("two feedback files map to the same student/group %q: %s and %s; remove one", key, prev.name, name)
 		}
 		path := filepath.Join(dir, name)
 		content, err := os.ReadFile(path)
@@ -237,10 +237,10 @@ func matchFiles(units []unit.Unit, files map[string]feedbackFile) (matched []mat
 func printCoverage(out io.Writer, name string, matched []matchedUnit, missing, unmatched, ignored []string) {
 	fmt.Fprintf(out, "Feedback for %s: %d matched, %d missing, %d unmatched\n", name, len(matched), len(missing), len(unmatched))
 	if len(missing) > 0 {
-		fmt.Fprintf(out, "\nmissing feedback (no file) for %d student/team(s):\n  %s\n", len(missing), strings.Join(missing, "\n  "))
+		fmt.Fprintf(out, "\nmissing feedback (no file) for %d student/group(s):\n  %s\n", len(missing), strings.Join(missing, "\n  "))
 	}
 	if len(unmatched) > 0 {
-		fmt.Fprintf(out, "\nunmatched file(s) — no student/team has that name (typo?):\n  %s\n", strings.Join(unmatched, "\n  "))
+		fmt.Fprintf(out, "\nunmatched file(s): no student/group has that name (typo?):\n  %s\n", strings.Join(unmatched, "\n  "))
 	}
 	if len(ignored) > 0 {
 		fmt.Fprintf(out, "\nignored %d non-.md/.txt file(s): %s\n", len(ignored), strings.Join(ignored, ", "))
@@ -330,7 +330,7 @@ func reportFeedback(out io.Writer, results []feedbackResult, missing, unmatched 
 	}
 	fmt.Fprintf(out, "\n%d posted, %d up-to-date, %d failed\n", posted, upToDate, failed)
 	if len(missing) > 0 || len(unmatched) > 0 {
-		fmt.Fprintf(out, "note: skipped %d student/team(s) with no file and %d unmatched file(s) (see above)\n", len(missing), len(unmatched))
+		fmt.Fprintf(out, "note: skipped %d student/group(s) with no file and %d unmatched file(s) (see above)\n", len(missing), len(unmatched))
 	}
 	if failed > 0 {
 		return fmt.Errorf("%d repo(s) failed", failed)

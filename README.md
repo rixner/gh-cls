@@ -2,7 +2,7 @@
 
 A GitHub CLI extension that replaces the parts of GitHub Classroom a course
 actually needs: one-time organization hardening, per-assignment squashed
-templates, bulk creation of student/team repositories, optional branch
+templates, bulk creation of student/group repositories, optional branch
 protection and feedback artifacts, and a hard deadline freeze.
 
 Written because GitHub Classroom is being decommissioned, and because a CLI fits
@@ -34,7 +34,7 @@ Where it does overlap, it operates differently:
 - **A hard deadline.** `freeze` downgrades write to read at the deadline, instead
   of recording an advisory due date.
 - **One local config file the tool only reads.** No state lives in a config
-  repository in your org, and the roster/teams files stay local and off GitHub.
+  repository in your org, and the roster/groups files stay local and off GitHub.
 - **Idempotent and fail-fast.** Commands re-assert state, verify their own pre-
   and post-conditions, and abort rather than leave anything half-done.
 - **Local-first grading.** Feedback is posted as issue or PR comments, and
@@ -66,7 +66,7 @@ gh auth refresh -s admin:org -s delete_repo
 ## Student Information
 
 Mappings between students and GitHub usernames live only in your local
-**roster** and **teams** files, which the tool reads at runtime and never
+**roster** and **groups** files, which the tool reads at runtime and never
 writes into any repository. Keep these files off version control.
 
 ## Configuration
@@ -95,7 +95,7 @@ assignments:
 ```
 
 An assignment's `template` is the **template repository assign clones** to create
-each student/team repo. A bare name (`hw1-template`) is taken to live in the
+each student/group repo. A bare name (`hw1-template`) is taken to live in the
 configured `org`; qualify it with an owner (`other-org/base`) to clone a template
 from another org. Build one with `gh cls template` (below), or point at any
 existing GitHub *template repository*. `gh cls template` is not required.
@@ -134,11 +134,11 @@ student-001,ada-lovelace
 student-002,alan-turing
 ```
 
-A **teams** file (group assignments) maps team name → student identifiers:
+A **groups** file (group assignments) maps group name → student identifiers:
 
 ```yaml
-team-alpha: [student-001, student-003]
-team-beta:  [student-002]
+group-alpha: [student-001, student-003]
+group-beta:  [student-002]
 ```
 
 A **TA** file (for `gh cls staff`) is a CSV in the same `identifier,username`
@@ -163,9 +163,9 @@ gh cls staff --tas tas.csv --prune     # also remove members not in the file
 # 2. Optional: build a squashed, single-commit template repo from a source.
 gh cls template hw1-template --source cs101-staff/hw1-dev
 
-# 3. Create one repo per student (or team) from the assignment's template repo.
+# 3. Create one repo per student (or group) from the assignment's template repo.
 gh cls assign hw1 --roster roster.csv
-gh cls assign project --roster roster.csv --teams teams.yml --branch-protection
+gh cls assign project --roster roster.csv --groups groups.yml --branch-protection
 
 # Anytime: a read-only overview of the staff team and each assignment's repos.
 gh cls status
@@ -174,21 +174,21 @@ gh cls status hw1 --detail   # per-repo freeze/feedback scan, also writes a CSV
 
 # 4. Anytime: reconcile who should be on each repo against who actually is.
 gh cls audit hw1 --roster roster.csv
-gh cls audit project --roster roster.csv --teams teams.yml   # group: --teams too
+gh cls audit project --roster roster.csv --groups groups.yml   # group: --groups too
 gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
 
 # 5. At the deadline: downgrade students from write to read (reverse with -u).
 gh cls freeze hw1
 gh cls freeze hw1 --undo
-gh cls freeze hw1 alice --undo   # extension: unfreeze just one student/team repo
+gh cls freeze hw1 alice --undo   # extension: unfreeze just one student/group repo
 gh cls freeze hw1 alice          # re-freeze it when the extension expires
 
 # 6. Collect submissions locally to grade by hand (one shallow clone per student,
 #    tagged each collect; see COLLECT.md for the model and the git you need).
 gh cls collect hw1 --roster roster.csv --out ./hw1
 
-# 7. After grading: post one feedback file per student/team as a comment on the
-#    repo's feedback issue or PR. Files are named <username>.md / <team>.md.
+# 7. After grading: post one feedback file per student/group as a comment on the
+#    repo's feedback issue or PR. Files are named <username>.md / <group>.md.
 gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 ```
 
@@ -217,7 +217,7 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   marking it rather than failing; `-F` overwrites an existing `<repo>`. A bare
   `<repo>` is created in the org; `--source` is always `owner/name`.
 - **assign** runs preflight checks (type/inputs; the assignment's template repo
-  exists and is a template repository; all-branches single-commit; roster/teams
+  exists and is a template repository; all-branches single-commit; roster/groups
   consistency; every roster username is a real GitHub account), then generates
   each repo from that template concurrently. The
   template must be a template repository. `--mark-template` opts into marking it.
@@ -225,9 +225,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   branch is generated unless `-a/--all-branches` copies them all. The template
   must be fully squashed (each branch a single commit); `-U/--allow-unsquashed`
   overrides that preflight and clones the history as-is.
-  For a group assignment, an enrolled student on no team, or a student on more
-  than one team, aborts the whole run before any repo is created, listing every
-  problem so the teams file can be fixed in one pass; `--force` (`-F`) downgrades
+  For a group assignment, an enrolled student in no group, or a student in more
+  than one group, aborts the whole run before any repo is created, listing every
+  problem so the groups file can be fixed in one pass; `--force` (`-F`) downgrades
   those to warnings and proceeds (e.g. a student intentionally excused from the
   group work). `-b` applies an all-branches ruleset blocking force-push and
   deletion, which only org admins bypass (staff get push but cannot force-push or
@@ -237,9 +237,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   the actual state, reporting each as *on repo*, *invited (pending)*, *invited
   (EXPIRED)*, *MISSING*, or *NO REPO*, and flagging access that is present but not
   expected. `--roster` is always required, and a **group assignment also needs
-  `--teams`**. Audit resolves the expected members of each team repo the same way
+  `--groups`**. Audit resolves the expected members of each group repo the same way
   `assign` does, so it takes the same two files (an individual assignment rejects
-  `--teams`). Because students join as outside collaborators, a grant becomes an
+  `--groups`). Because students join as outside collaborators, a grant becomes an
   invitation they must accept within seven days, so `--renew` re-issues access for
   everyone whose invitation expired or who is missing entirely (it never removes
   access). A student already on a frozen repo reads as *on repo (frozen)*, which
@@ -247,7 +247,7 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   For students `--renew` does act on, the access it restores follows the repo's
   freeze record, so renewing after a deadline hands back read, not write.
   `--all` lists everyone, not just those needing attention. It also
-  warns (never aborts) when the teams file leaves a student on no team or on more
+  warns (never aborts) when the groups file leaves a student in no group or in more
   than one, the same inconsistencies assign refuses to create repos for.
 - **freeze** operates purely on each repo's current direct collaborators and
   pending invitations, never the roster, so a drifted roster cannot let anyone
@@ -259,24 +259,24 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   state is also recorded (see **The freeze record** below), so `freeze` requires
   `setup` to have run and refuses to start otherwise. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix
-  is never frozen. Naming one or more student/team keys (`freeze hw1 alice`)
+  is never frozen. Naming one or more student/group keys (`freeze hw1 alice`)
   scopes it to just those `<name>-<key>` repos, for granting or ending an
   individual extension; an unknown key aborts the run before any change.
   `--undo` grants push to every non-admin direct collaborator, restores every live
   invitation to write, and records the repo as thawed, including any collaborator
   who was deliberately read-only before the freeze.
-- **feedback** posts one feedback file per student (or team) as a comment on that
+- **feedback** posts one feedback file per student (or group) as a comment on that
   repo's feedback issue or PR: the artifact assign created, named by the
   assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or
-  `<key>.txt`, where `<key>` is the GitHub username (individual) or team name
-  (group), resolved from `--roster` (plus `--teams` for a group assignment);
+  `<key>.txt`, where `<key>` is the GitHub username (individual) or group name
+  (group), resolved from `--roster` (plus `--groups` for a group assignment);
   contents are rendered as Markdown. The directory must hold exactly one
-  file per student/team. A missing file or a file matching no one is named and
+  file per student/group. A missing file or a file matching no one is named and
   aborts, unless `--force` posts the matching subset and reports the rest.
   Idempotent: a re-run only posts feedback not already present (so a partial or
   `--force` run is finished by re-running), and editing a file posts a new comment
   rather than changing the old one.
-- **collect** clones each student or team repository locally for hand grading,
+- **collect** clones each student or group repository locally for hand grading,
   one shallow clone per repo under `--out`, taking each to its target commit and
   tagging it (`gh-cls/collect/<label>`) so every collection is preserved. The
   default target is the default-branch tip; `--commits <yml>` pins exact SHAs
@@ -284,7 +284,7 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   (default: a timestamp). Re-running a label tops up only repos not yet collected
   under it; a new label advances the clones and tags the new state, leaving prior
   tags in place. It is roster-aware (`--roster` for individual,
-  `--teams` for group), reporting any missing or unexpected repositories, and
+  `--groups` for group), reporting any missing or unexpected repositories, and
   refuses to disturb a clone with local changes so grading-script edits survive.
   Shallow keeps disk small; a clone is a normal git repo, so `git restore .`,
   `git fetch --unshallow`, and `git checkout gh-cls/collect/<label>` all work.

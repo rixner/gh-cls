@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"github.com/rixner/gh-cls/config"
+	"github.com/rixner/gh-cls/groups"
 	"github.com/rixner/gh-cls/roster"
-	"github.com/rixner/gh-cls/teams"
 	"github.com/rixner/gh-cls/unit"
 )
 
@@ -28,13 +28,13 @@ func mustRoster(t *testing.T) *roster.Roster {
 	return r
 }
 
-func mustTeams(t *testing.T, src string) *teams.Teams {
+func mustGroups(t *testing.T, src string) *groups.Groups {
 	t.Helper()
-	tm, err := teams.Parse(strings.NewReader(src))
+	g, err := groups.Parse(strings.NewReader(src))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return tm
+	return g
 }
 
 func TestResolveIndividual(t *testing.T) {
@@ -57,16 +57,16 @@ func TestResolveIndividual(t *testing.T) {
 	}
 }
 
-func TestResolveIndividualRejectsTeams(t *testing.T) {
-	_, _, err := unit.Resolve(config.TypeIndividual, mustRoster(t), mustTeams(t, "a: [student-001]\n"))
+func TestResolveIndividualRejectsGroups(t *testing.T) {
+	_, _, err := unit.Resolve(config.TypeIndividual, mustRoster(t), mustGroups(t, "a: [student-001]\n"))
 	if err == nil {
-		t.Fatal("individual assignment with a teams file should error")
+		t.Fatal("individual assignment with a groups file should error")
 	}
 }
 
 func TestResolveGroup(t *testing.T) {
-	src := "team-alpha: [student-001, student-003]\nteam-beta: [student-002, student-004]\nteam-gamma: [student-005]\n"
-	units, rep, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustTeams(t, src))
+	src := "group-alpha: [student-001, student-003]\ngroup-beta: [student-002, student-004]\ngroup-gamma: [student-005]\n"
+	units, rep, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustGroups(t, src))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,9 +74,9 @@ func TestResolveGroup(t *testing.T) {
 		t.Errorf("no warnings expected, got %+v", rep)
 	}
 	want := []unit.Unit{
-		{Key: "team-alpha", Members: []string{"ada", "grace"}},
-		{Key: "team-beta", Members: []string{"alan", "katherine"}},
-		{Key: "team-gamma", Members: []string{"margaret"}},
+		{Key: "group-alpha", Members: []string{"ada", "grace"}},
+		{Key: "group-beta", Members: []string{"alan", "katherine"}},
+		{Key: "group-gamma", Members: []string{"margaret"}},
 	}
 	if !reflect.DeepEqual(units, want) {
 		t.Errorf("units = %+v\nwant %+v", units, want)
@@ -84,10 +84,10 @@ func TestResolveGroup(t *testing.T) {
 }
 
 func TestResolveGroupUnknownIdentifier(t *testing.T) {
-	src := "team-alpha: [student-001, student-999]\n"
-	units, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustTeams(t, src))
+	src := "group-alpha: [student-001, student-999]\n"
+	units, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustGroups(t, src))
 	if err == nil {
-		t.Fatal("a team referencing an unknown identifier must be a hard error")
+		t.Fatal("a group referencing an unknown identifier must be a hard error")
 	}
 	if units != nil {
 		t.Error("no units should be returned on a hard error")
@@ -98,11 +98,11 @@ func TestResolveGroupUnknownIdentifier(t *testing.T) {
 }
 
 func TestResolveGroupCaseMismatchHint(t *testing.T) {
-	// The roster has "student-001"; the teams file uses "Student-001". Identifiers
+	// The roster has "student-001"; the groups file uses "Student-001". Identifiers
 	// are case-sensitive, so this is a hard error — but it should hint at the
 	// near-match rather than just say the identifier is missing.
-	src := "team-alpha: [Student-001]\n"
-	_, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustTeams(t, src))
+	src := "group-alpha: [Student-001]\n"
+	_, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustGroups(t, src))
 	if err == nil {
 		t.Fatal("a case-mismatched identifier must be a hard error")
 	}
@@ -112,9 +112,9 @@ func TestResolveGroupCaseMismatchHint(t *testing.T) {
 }
 
 func TestResolveGroupUnassignedWarns(t *testing.T) {
-	// student-004 and student-005 are on no team.
-	src := "team-alpha: [student-001, student-003]\nteam-beta: [student-002]\n"
-	units, rep, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustTeams(t, src))
+	// student-004 and student-005 are in no group.
+	src := "group-alpha: [student-001, student-003]\ngroup-beta: [student-002]\n"
+	units, rep, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustGroups(t, src))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,30 +126,30 @@ func TestResolveGroupUnassignedWarns(t *testing.T) {
 	}
 }
 
-func TestResolveGroupMultiTeam(t *testing.T) {
-	// student-001 is on both team-alpha and team-gamma. Resolution still proceeds
+func TestResolveGroupMultiGroup(t *testing.T) {
+	// student-001 is in both group-alpha and group-gamma. Resolution still proceeds
 	// (the finding is reported, not enforced here), and records the overlap with
-	// the teams in file order.
-	src := "team-alpha: [student-001, student-003]\nteam-beta: [student-002, student-004]\nteam-gamma: [student-001, student-005]\n"
-	units, rep, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustTeams(t, src))
+	// the groups in file order.
+	src := "group-alpha: [student-001, student-003]\ngroup-beta: [student-002, student-004]\ngroup-gamma: [student-001, student-005]\n"
+	units, rep, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustGroups(t, src))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(units) != 3 {
 		t.Errorf("got %d units, want 3 (resolution proceeds despite the overlap)", len(units))
 	}
-	want := []unit.MultiTeamMembership{{ID: "student-001", Teams: []string{"team-alpha", "team-gamma"}}}
-	if !reflect.DeepEqual(rep.MultiTeam, want) {
-		t.Errorf("MultiTeam = %+v, want %+v", rep.MultiTeam, want)
+	want := []unit.MultiGroupMembership{{ID: "student-001", Groups: []string{"group-alpha", "group-gamma"}}}
+	if !reflect.DeepEqual(rep.MultiGroup, want) {
+		t.Errorf("MultiGroup = %+v, want %+v", rep.MultiGroup, want)
 	}
 	if len(rep.UnassignedIDs) > 0 {
 		t.Errorf("no unassigned expected, got %v", rep.UnassignedIDs)
 	}
 }
 
-func TestResolveGroupRequiresTeams(t *testing.T) {
+func TestResolveGroupRequiresGroups(t *testing.T) {
 	if _, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), nil); err == nil {
-		t.Fatal("group assignment without a teams file should error")
+		t.Fatal("group assignment without a groups file should error")
 	}
 }
 

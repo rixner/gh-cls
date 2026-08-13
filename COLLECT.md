@@ -23,13 +23,13 @@ Individual assignment (keys are GitHub usernames, from the roster):
 gh cls collect hw1 --roster roster.csv --out ./hw1
 ```
 
-Group assignment (keys are team names, from the teams file; no roster needed):
+Group assignment (keys are group names, from the groups file; no roster needed):
 
 ```sh
-gh cls collect project --teams teams.yml --out ./project
+gh cls collect project --groups groups.yml --out ./project
 ```
 
-You get one directory per student or team:
+You get one directory per student or group:
 
 ```
 hw1/
@@ -81,7 +81,7 @@ afterward:
 # deadline.yml
 ada:        9f3a2b1c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a
 alan:       1c4d77e0...
-team-alpha: a0b1c2d3...
+group-alpha: a0b1c2d3...
 ```
 
 ```sh
@@ -110,11 +110,11 @@ you are ready (`git restore .`, below) and re-collect.
 ## Reconciliation against the class
 
 Collect collects every `<name>-*` repository that exists, and uses your roster (or
-teams file) to tell you whether that set matches the class:
+groups file) to tell you whether that set matches the class:
 
-- **missing:** a student or team with no repository. Reported, since there is
+- **missing:** a student or group with no repository. Reported, since there is
   nothing to clone.
-- **unexpected:** a repository that matches no roster or teams entry, perhaps a
+- **unexpected:** a repository that matches no roster or groups entry, perhaps a
   typo or a dropped student. It is still collected, but reported so you notice.
 
 ## The manifest

@@ -99,7 +99,7 @@ func NewRootCmd() *cobra.Command {
 		Short: "Course tooling that replaces GitHub Classroom",
 		Long: `gh cls manages a course's per-semester GitHub organization:
 hardening the org, preparing squashed assignment templates, bulk-creating
-student and team repositories, and freezing them at a deadline.
+student and group repositories, and freezing them at a deadline.
 
 The org and staff team come from a user-authored config file, located with
 -c/--config or $GH_CLS_CONFIG; the tool only reads it, never writes it.`,

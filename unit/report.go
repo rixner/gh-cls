@@ -5,19 +5,19 @@ package unit
 // assign aborts before creating any repos (unless --force), while audit reports
 // it and continues.
 type Report struct {
-	// UnassignedIDs lists enrolled students (roster identifiers) on no team.
+	// UnassignedIDs lists enrolled students (roster identifiers) in no group.
 	// This can be intentional (a student excused from the group work), so it is a
 	// finding rather than a hard error at resolution time.
 	UnassignedIDs []string
 
-	// MultiTeam lists students (roster identifiers) that appear on more than one
-	// team, each with the teams they appear on in file order. A student belongs on
-	// exactly one team, so this is almost always a teams-file mistake.
-	MultiTeam []MultiTeamMembership
+	// MultiGroup lists students (roster identifiers) that appear in more than one
+	// group, each with the groups they appear in in file order. A student belongs
+	// in exactly one group, so this is almost always a groups-file mistake.
+	MultiGroup []MultiGroupMembership
 }
 
-// MultiTeamMembership is one student found on more than one team.
-type MultiTeamMembership struct {
-	ID    string
-	Teams []string
+// MultiGroupMembership is one student found in more than one group.
+type MultiGroupMembership struct {
+	ID     string
+	Groups []string
 }

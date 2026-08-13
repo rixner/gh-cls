@@ -11,7 +11,7 @@ import (
 )
 
 // AssignmentType distinguishes the two unit sources: one repo per student, or
-// one repo per team.
+// one repo per group.
 type AssignmentType string
 
 const (

@@ -84,7 +84,7 @@ primitive and `setup` is idempotent).
 
 **`GH_CLS_STUDENT1` is required** — the test skips entirely if it is unset (just
 as the whole run skips when `GH_CLS_LIVE_ORG` is unset). **`GH_CLS_STUDENT2` is
-optional**: it only adds a second member to the group team in the final step, for
+optional**: it only adds a second member to the group in the final step, for
 extra coverage. With a single student account, leave it unset — the group flow
 still runs with the one member.
 
@@ -201,9 +201,9 @@ Run each step **with `--dry-run` first**, then for real.
 
 8. **Group assignment (optional)** — build a group template
    (`gh cls template proj-template -s $ORG/hw1-src`), add a `group` assignment with
-   `template: proj-template`, write a `teams.yml` (`alpha: [<STU>]`), and
-   `gh cls assign proj -r roster.csv --teams teams.yml --public`. Verify
-   `proj-alpha` is created with the team's members granted push.
+   `template: proj-template`, write a `groups.yml` (`alpha: [<STU>]`), and
+   `gh cls assign proj -r roster.csv --groups groups.yml --public`. Verify
+   `proj-alpha` is created with the group's members granted push.
 
 9. **Cleanup** — delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
    repos. (Leaving the `staff` team is fine.)

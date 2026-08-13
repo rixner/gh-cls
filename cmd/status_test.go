@@ -123,7 +123,7 @@ func TestStatusWholeCourse(t *testing.T) {
 			{Name: "hw1-ada", Private: true},
 			{Name: "hw1-alan", Private: true},
 			{Name: "hw1-template", Private: true, IsTemplate: true}, // excluded
-			{Name: "project-team-alpha", Private: true},
+			{Name: "project-group-alpha", Private: true},
 		},
 	}
 	var buf bytes.Buffer
@@ -163,11 +163,11 @@ func TestStatusWholeCourseDetailListsOrgOnce(t *testing.T) {
 		members: []string{"ta1"},
 		repos: []gh.Repo{
 			{Name: "hw1-ada", Private: true},
-			{Name: "project-team-alpha", Private: true},
+			{Name: "project-group-alpha", Private: true},
 		},
 		collaborators: map[string][]gh.Collaborator{
-			"hw1-ada":            {collab("ada", "push")},
-			"project-team-alpha": {collab("alpha", "push")},
+			"hw1-ada":             {collab("ada", "push")},
+			"project-group-alpha": {collab("alpha", "push")},
 		},
 	}
 	o := newStatusOptsG(assignGlobals(), fake)
@@ -233,7 +233,7 @@ func TestStatusSingleAssignment(t *testing.T) {
 		members: []string{"ta1"},
 		repos: []gh.Repo{
 			{Name: "hw1-ada", Private: true},
-			{Name: "project-team-alpha", Private: true},
+			{Name: "project-group-alpha", Private: true},
 		},
 	}
 	var buf bytes.Buffer
@@ -455,8 +455,8 @@ func TestStatusDetailFlagsDriftFromTheRecord(t *testing.T) {
 	// student still has push, so the freeze did not fully take. Without the record
 	// this is invisible, since a writable repo looks like any unfrozen one.
 	fake := &fakeStatusClient{
-		members:       []string{"ta1"},
-		repos:         []gh.Repo{{Name: "hw1-ada", Private: true}, {Name: "hw1-bob", Private: true}},
+		members: []string{"ta1"},
+		repos:   []gh.Repo{{Name: "hw1-ada", Private: true}, {Name: "hw1-bob", Private: true}},
 		collaborators: map[string][]gh.Collaborator{
 			"hw1-ada": {collab("ada", "push")}, // contradicts the record
 			"hw1-bob": {collab("bob", "pull")}, // agrees with it

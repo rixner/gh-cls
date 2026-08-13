@@ -36,8 +36,8 @@ student-002,alan
 student-003,grace
 `
 
-const assignTeams = `team-alpha: [student-001, student-003]
-team-beta: [student-002]
+const assignGroups = `group-alpha: [student-001, student-003]
+group-beta: [student-002]
 `
 
 // fakeAssignClient configures a ghtest.Fake for the assign operations and
@@ -255,19 +255,19 @@ func newFakeAssign(role string) *fakeAssignClient {
 func boolp(b bool) *bool    { return &b }
 func strp(s string) *string { return &s }
 
-// newAssignOpts wires assignOpts to a fake; the roster/teams files live in a
+// newAssignOpts wires assignOpts to a fake; the roster/groups files live in a
 // temp dir and the config comes from assignGlobals.
-func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, teamsYML string) *assignOpts {
+func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, groupsYML string) *assignOpts {
 	t.Helper()
 	dir := t.TempDir()
 	rosterPath := filepath.Join(dir, "roster.csv")
 	if err := os.WriteFile(rosterPath, []byte(rosterCSV), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	teamsPath := ""
-	if teamsYML != "" {
-		teamsPath = filepath.Join(dir, "teams.yml")
-		if err := os.WriteFile(teamsPath, []byte(teamsYML), 0o644); err != nil {
+	groupsPath := ""
+	if groupsYML != "" {
+		groupsPath = filepath.Join(dir, "groups.yml")
+		if err := os.WriteFile(groupsPath, []byte(groupsYML), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -276,7 +276,7 @@ func newAssignOpts(t *testing.T, fake *fakeAssignClient, rosterCSV, teamsYML str
 	return &assignOpts{
 		g:         assignGlobals(),
 		roster:    rosterPath,
-		teams:     teamsPath,
+		groups:    groupsPath,
 		newClient: func(context.Context) (assignClient, error) { return fk, nil },
 		sleep:     func(time.Duration) {},
 	}
@@ -322,36 +322,36 @@ func TestAssignIndividual(t *testing.T) {
 
 func TestAssignGroup(t *testing.T) {
 	fake := newFakeAssign("admin")
-	o := newAssignOpts(t, fake, assignRoster, assignTeams)
+	o := newAssignOpts(t, fake, assignRoster, assignGroups)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "project", config.Overrides{}); err != nil {
 		t.Fatal(err)
 	}
-	if !contains(fake.generated, "project-team-alpha") || !contains(fake.generated, "project-team-beta") {
+	if !contains(fake.generated, "project-group-alpha") || !contains(fake.generated, "project-group-beta") {
 		t.Errorf("group repos not generated: %v", fake.generated)
 	}
-	// team-alpha resolves student-001 and student-003 to ada and grace.
-	if !contains(fake.collabs, "project-team-alpha:ada") || !contains(fake.collabs, "project-team-alpha:grace") {
-		t.Errorf("team members not granted: %v", fake.collabs)
+	// group-alpha resolves student-001 and student-003 to ada and grace.
+	if !contains(fake.collabs, "project-group-alpha:ada") || !contains(fake.collabs, "project-group-alpha:grace") {
+		t.Errorf("group members not granted: %v", fake.collabs)
 	}
 }
 
-func TestAssignGroupRequiresTeams(t *testing.T) {
+func TestAssignGroupRequiresGroups(t *testing.T) {
 	fake := newFakeAssign("admin")
 	o := newAssignOpts(t, fake, assignRoster, "")
 	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
-	if err == nil || !strings.Contains(err.Error(), "--teams is required") {
-		t.Fatalf("group without teams should error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "--groups is required") {
+		t.Fatalf("group without groups should error, got %v", err)
 	}
 }
 
-func TestAssignIndividualRejectsTeams(t *testing.T) {
+func TestAssignIndividualRejectsGroups(t *testing.T) {
 	fake := newFakeAssign("admin")
-	o := newAssignOpts(t, fake, assignRoster, assignTeams)
+	o := newAssignOpts(t, fake, assignRoster, assignGroups)
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
 	if err == nil || !strings.Contains(err.Error(), "not allowed") {
-		t.Fatalf("individual with teams should error, got %v", err)
+		t.Fatalf("individual with groups should error, got %v", err)
 	}
 }
 
@@ -369,7 +369,7 @@ func TestAssignTemplateMissing(t *testing.T) {
 }
 
 func TestAssignStaffTeamMissing(t *testing.T) {
-	// The staff team is granted on every repo, so a missing team must abort before
+	// The staff team is granted on every repo, so a missing group must abort before
 	// any repo is generated, with guidance to run setup.
 	fake := newFakeAssign("admin")
 	fake.teamMissing = true
@@ -463,12 +463,12 @@ func TestAssignIdempotentSkip(t *testing.T) {
 	}
 }
 
-func TestAssignUnknownTeamMember(t *testing.T) {
+func TestAssignUnknownGroupMember(t *testing.T) {
 	fake := newFakeAssign("admin")
-	o := newAssignOpts(t, fake, assignRoster, "team-x: [student-999]\n")
+	o := newAssignOpts(t, fake, assignRoster, "group-x: [student-999]\n")
 	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
 	if err == nil || !strings.Contains(err.Error(), "student-999") {
-		t.Fatalf("unknown team member should be a hard error, got %v", err)
+		t.Fatalf("unknown group member should be a hard error, got %v", err)
 	}
 }
 
@@ -518,47 +518,47 @@ func TestAssignUserLookupErrorAborts(t *testing.T) {
 	}
 }
 
-func TestAssignRejectsStudentOnNoTeam(t *testing.T) {
-	// student-003 (grace) is on no team: assign must abort before creating anything.
+func TestAssignRejectsStudentOnNoGroup(t *testing.T) {
+	// student-003 (grace) is in no group: assign must abort before creating anything.
 	fake := newFakeAssign("admin")
-	o := newAssignOpts(t, fake, assignRoster, "team-alpha: [student-001]\nteam-beta: [student-002]\n")
+	o := newAssignOpts(t, fake, assignRoster, "group-alpha: [student-001]\ngroup-beta: [student-002]\n")
 
 	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
-	if err == nil || !strings.Contains(err.Error(), "student-003") || !strings.Contains(err.Error(), "no team") {
-		t.Fatalf("a student on no team should abort naming them, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "student-003") || !strings.Contains(err.Error(), "no group") {
+		t.Fatalf("a student in no group should abort naming them, got %v", err)
 	}
 	if len(fake.generated) != 0 {
-		t.Errorf("no repos should be generated when a student is on no team: %v", fake.generated)
+		t.Errorf("no repos should be generated when a student is in no group: %v", fake.generated)
 	}
 }
 
-func TestAssignRejectsStudentOnMultipleTeams(t *testing.T) {
-	// student-001 (ada) is on both team-alpha and team-beta: abort before creating.
+func TestAssignRejectsStudentOnMultipleGroups(t *testing.T) {
+	// student-001 (ada) is in both group-alpha and group-beta: abort before creating.
 	fake := newFakeAssign("admin")
-	o := newAssignOpts(t, fake, assignRoster, "team-alpha: [student-001, student-003]\nteam-beta: [student-001, student-002]\n")
+	o := newAssignOpts(t, fake, assignRoster, "group-alpha: [student-001, student-003]\ngroup-beta: [student-001, student-002]\n")
 
 	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
-	if err == nil || !strings.Contains(err.Error(), "student-001") || !strings.Contains(err.Error(), "more than one team") {
-		t.Fatalf("a student on multiple teams should abort naming them, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "student-001") || !strings.Contains(err.Error(), "more than one group") {
+		t.Fatalf("a student in multiple groups should abort naming them, got %v", err)
 	}
 	if len(fake.generated) != 0 {
-		t.Errorf("no repos should be generated when a student is on multiple teams: %v", fake.generated)
+		t.Errorf("no repos should be generated when a student is in multiple groups: %v", fake.generated)
 	}
 }
 
-func TestAssignForceProceedsPastTeamProblems(t *testing.T) {
-	// --force downgrades the roster/teams inconsistency to a warning and proceeds.
-	// student-003 is on no team, so only team-alpha and team-beta are created.
+func TestAssignForceProceedsPastGroupProblems(t *testing.T) {
+	// --force downgrades the roster/groups inconsistency to a warning and proceeds.
+	// student-003 is in no group, so only group-alpha and group-beta are created.
 	fake := newFakeAssign("admin")
-	o := newAssignOpts(t, fake, assignRoster, "team-alpha: [student-001]\nteam-beta: [student-002]\n")
+	o := newAssignOpts(t, fake, assignRoster, "group-alpha: [student-001]\ngroup-beta: [student-002]\n")
 	o.force = true
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "project", config.Overrides{}); err != nil {
 		t.Fatalf("--force should proceed, got %v", err)
 	}
-	if !contains(fake.generated, "project-team-alpha") || !contains(fake.generated, "project-team-beta") {
-		t.Errorf("--force should create the well-formed teams' repos: %v", fake.generated)
+	if !contains(fake.generated, "project-group-alpha") || !contains(fake.generated, "project-group-beta") {
+		t.Errorf("--force should create the well-formed groups' repos: %v", fake.generated)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "--force") || !strings.Contains(out, "student-003") {

@@ -44,7 +44,7 @@ type assignClient interface {
 type assignOpts struct {
 	g                *globalOpts
 	roster           string
-	teams            string
+	groups           string
 	public           bool
 	branchProtection bool
 	allBranches      bool
@@ -67,17 +67,17 @@ func newAssignCmd(g *globalOpts) *cobra.Command {
 		Use:   "assign <name>",
 		Short: "Bulk-create assignment repositories from the assignment's template",
 		Long: `Create one repository per unit (each student for an individual assignment,
-each team for a group assignment) from the template repository the assignment
+each group for a group assignment) from the template repository the assignment
 names, granting push to the unit's members and to the staff team. Idempotent:
 existing repos are skipped for generation but their access grants are re-asserted.
 
 For a group assignment, assign aborts before creating anything if the roster and
-teams file are inconsistent -- an enrolled student on no team, or a student on
-more than one team -- so a mistake is fixed before repos exist. Pass --force to
+groups file are inconsistent -- an enrolled student in no group, or a student in
+more than one group -- so a mistake is fixed before repos exist. Pass --force to
 downgrade those to warnings and proceed anyway (e.g. a student intentionally
 excused from the group work).`,
 		Example: `  gh cls assign hw1 --roster roster.csv
-  gh cls assign project --roster roster.csv --teams teams.yml --branch-protection`,
+  gh cls assign project --roster roster.csv --groups groups.yml --branch-protection`,
 		Args:    cobra.ExactArgs(1),
 		PreRunE: func(cmd *cobra.Command, _ []string) error { return o.validate() },
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -86,13 +86,13 @@ excused from the group work).`,
 	}
 	f := cmd.Flags()
 	f.StringVarP(&o.roster, "roster", "r", "", "path to the roster CSV (required)")
-	f.StringVarP(&o.teams, "teams", "T", "", "path to the teams file (required for group, rejected for individual)")
+	f.StringVarP(&o.groups, "groups", "G", "", "path to the groups file (required for group, rejected for individual)")
 	f.BoolVarP(&o.public, "public", "p", false, "create public repos (default private)")
 	f.BoolVarP(&o.branchProtection, "branch-protection", "b", false, "apply an all-branches protection ruleset")
 	f.BoolVarP(&o.allBranches, "all-branches", "a", false, "include all template branches (default: default branch only)")
 	f.StringVarP(&o.feedback, "feedback", "f", "", "create a feedback artifact: pr or issue")
 	f.BoolVarP(&o.allowUnsquashed, "allow-unsquashed", "U", false, "proceed even if a template branch has more than one commit")
-	f.BoolVarP(&o.force, "force", "F", false, "proceed even if the roster/teams are inconsistent (a student on no team, or on more than one)")
+	f.BoolVarP(&o.force, "force", "F", false, "proceed even if the roster/groups are inconsistent (a student in no group, or in more than one)")
 	f.BoolVar(&o.markTemplate, "mark-template", false, "mark the assignment's template a template repository if it is not already")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "list what would be created without doing it")
 	_ = cmd.MarkFlagRequired("roster")
@@ -141,13 +141,13 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	}
 
 	// Preflight 1 & 4: type/inputs consistency and unit resolution. A student on
-	// no team or on more than one team aborts before anything is created, so the
+	// no group or in more than one group aborts before anything is created, so the
 	// mistake is fixed before repos exist; --force downgrades it to a warning.
-	units, report, _, err := loadUnits(name, policy.Type, o.roster, o.teams)
+	units, report, _, err := loadUnits(name, policy.Type, o.roster, o.groups)
 	if err != nil {
 		return err
 	}
-	if err := checkTeamConsistency(out, report, o.force); err != nil {
+	if err := checkGroupConsistency(out, report, o.force); err != nil {
 		return err
 	}
 
@@ -234,34 +234,34 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	return reportResults(out, results)
 }
 
-// checkTeamConsistency enforces the roster/teams consistency findings: an
-// enrolled student on no team, or a student on more than one team. Both are
-// almost always a teams-file mistake, so by default this aborts before any repo
+// checkGroupConsistency enforces the roster/groups consistency findings: an
+// enrolled student in no group, or a student in more than one group. Both are
+// almost always a groups-file mistake, so by default this aborts before any repo
 // is created, listing every problem so the file can be fixed in one pass. --force
 // downgrades them to warnings and proceeds, for the rare intentional case (a
 // student excused from the group work).
-func checkTeamConsistency(out io.Writer, report unit.Report, force bool) error {
-	if len(report.UnassignedIDs) == 0 && len(report.MultiTeam) == 0 {
+func checkGroupConsistency(out io.Writer, report unit.Report, force bool) error {
+	if len(report.UnassignedIDs) == 0 && len(report.MultiGroup) == 0 {
 		return nil
 	}
 
 	var problems []string
 	if len(report.UnassignedIDs) > 0 {
-		problems = append(problems, "enrolled students on no team:\n  "+strings.Join(report.UnassignedIDs, "\n  "))
+		problems = append(problems, "enrolled students in no group:\n  "+strings.Join(report.UnassignedIDs, "\n  "))
 	}
-	if len(report.MultiTeam) > 0 {
-		lines := make([]string, len(report.MultiTeam))
-		for i, m := range report.MultiTeam {
-			lines[i] = fmt.Sprintf("%s: %s", m.ID, strings.Join(m.Teams, ", "))
+	if len(report.MultiGroup) > 0 {
+		lines := make([]string, len(report.MultiGroup))
+		for i, m := range report.MultiGroup {
+			lines[i] = fmt.Sprintf("%s: %s", m.ID, strings.Join(m.Groups, ", "))
 		}
-		problems = append(problems, "students on more than one team:\n  "+strings.Join(lines, "\n  "))
+		problems = append(problems, "students in more than one group:\n  "+strings.Join(lines, "\n  "))
 	}
 	joined := strings.Join(problems, "\n")
 
 	if !force {
-		return fmt.Errorf("roster and teams file are inconsistent (fix it, or pass --force to proceed anyway; no repositories were created):\n%s", joined)
+		return fmt.Errorf("roster and groups file are inconsistent (fix it, or pass --force to proceed anyway; no repositories were created):\n%s", joined)
 	}
-	fmt.Fprintf(out, "warning: proceeding with --force despite roster/teams inconsistencies:\n%s\n", joined)
+	fmt.Fprintf(out, "warning: proceeding with --force despite roster/groups inconsistencies:\n%s\n", joined)
 	return nil
 }
 

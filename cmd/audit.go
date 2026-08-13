@@ -66,7 +66,7 @@ func (s memberStatus) label() string {
 type auditOpts struct {
 	g         *globalOpts
 	roster    string
-	teams     string
+	groups    string
 	all       bool
 	renew     bool
 	dryRun    bool
@@ -82,21 +82,21 @@ func newAuditCmd(g *globalOpts) *cobra.Command {
 		Use:   "audit <name>",
 		Short: "Reconcile who should be on each assignment repo against who actually is",
 		Long: `Compare the students who should have access to the <name>-* repos (resolved
-from the roster, and the teams file for a group assignment) against the actual
+from the roster, and the groups file for a group assignment) against the actual
 state on GitHub, reporting each student as one of: on repo (accepted), invited
 (pending), invited (EXPIRED), MISSING (the repo exists but they have neither
 access nor an invitation), or NO REPO (the repo was never created). It also
 flags any access that is present but not expected.
 
-For a group assignment it also warns (but never aborts) when the teams file
-leaves an enrolled student on no team or puts one on more than one team -- the
+For a group assignment it also warns (but never aborts) when the groups file
+leaves an enrolled student in no group or puts one in more than one group -- the
 same inconsistencies assign refuses to create repos for without --force.
 
 Students are added as outside collaborators, so a grant becomes an invitation
 they must accept within seven days; --renew re-issues access for everyone whose
 invitation expired or who is missing entirely (it never removes access).`,
 		Example: `  gh cls audit hw1 --roster roster.csv
-  gh cls audit project --roster roster.csv --teams teams.yml
+  gh cls audit project --roster roster.csv --groups groups.yml
   gh cls audit hw1 --roster roster.csv --renew`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -105,7 +105,7 @@ invitation expired or who is missing entirely (it never removes access).`,
 	}
 	f := cmd.Flags()
 	f.StringVarP(&o.roster, "roster", "r", "", "path to the roster CSV (required)")
-	f.StringVarP(&o.teams, "teams", "T", "", "path to the teams file (required for group, rejected for individual)")
+	f.StringVarP(&o.groups, "groups", "G", "", "path to the groups file (required for group, rejected for individual)")
 	f.BoolVar(&o.all, "all", false, "list every student, including those already on their repo")
 	f.BoolVar(&o.renew, "renew", false, "re-issue access for expired or missing students")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "with --renew, show what would change without doing it")
@@ -142,7 +142,7 @@ func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
 		return err
 	}
 
-	units, report, r, err := loadUnits(name, policy.Type, o.roster, o.teams)
+	units, report, r, err := loadUnits(name, policy.Type, o.roster, o.groups)
 	if err != nil {
 		return err
 	}
@@ -360,7 +360,7 @@ func reportExtras(out io.Writer, results []repoAudit) {
 	if !any {
 		return
 	}
-	fmt.Fprintln(out, "\nUnexpected access (not in the roster/teams for this assignment):")
+	fmt.Fprintln(out, "\nUnexpected access (not in the roster/groups for this assignment):")
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
 	for _, r := range results {
 		for _, e := range r.extra {

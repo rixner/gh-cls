@@ -25,7 +25,7 @@
 //     does not appear in the repo's direct-collaborator list, in which case the
 //     freeze assertions are skipped (but freeze/undo still run).
 //   - GH_CLS_STUDENT2  (optional) a second member login, added to the group
-//     team for extra coverage.
+//     group for extra coverage.
 package live
 
 import (
@@ -296,19 +296,19 @@ func TestLive(t *testing.T) {
 		t.Errorf("unknown-key error should name the missing repo %s-%s, got: %v", name, bogus, err)
 	}
 
-	// 6. group flow — exercises the teams resolution and multi-member grants. The
+	// 6. group flow: exercises the groups resolution and multi-member grants. The
 	// source is already a template repository by now, so no --mark-source is needed.
 	mustRunCLI(t, ctx, "template", grp+"-template", "-s", org+"/"+srcName)
 	assertTemplate(t, ctx, client, org, grp+"-template")
 	rosterGrp := filepath.Join(dir, "roster-group.csv")
-	teamsPath := filepath.Join(dir, "teams.yml")
+	groupsPath := filepath.Join(dir, "groups.yml")
 	members := []string{student1}
 	if student2 != "" {
 		members = append(members, student2)
 	}
 	writeRoster(t, rosterGrp, members...)
-	writeTeams(t, teamsPath, "alpha", members)
-	mustRunCLI(t, ctx, "assign", "-r", rosterGrp, "-T", teamsPath, "-p", grp)
+	writeGroups(t, groupsPath, "alpha", members)
+	mustRunCLI(t, ctx, "assign", "-r", rosterGrp, "-G", groupsPath, "-p", grp)
 	grpRepo := grp + "-alpha"
 	assertRepoExists(t, ctx, client, org, grpRepo)
 	// The group assignment uses pr feedback: assert the feedback PR actually
@@ -415,16 +415,16 @@ func writeRoster(t *testing.T, path string, logins ...string) {
 	}
 }
 
-// writeTeams writes a teams YAML with a single team and its member identifiers.
-func writeTeams(t *testing.T, path, team string, members []string) {
+// writeGroups writes a groups YAML with a single group and its member identifiers.
+func writeGroups(t *testing.T, path, group string, members []string) {
 	t.Helper()
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s:\n", team)
+	fmt.Fprintf(&b, "%s:\n", group)
 	for _, m := range members {
 		fmt.Fprintf(&b, "  - %s\n", m)
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
-		t.Fatalf("writing teams file %s: %v", path, err)
+		t.Fatalf("writing groups file %s: %v", path, err)
 	}
 }
 
