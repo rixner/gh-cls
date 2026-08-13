@@ -26,6 +26,12 @@ type fakeAuditState struct {
 	silent  map[string]bool // logins whose grant records but produces no access
 	nextID  int64
 
+	// frozen is each repo's recorded freeze state; absent means never recorded.
+	frozen map[string]freezeState
+	// noProperty simulates an org that never ran setup, so the freeze record
+	// cannot be read at all.
+	noProperty bool
+
 	added   []string // "repo:login:perm"
 	deleted []string // "repo:invID"
 }
@@ -40,6 +46,31 @@ func newFakeAudit(role string) *fakeAuditState {
 		addErr:  map[string]bool{},
 		silent:  map[string]bool{},
 		nextID:  1000,
+		frozen:  map[string]freezeState{},
+	}
+}
+
+// withProperties wires the freeze-record reads onto a fake. Every command that
+// consults the record needs these, so the fakes share one helper.
+func (s *fakeAuditState) withProperties(fk *ghtest.Fake) {
+	fk.GetPropertyDefinitionFunc = func(_ context.Context, _, name string) (*gh.PropertyDefinition, bool, error) {
+		if s.noProperty {
+			return nil, false, nil
+		}
+		return &gh.PropertyDefinition{
+			PropertyName:     name,
+			ValueType:        gh.PropertyTypeTrueFalse,
+			ValuesEditableBy: gh.PropertyEditableByOrg,
+		}, true, nil
+	}
+	fk.ListRepoPropertyValuesFunc = func(context.Context, string) (map[string]map[string]string, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		out := make(map[string]map[string]string, len(s.frozen))
+		for repo, state := range s.frozen {
+			out[repo] = map[string]string{frozenProperty: string(state)}
+		}
+		return out, nil
 	}
 }
 
@@ -99,6 +130,7 @@ func (s *fakeAuditState) fake() *ghtest.Fake {
 		s.invites[repo] = rest
 		return nil
 	}
+	s.withProperties(fk)
 	return fk
 }
 
@@ -306,6 +338,180 @@ func TestAuditRenewExpiredAndMissing(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "access for 2 student(s), 0 failed") {
 		t.Errorf("summary wrong:\n%s", buf.String())
+	}
+}
+
+func TestAuditReportsFrozenStudentsAsFrozen(t *testing.T) {
+	// A freeze leaves every student on their repo with read. Classifying that as
+	// MISSING (the old behavior, because "on repo" required push) reported a
+	// correctly frozen class as entirely absent and told the instructor to run
+	// --renew, which would have unfrozen the assignment.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true, "hw1-grace": true}
+	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull")}
+	fake.collabs["hw1-alan"] = []gh.Collaborator{collab("alan", "pull")}
+	fake.collabs["hw1-grace"] = []gh.Collaborator{collab("grace", "pull")}
+	o := newAuditOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "MISSING") {
+		t.Errorf("a frozen student is on their repo, not missing:\n%s", out)
+	}
+	if strings.Contains(out, "Action needed") {
+		t.Errorf("a correctly frozen assignment needs no action:\n%s", out)
+	}
+	if !strings.Contains(out, "0 on repo, 3 frozen") {
+		t.Errorf("summary should count the students as frozen:\n%s", out)
+	}
+	if !strings.Contains(out, "All 3 student(s) are on their repos (3 frozen).") {
+		t.Errorf("the all-settled line should note the freeze:\n%s", out)
+	}
+}
+
+func TestAuditRenewLeavesAFrozenAssignmentAlone(t *testing.T) {
+	// The loophole this closes: --renew re-granting push to a frozen class would
+	// silently undo the deadline. Frozen students are settled, so renew must find
+	// nothing to do.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true, "hw1-grace": true}
+	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull")}
+	fake.collabs["hw1-alan"] = []gh.Collaborator{collab("alan", "pull")}
+	fake.collabs["hw1-grace"] = []gh.Collaborator{collab("grace", "pull")}
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.renew = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.added) != 0 {
+		t.Errorf("renew must not re-grant access on a frozen assignment: %v", fake.added)
+	}
+	if !strings.Contains(buf.String(), "nothing to re-issue") {
+		t.Errorf("renew should report nothing to do:\n%s", buf.String())
+	}
+}
+
+func TestAuditAllListsFrozenStudents(t *testing.T) {
+	// Frozen is a settled state, so it is summarized rather than listed by
+	// default; --all must still show it, with its own label.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true}
+	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull")}
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.all = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "on repo (frozen)") {
+		t.Errorf("--all should list the frozen student with its label:\n%s", buf.String())
+	}
+}
+
+func TestAuditRenewRestoresReadOnAFrozenRepo(t *testing.T) {
+	// The residual hole the freeze record closes. These students have no access at
+	// all (expired or never issued), so their own repo carries no permission to
+	// infer the deadline state from. Without the record, renew re-grants push and
+	// reopens the assignment for exactly the students it touches.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true, "hw1-grace": true}
+	fake.frozen["hw1-ada"] = freezeFrozen
+	fake.frozen["hw1-alan"] = freezeFrozen
+	fake.frozen["hw1-grace"] = freezeFrozen
+	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull")}      // frozen, settled
+	fake.invites["hw1-grace"] = []gh.Invitation{expiredInvite(99, "grace")} // expired
+	// hw1-alan is empty: missing
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.renew = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("renew should succeed, got %v\n%s", err, buf.String())
+	}
+	for _, want := range []string{"hw1-grace:grace:pull", "hw1-alan:alan:pull"} {
+		if !contains(fake.added, want) {
+			t.Errorf("a frozen repo must restore read, not write: %v", fake.added)
+		}
+	}
+	for _, a := range fake.added {
+		if strings.HasSuffix(a, ":push") {
+			t.Errorf("no push may be granted on a frozen assignment: %v", fake.added)
+		}
+	}
+	if !strings.Contains(buf.String(), "2 of them are on frozen repos and are being restored to read") {
+		t.Errorf("the run should say it withheld write:\n%s", buf.String())
+	}
+}
+
+func TestAuditRenewRestoresWriteOnAThawedExtensionRepo(t *testing.T) {
+	// The state that makes assignment-wide inference impossible: the deadline has
+	// passed for the class, but one repo has an extension. The record is per repo,
+	// so alan gets write back while grace stays read.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true, "hw1-grace": true}
+	fake.frozen["hw1-ada"] = freezeFrozen
+	fake.frozen["hw1-alan"] = freezeThawed // extension granted
+	fake.frozen["hw1-grace"] = freezeFrozen
+	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull")}
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.renew = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("renew should succeed, got %v\n%s", err, buf.String())
+	}
+	if !contains(fake.added, "hw1-alan:alan:push") {
+		t.Errorf("the extension repo should get write back: %v", fake.added)
+	}
+	if !contains(fake.added, "hw1-grace:grace:pull") {
+		t.Errorf("a frozen repo in the same assignment should still get read: %v", fake.added)
+	}
+}
+
+func TestAuditRenewGrantsWriteWhenNothingIsFrozen(t *testing.T) {
+	// The ordinary pre-deadline repair: no repo has ever been stamped, so renew
+	// restores write as it always did. An unrecorded repo must not read as frozen.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true, "hw1-grace": true}
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.renew = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"hw1-ada:ada:push", "hw1-alan:alan:push", "hw1-grace:grace:push"} {
+		if !contains(fake.added, want) {
+			t.Errorf("an unfrozen assignment should restore write: %v", fake.added)
+		}
+	}
+	if strings.Contains(buf.String(), "restored to read") {
+		t.Errorf("nothing is frozen, so no read-restore note belongs:\n%s", buf.String())
+	}
+}
+
+func TestAuditRenewAbortsWithoutTheFreezeRecord(t *testing.T) {
+	// An org that never ran setup has no record to consult. Defaulting to "nothing
+	// is frozen" would re-grant write across an assignment whose deadline may have
+	// passed, so renew must refuse rather than guess.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true}
+	fake.noProperty = true
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.renew = true
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "gh cls setup") {
+		t.Fatalf("renew should abort and name the fix, got %v", err)
+	}
+	if len(fake.added) != 0 {
+		t.Errorf("nothing may be granted when the freeze state is unknown: %v", fake.added)
 	}
 }
 

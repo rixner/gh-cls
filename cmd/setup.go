@@ -19,6 +19,8 @@ type setupClient interface {
 	CopilotSeatCount(ctx context.Context, org string) (int, bool, error)
 	GetTeam(ctx context.Context, org, slug string) (*gh.Team, bool, error)
 	CreateTeam(ctx context.Context, org, name string) (*gh.Team, error)
+	GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
+	SetPropertyDefinition(ctx context.Context, org string, def gh.PropertyDefinition) error
 }
 
 // setupOpts carries the resolved flags and dependencies for `gh cls setup`.
@@ -68,6 +70,7 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 		fmt.Fprintln(out, "  - disable GitHub Actions org-wide")
 		fmt.Fprintln(out, "  - report Copilot seat status")
 		fmt.Fprintf(out, "  - ensure staff team %q exists\n", staffTeam)
+		fmt.Fprintf(out, "  - declare the %q organization property that freeze records deadline state in\n", frozenProperty)
 		return nil
 	}
 
@@ -180,6 +183,15 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 		results = append(results, result{"staff team", statusChanged, "created " + staffTeam})
 	}
 
+	// The freeze-state property. freeze records each repo's deadline state here and
+	// audit --renew reads it to decide what access to restore, so it must exist
+	// before the first freeze rather than being created on demand at a deadline.
+	r, err = ensureFrozenProperty(ctx, client, org)
+	if err != nil {
+		return nil, err
+	}
+	results = append(results, r)
+
 	// Post-condition: re-read the org and confirm the settings we changed actually
 	// took. Some plan tiers silently accept a PATCH without applying it, so a 200
 	// is not proof; any setting that did not stick becomes a loud warning so the
@@ -187,6 +199,54 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 	results = append(results, verifyHardening(ctx, client, org)...)
 
 	return results, nil
+}
+
+// ensureFrozenProperty declares the organization custom property freeze records
+// its state in. It re-asserts the declaration whenever the existing one differs,
+// which covers the case that matters most: a property widened to let repository
+// actors edit values, which would let a repo admin rewrite a deadline record.
+func ensureFrozenProperty(ctx context.Context, client setupClient, org string) (result, error) {
+	want := gh.PropertyDefinition{
+		PropertyName:     frozenProperty,
+		ValueType:        gh.PropertyTypeTrueFalse,
+		Description:      frozenPropertyDescription,
+		ValuesEditableBy: gh.PropertyEditableByOrg,
+	}
+
+	cur, exists, err := client.GetPropertyDefinition(ctx, org, frozenProperty)
+	if err != nil {
+		return result{}, fmt.Errorf("checking the %q organization property: %w", frozenProperty, err)
+	}
+	if exists && cur.ValueType == want.ValueType && cur.ValuesEditableBy == want.ValuesEditableBy {
+		return result{"freeze-state property", statusAlready, frozenProperty}, nil
+	}
+	if err := client.SetPropertyDefinition(ctx, org, want); err != nil {
+		return result{}, fmt.Errorf("declaring the %q organization property: %w", frozenProperty, err)
+	}
+
+	// Post-condition: a 200 is not proof. Confirm the property reads back with the
+	// restricted edit scope, since that is what keeps a repository-level role from
+	// rewriting a deadline record. A declaration that did not stick is a warning
+	// rather than an abort, matching every other setting here: setup has already
+	// changed the org by this point, so failing outright would leave it half
+	// hardened, and freeze refuses to run without the property anyway.
+	got, ok, err := client.GetPropertyDefinition(ctx, org, frozenProperty)
+	if err != nil {
+		return result{}, fmt.Errorf("verifying the %q organization property: %w", frozenProperty, err)
+	}
+	switch {
+	case !ok:
+		return result{"freeze-state property", statusWarning,
+			fmt.Sprintf("%s is absent after being declared, so freeze will refuse to run; add it under Settings > Custom properties", frozenProperty)}, nil
+	case got.ValuesEditableBy != gh.PropertyEditableByOrg:
+		return result{"freeze-state property", statusWarning,
+			fmt.Sprintf("%s is editable by %q, not %q, so a repository admin could rewrite a deadline record; fix it under Settings > Custom properties", frozenProperty, got.ValuesEditableBy, gh.PropertyEditableByOrg)}, nil
+	}
+	verb := "created"
+	if exists {
+		verb = "corrected"
+	}
+	return result{"freeze-state property", statusChanged, verb + " " + frozenProperty}, nil
 }
 
 // verifyHardening re-reads the org and returns a warning for each setting that

@@ -194,7 +194,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 
 - **setup** sets base permission to none, disables member repo/Pages creation,
   forking of private repositories, and Actions org-wide, reports Copilot status,
-  and ensures the staff team exists. All actions are idempotent and report changed vs already-in-desired-state. It also
+  ensures the staff team exists, and declares the `gh-cls-frozen` organization
+  property that `freeze` records deadline state in (see **The freeze record**
+  below). All actions are idempotent and report changed vs already-in-desired-state. It also
   prints an optional-hardening checklist for member-privilege toggles that exist
   only in the web UI (installing apps, changing repository visibility, deleting or
   transferring repositories, creating teams). These are the instructor's to
@@ -240,17 +242,29 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `--teams`). Because students join as outside collaborators, a grant becomes an
   invitation they must accept within seven days, so `--renew` re-issues access for
   everyone whose invitation expired or who is missing entirely (it never removes
-  access). `--all` lists everyone, not just those needing attention. It also
+  access). A student already on a frozen repo reads as *on repo (frozen)*, which
+  is a settled state: it is not listed by default and `--renew` leaves it alone.
+  For students `--renew` does act on, the access it restores follows the repo's
+  freeze record, so renewing after a deadline hands back read, not write.
+  `--all` lists everyone, not just those needing attention. It also
   warns (never aborts) when the teams file leaves a student on no team or on more
   than one, the same inconsistencies assign refuses to create repos for.
-- **freeze** operates purely on each repo's current direct collaborators, never
-  the roster, so a drifted roster cannot let anyone escape the freeze. It skips
+- **freeze** operates purely on each repo's current direct collaborators and
+  pending invitations, never the roster, so a drifted roster cannot let anyone
+  escape the freeze. **Pending invitations are downgraded too**: a student who has
+  not accepted yet is not a collaborator, but their invitation still carries the
+  write access it was issued with, so leaving it alone would let them accept after
+  the deadline and push. Expired invitations are left as they are, since they can
+  no longer be accepted, and `audit --renew` is how you re-issue one. Each repo's
+  state is also recorded (see **The freeze record** below), so `freeze` requires
+  `setup` to have run and refuses to start otherwise. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix
   is never frozen. Naming one or more student/team keys (`freeze hw1 alice`)
   scopes it to just those `<name>-<key>` repos, for granting or ending an
   individual extension; an unknown key aborts the run before any change.
-  `--undo` grants push to every non-admin direct collaborator, including any
-  who were deliberately read-only before the freeze.
+  `--undo` grants push to every non-admin direct collaborator, restores every live
+  invitation to write, and records the repo as thawed, including any collaborator
+  who was deliberately read-only before the freeze.
 - **feedback** posts one feedback file per student (or team) as a comment on that
   repo's feedback issue or PR: the artifact assign created, named by the
   assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or
@@ -282,17 +296,62 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   the assignment's policy. With `--detail` it also scans each repo for its freeze
   state (write vs read for non-admins, including a "mixed" partial freeze) and its
   feedback issue/PR state (open, closed, or missing), printing per-assignment
-  counts and writing a per-repo CSV. The CSV is a timestamped file in the current
+  counts and writing a per-repo CSV. The freeze state counts a pending invitation
+  as the access it will confer on acceptance, so a repo whose collaborators are
+  all read-only but which still has a write invitation outstanding reads as
+  unfrozen. Each repo's actual access is compared against its freeze record and
+  any disagreement is reported as `DRIFT`, which catches a freeze that did not
+  fully take or an extension that was never actually granted. The CSV is a
+  timestamped file in the current
   directory (or `--out <path>`) and is never overwritten: a same-second re-run
   rolls to a new name, so a run, fix, re-run loop leaves both files to compare.
-  `--detail` costs one to two API calls per repo; the default summary does not.
-  status reads only, so it needs no org-owner role.
+  `--detail` costs two to three API calls per repo, plus one org-wide call for the
+  freeze record; the default summary costs neither. status reads only, so it needs
+  no org-owner role, and it still works on an org that has not run `setup`,
+  reporting every repo as *not recorded*.
+
+## The freeze record
+
+`freeze` records each repository's deadline state in a `gh-cls-frozen`
+organization custom property (`true` when frozen, `false` after an `--undo`,
+absent if never frozen). `setup` declares the property; `freeze` refuses to run
+until it exists, because a freeze it cannot record is one that `audit --renew`
+can silently undo.
+
+The record exists because freeze state cannot be reliably inferred from
+permissions. `audit --renew` restores access to students who have **none**, so
+their own repository holds no permission to read the state from, and on an
+individual assignment that student is the repo's only collaborator. Widening the
+question to the whole assignment does not help either: `freeze hw1 alice --undo`
+grants one extension, so a partly-frozen assignment is a normal state rather than
+an anomaly. Without a per-repository record, a renew after the deadline hands
+push back.
+
+A custom property was chosen over the alternatives on four counts:
+
+- **It is not a git ref**, so no push can remove it. A tag or git note can be
+  deleted by anyone with write access.
+- **Students cannot change it.** The property is declared `values_editable_by:
+  org_actors`, so not even a repository admin can set a value, and students join
+  as outside collaborators with push. `setup` re-asserts this on every run and
+  warns if it has been widened. Repository topics, by contrast, are editable by
+  the Maintain role.
+- **It is free.** Custom properties work on GitHub Free organizations, so the
+  deadline lock does not depend on a paid plan. That rules out doing this with a
+  ruleset, which needs Team or higher for private repositories.
+- **Updates are atomic.** Setting one property leaves a repository's other
+  property values untouched. The topics API replaces the whole set, so it would
+  need a read-modify-write that can lose a concurrent change.
+
+Reading it is cheap: one org-wide call returns every repository's value, so it
+does not scale with class size.
 
 ## Before a real run
 
 Preview any command with `--dry-run` first. The `--branch-protection` ruleset
 requires the organization to be on GitHub's Team plan or higher; confirm under
-**Billing & plans** that the org shows "Team".
+**Billing & plans** that the org shows "Team". The freeze record needs no paid
+plan.
 
 ## Development
 

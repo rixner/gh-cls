@@ -95,10 +95,17 @@ reports `0` changes — the automated test still enrolls you as a direct
 collaborator and then asserts the write→read transition, so the freeze assertion
 would **fail**.
 
-For the freeze assertions to run, `GH_CLS_STUDENT1` must also be an *accepted* org
-member. If it is set but only a pending invite (or otherwise not a direct
-collaborator), the run still passes but logs that it skipped the freeze downgrade
-assertions — it runs freeze/undo anyway to prove they don't error.
+For the *collaborator* freeze assertions to run, `GH_CLS_STUDENT1` must also be an
+*accepted* org member. If it is set but only a pending invite, the run instead
+asserts the **invitation** downgrade (freeze drops the pending invitation from
+write to read and `--undo` restores it), which is the same deadline lock along
+the path that student is actually on. Either way one of the two transitions is
+checked; enrolling an accepted member exercises both.
+
+The freeze also records each repo's state in the `gh-cls-frozen` organization
+property, which `setup` declares. The run exercises `setup` first, so the
+property is in place by the time it freezes; if you freeze by hand against an org
+that has never run `setup`, the command refuses to start.
 
 Afterward, confirm the org has no `ghclslive*` / `ghclssrc*` repos left — that
 verifies cleanup ran.
@@ -174,10 +181,23 @@ Run each step **with `--dry-run` first**, then for real.
    `skipped`.
 
 6. **`gh cls freeze hw1`** — `<STU>` drops to **read** (the `hw1-template` repo is
-   skipped: freeze ignores template repositories). (Single-account fallback:
-   reports `0` changed because you are admin-skipped.)
+   skipped: freeze ignores template repositories). If `<STU>` has not accepted
+   their invite yet, the output instead reports a pending invitation downgraded to
+   read; check it under **Settings → Collaborators and teams → Pending
+   invitations**, which should now read *Read* rather than *Write*. Either way the
+   repo is recorded frozen: check **Settings → Custom properties** on the repo, or
+   run `gh api /orgs/$ORG/properties/values`. (Single-account
+   fallback: reports `0` changed because you are admin-skipped, but the repo is
+   still recorded.)
 
-7. **`gh cls freeze hw1 --undo`** — push restored. Re-run → `0` changes.
+7. **`gh cls freeze hw1 --undo`** — push restored, any pending invitation goes
+   back to *Write*, and `gh-cls-frozen` becomes `false` rather than being cleared.
+   Re-run → `0` changes.
+
+7b. **`gh cls audit hw1 -r roster.csv --renew` while frozen** — reports nothing to
+   re-issue, since a student on a frozen repo is a settled state. Re-freeze, then
+   remove `<STU>`'s access by hand in the web UI and re-run: the renew should
+   restore **read**, not write, because the repo is recorded frozen.
 
 8. **Group assignment (optional)** — build a group template
    (`gh cls template proj-template -s $ORG/hw1-src`), add a `group` assignment with

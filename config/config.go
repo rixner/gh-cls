@@ -90,7 +90,7 @@ func (c *Config) Validate() error {
 		for _, b := range names[i+1:] {
 			bDash := b + "-"
 			if strings.HasPrefix(bDash, aDash) || strings.HasPrefix(aDash, bDash) {
-				return fmt.Errorf("assignment names %q and %q overlap: repositories of one would match the other's <name>-* prefix; rename one", a, b)
+				return fmt.Errorf("assignment names %q and %q overlap: repositories of one would match the other's <name>-* prefix; rename one so neither extends the other with a \"-\" (a paired variant reads well with another separator, e.g. \"hw1\" and \"hw1_makeup\" rather than \"hw1\" and \"hw1-makeup\")", a, b)
 			}
 		}
 	}

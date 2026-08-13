@@ -241,8 +241,12 @@ func TestLive(t *testing.T) {
 	case studentIsCollaborator && !isEffectiveAdmin(t, ctx, client, org, repo, student1):
 		mustRunCLI(t, ctx, "freeze", name)
 		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
+		assertFrozenRecord(t, ctx, client, org, repo, "true")
 		mustRunCLI(t, ctx, "freeze", "-u", name)
 		assertPushGranted(t, ctx, client, org, repo, student1)
+		// Recorded thawed, not cleared: an extension must stay distinguishable from
+		// a repo that was never frozen.
+		assertFrozenRecord(t, ctx, client, org, repo, "false")
 		out = mustRunCLI(t, ctx, "freeze", "-u", name)
 		if !strings.Contains(out, "0 collaborator grant(s)") {
 			t.Errorf("a second --undo should change nothing, got:\n%s", out)
@@ -267,11 +271,19 @@ func TestLive(t *testing.T) {
 			t.Errorf("a second --undo should change nothing, got:\n%s", out)
 		}
 	default:
-		t.Logf("student %q is not a direct collaborator on %s — likely a pending invite; "+
-			"make the account a member of %s to exercise the freeze downgrade. "+
-			"Running freeze/undo without downgrade assertions.", student1, repo, org)
+		// A pending invite is not a collaborator, so the push->pull read above is
+		// unobservable, but the invitation itself is exactly what freeze must
+		// downgrade, or the student accepts after the deadline and lands with write.
+		// Assert that transition here instead.
+		t.Logf("student %q is not a direct collaborator on %s, a pending invite; "+
+			"asserting the invitation downgrade instead of the collaborator one. "+
+			"Make the account a member of %s to exercise both.", student1, repo, org)
 		mustRunCLI(t, ctx, "freeze", name)
+		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
+		assertFrozenRecord(t, ctx, client, org, repo, "true")
 		mustRunCLI(t, ctx, "freeze", "-u", name)
+		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationWrite)
+		assertFrozenRecord(t, ctx, client, org, repo, "false")
 	}
 
 	// 5b. A mistyped extension key must abort before any change. This is a
@@ -612,6 +624,43 @@ func assertPushGranted(t *testing.T, ctx context.Context, client gh.Client, org,
 		t.Errorf("%s should have push on %s/%s", login, org, repo)
 	}
 	return true
+}
+
+// assertFrozenRecord requires the repository's recorded freeze state to be want.
+// This is the record audit --renew consults, and the one part of the deadline
+// lock that only a real organization can confirm: the property has to exist,
+// accept a value, and read it back.
+func assertFrozenRecord(t *testing.T, ctx context.Context, client gh.Client, org, repo, want string) {
+	t.Helper()
+	values, err := client.GetRepoPropertyValues(ctx, org, repo)
+	if err != nil {
+		t.Fatalf("reading custom property values of %s/%s: %v", org, repo, err)
+	}
+	if got := values["gh-cls-frozen"]; got != want {
+		t.Errorf("gh-cls-frozen on %s = %q, want %q", repo, got, want)
+	}
+}
+
+// assertInvitationPermission requires login to have a live (non-expired) pending
+// invitation conferring want. This is the freeze path for a student who has not
+// accepted yet: their access is carried entirely by the invitation, so it is the
+// only place the deadline can be enforced for them.
+func assertInvitationPermission(t *testing.T, ctx context.Context, client gh.Client, org, repo, login, want string) {
+	t.Helper()
+	invs, err := client.ListRepoInvitations(ctx, org, repo)
+	if err != nil {
+		t.Fatalf("listing invitations of %s/%s: %v", org, repo, err)
+	}
+	for _, inv := range invs {
+		if !strings.EqualFold(inv.Invitee.Login, login) || inv.Expired {
+			continue
+		}
+		if inv.Permissions != want {
+			t.Errorf("%s's pending invitation on %s confers %q, want %q", login, repo, inv.Permissions, want)
+		}
+		return
+	}
+	t.Errorf("%s has no live pending invitation on %s/%s, so the invitation downgrade could not be checked", login, org, repo)
 }
 
 // isEffectiveAdmin reports whether login has standing admin on the repo. An org

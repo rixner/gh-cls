@@ -21,6 +21,8 @@ type auditClient interface {
 	ListRepoInvitations(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 	DeleteRepoInvitation(ctx context.Context, owner, repo string, id int64) error
+	GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
+	ListRepoPropertyValues(ctx context.Context, org string) (map[string]map[string]string, error)
 }
 
 // memberStatus is one expected student's actual access state on their repo.
@@ -28,16 +30,26 @@ type memberStatus int
 
 const (
 	statusOnRepo  memberStatus = iota // accepted: a direct collaborator with write access
+	statusFrozen                      // accepted: a direct collaborator holding read, as a freeze leaves them
 	statusPending                     // invited, invitation not yet expired
 	statusExpired                     // invited, but the invitation has expired
 	statusMissing                     // repo exists but the student has no access or invitation
 	statusNoRepo                      // the expected repo does not exist
 )
 
+// settled reports whether the student needs no action: they are on their repo,
+// either writable or frozen. Both are correct end states, so neither is listed
+// by default nor picked up by --renew.
+func (s memberStatus) settled() bool {
+	return s == statusOnRepo || s == statusFrozen
+}
+
 func (s memberStatus) label() string {
 	switch s {
 	case statusOnRepo:
 		return "on repo"
+	case statusFrozen:
+		return "on repo (frozen)"
 	case statusPending:
 		return "invited (pending)"
 	case statusExpired:
@@ -192,14 +204,20 @@ func (o *auditOpts) auditUnit(ctx context.Context, client auditClient, org, name
 	}
 
 	writeAccess := map[string]bool{}
+	readAccess := map[string]bool{}
 	isAdmin := map[string]bool{}
 	for _, c := range collabs {
 		l := strings.ToLower(c.Login)
 		if c.Permissions.Admin {
 			isAdmin[l] = true
 		}
+		// Read is tracked separately from write because it is where a freeze leaves
+		// a student. Folding it in with "no access" would report a correctly frozen
+		// class as MISSING and hand every one of them to --renew.
 		if c.CanPush() {
 			writeAccess[l] = true
+		} else if c.Permissions.Pull {
+			readAccess[l] = true
 		}
 	}
 	pending := map[string]bool{}
@@ -221,6 +239,8 @@ func (o *auditOpts) auditUnit(ctx context.Context, client auditClient, org, name
 		switch {
 		case writeAccess[l]:
 			ma.status = statusOnRepo
+		case readAccess[l]:
+			ma.status = statusFrozen
 		case pending[l]:
 			ma.status = statusPending
 		case expired[l] != 0:
@@ -279,7 +299,7 @@ func reportAudit(out io.Writer, org, name string, showAll bool, results []repoAu
 		for _, m := range r.members {
 			students++
 			counts[m.status]++
-			if m.status == statusOnRepo && !showAll {
+			if m.status.settled() && !showAll {
 				continue
 			}
 			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", r.repo, dash(m.id), m.login, m.status.label())
@@ -290,11 +310,22 @@ func reportAudit(out io.Writer, org, name string, showAll bool, results []repoAu
 		tw.Flush()
 	}
 	if shown == 0 {
-		fmt.Fprintf(out, "All %d student(s) are on their repos.\n", students)
+		note := ""
+		if counts[statusFrozen] > 0 {
+			note = fmt.Sprintf(" (%d frozen)", counts[statusFrozen])
+		}
+		fmt.Fprintf(out, "All %d student(s) are on their repos%s.\n", students, note)
 	}
 
-	fmt.Fprintf(out, "\nSummary: %d on repo, %d pending, %d expired, %d missing, %d without a repo (across %d repo(s), %d student(s)).\n",
-		counts[statusOnRepo], counts[statusPending], counts[statusExpired], counts[statusMissing], counts[statusNoRepo], repos, students)
+	// Frozen appears only when there is one, so an assignment that has never been
+	// frozen (the common case) reads exactly as before rather than carrying a
+	// permanent "0 frozen".
+	frozen := ""
+	if counts[statusFrozen] > 0 {
+		frozen = fmt.Sprintf("%d frozen, ", counts[statusFrozen])
+	}
+	fmt.Fprintf(out, "\nSummary: %d on repo, %s%d pending, %d expired, %d missing, %d without a repo (across %d repo(s), %d student(s)).\n",
+		counts[statusOnRepo], frozen, counts[statusPending], counts[statusExpired], counts[statusMissing], counts[statusNoRepo], repos, students)
 
 	if action := counts[statusExpired] + counts[statusMissing]; action > 0 {
 		fmt.Fprintf(out, "Action needed: %d expired + %d missing — re-issue with `gh cls audit %s --roster <file> --renew`.\n",
@@ -356,21 +387,39 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 		}
 	}
 
+	// A student being renewed has no access on their repo, which is why they are
+	// here, so their own repo carries no permission to read the deadline state
+	// from. The recorded freeze state is what says whether to restore write or
+	// read; without it a renew after a deadline would hand push back.
+	frozen, err := readFrozenStates(ctx, client, org)
+	if err != nil {
+		return fmt.Errorf("aborting --renew: %w", err)
+	}
+
 	type job struct {
 		repo, login string
 		invID       int64 // non-zero => cancel this expired invitation first
+		permission  string
 	}
 	var jobs []job
 	noRepo := 0
+	restoringRead := 0
 	for _, r := range results {
+		perm := frozen[r.repo].grantPermission()
 		for _, m := range r.members {
 			switch m.status {
 			case statusExpired:
-				jobs = append(jobs, job{r.repo, m.login, m.invID})
+				jobs = append(jobs, job{r.repo, m.login, m.invID, perm})
 			case statusMissing:
-				jobs = append(jobs, job{r.repo, m.login, 0})
+				jobs = append(jobs, job{r.repo, m.login, 0, perm})
 			case statusNoRepo:
 				noRepo++
+				continue
+			default:
+				continue
+			}
+			if perm == "pull" {
+				restoringRead++
 			}
 		}
 	}
@@ -380,6 +429,9 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 		prefix = "[dry-run] "
 	}
 	fmt.Fprintf(out, "%sRe-issuing access for %d student(s) in %s\n", prefix, len(jobs), org)
+	if restoringRead > 0 {
+		fmt.Fprintf(out, "note: %d of them are on frozen repos and are being restored to read, not write\n", restoringRead)
+	}
 	if noRepo > 0 {
 		fmt.Fprintf(out, "note: %d student(s) have no repo to renew on — run `gh cls assign %s` first\n", noRepo, name)
 	}
@@ -401,11 +453,11 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 				return r
 			}
 		}
-		if err := client.AddCollaborator(ctx, org, j.repo, j.login, "push"); err != nil {
-			r.err = fmt.Errorf("re-inviting %s on %s (an expired invitation, if any, was already cancelled; re-run `gh cls assign %s` if access is now absent): %w", j.login, j.repo, name, err)
+		if err := client.AddCollaborator(ctx, org, j.repo, j.login, j.permission); err != nil {
+			r.err = fmt.Errorf("re-inviting %s on %s with %s (an expired invitation, if any, was already cancelled; re-run `gh cls assign %s` if access is now absent): %w", j.login, j.repo, j.permission, name, err)
 			return r
 		}
-		if err := o.verifyRenewed(ctx, client, org, j.repo, j.login); err != nil {
+		if err := o.verifyRenewed(ctx, client, org, j.repo, j.login, j.permission); err != nil {
 			r.err = err
 			return r
 		}
@@ -414,16 +466,24 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 	return reportRenew(out, o.dryRun, res)
 }
 
-// verifyRenewed confirms a re-issued student now holds access or has a fresh
-// (non-expired) invitation. A 200 on the add is not proof; this is the
-// post-condition that the access was actually restored.
-func (o *auditOpts) verifyRenewed(ctx context.Context, client auditClient, org, repo, login string) error {
+// verifyRenewed confirms a re-issued student now holds the access they were
+// granted, or has a fresh (non-expired) invitation. A 200 on the add is not
+// proof; this is the post-condition that the access was actually restored. On a
+// frozen repo the grant is read, so requiring push here would fail every renew
+// after a deadline.
+func (o *auditOpts) verifyRenewed(ctx context.Context, client auditClient, org, repo, login, permission string) error {
 	collabs, err := client.ListDirectCollaborators(ctx, org, repo)
 	if err != nil {
 		return fmt.Errorf("verifying %s on %s after re-inviting: %w", login, repo, err)
 	}
 	for _, c := range collabs {
-		if strings.EqualFold(c.Login, login) && c.CanPush() {
+		if !strings.EqualFold(c.Login, login) {
+			continue
+		}
+		if permission == "pull" && c.Permissions.Pull {
+			return nil
+		}
+		if permission != "pull" && c.CanPush() {
 			return nil
 		}
 	}

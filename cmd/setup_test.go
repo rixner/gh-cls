@@ -22,9 +22,14 @@ type fakeSetupState struct {
 	teamExists     bool
 	ignorePatches  bool // accept PATCH/PUT calls but leave the org state unchanged
 
+	// property is the existing freeze-state property declaration, nil when the org
+	// has none yet.
+	property *gh.PropertyDefinition
+
 	patched     map[string]any
 	actionsSet  string
 	createdTeam string
+	setProperty *gh.PropertyDefinition
 }
 
 func (s *fakeSetupState) fake() *ghtest.Fake {
@@ -84,6 +89,21 @@ func (s *fakeSetupState) fake() *ghtest.Fake {
 		s.createdTeam = name
 		return &gh.Team{ID: 2}, nil
 	}
+	fk.GetPropertyDefinitionFunc = func(context.Context, string, string) (*gh.PropertyDefinition, bool, error) {
+		if s.property == nil {
+			return nil, false, nil
+		}
+		def := *s.property
+		return &def, true, nil
+	}
+	fk.SetPropertyDefinitionFunc = func(_ context.Context, _ string, def gh.PropertyDefinition) error {
+		s.setProperty = &def
+		if s.ignorePatches {
+			return nil // accepted but not applied, as an unsupported tier would
+		}
+		s.property = &def
+		return nil
+	}
 	return fk
 }
 
@@ -109,6 +129,79 @@ func TestSetupOwnerGuard(t *testing.T) {
 	}
 	if state.patched != nil || state.actionsSet != "" {
 		t.Error("no org mutations should occur when the owner guard fails")
+	}
+}
+
+func TestSetupDeclaresTheFreezeProperty(t *testing.T) {
+	state := &fakeSetupState{role: "admin", teamExists: true}
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if state.setProperty == nil {
+		t.Fatal("setup should declare the freeze-state property")
+	}
+	if state.setProperty.PropertyName != frozenProperty {
+		t.Errorf("property name = %q, want %q", state.setProperty.PropertyName, frozenProperty)
+	}
+	if state.setProperty.ValueType != gh.PropertyTypeTrueFalse {
+		t.Errorf("value type = %q, want %q", state.setProperty.ValueType, gh.PropertyTypeTrueFalse)
+	}
+	// The edit scope is the part that matters: it keeps a repository-level role
+	// from rewriting a deadline record.
+	if state.setProperty.ValuesEditableBy != gh.PropertyEditableByOrg {
+		t.Errorf("values editable by = %q, want %q", state.setProperty.ValuesEditableBy, gh.PropertyEditableByOrg)
+	}
+	if !strings.Contains(buf.String(), frozenProperty) {
+		t.Errorf("the property should be reported:\n%s", buf.String())
+	}
+}
+
+func TestSetupCorrectsAWidenedFreezeProperty(t *testing.T) {
+	// A property someone widened so repository actors can edit values would let a
+	// repo admin rewrite a deadline record. setup re-asserts the restricted scope.
+	state := &fakeSetupState{
+		role:       "admin",
+		teamExists: true,
+		property: &gh.PropertyDefinition{
+			PropertyName:     frozenProperty,
+			ValueType:        gh.PropertyTypeTrueFalse,
+			ValuesEditableBy: "org_and_repo_actors",
+		},
+	}
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf); err != nil {
+		t.Fatal(err)
+	}
+	if state.setProperty == nil || state.setProperty.ValuesEditableBy != gh.PropertyEditableByOrg {
+		t.Fatalf("setup should re-assert the restricted edit scope, got %+v", state.setProperty)
+	}
+	if !strings.Contains(buf.String(), "corrected") {
+		t.Errorf("the correction should be reported:\n%s", buf.String())
+	}
+}
+
+func TestSetupLeavesACorrectFreezePropertyAlone(t *testing.T) {
+	state := &fakeSetupState{
+		role:       "admin",
+		teamExists: true,
+		property: &gh.PropertyDefinition{
+			PropertyName:     frozenProperty,
+			ValueType:        gh.PropertyTypeTrueFalse,
+			ValuesEditableBy: gh.PropertyEditableByOrg,
+		},
+	}
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
+
+	if err := o.run(context.Background(), &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	if state.setProperty != nil {
+		t.Errorf("an already-correct property should not be rewritten, got %+v", state.setProperty)
 	}
 }
 

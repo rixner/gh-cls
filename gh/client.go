@@ -100,6 +100,23 @@ type Client interface {
 	ListRepoInvitations(ctx context.Context, owner, repo string) ([]Invitation, error)
 	// DeleteRepoInvitation cancels a repository invitation by ID.
 	DeleteRepoInvitation(ctx context.Context, owner, repo string, id int64) error
+	// UpdateRepoInvitation changes the access a pending invitation confers on
+	// acceptance, using the invitation vocabulary (the Invitation* constants).
+	UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) error
+
+	// GetPropertyDefinition fetches an org custom property's schema; the bool
+	// reports existence.
+	GetPropertyDefinition(ctx context.Context, org, name string) (*PropertyDefinition, bool, error)
+	// SetPropertyDefinition creates or updates an org custom property's schema.
+	SetPropertyDefinition(ctx context.Context, org string, def PropertyDefinition) error
+	// ListRepoPropertyValues returns every repo's custom property values org-wide,
+	// as repo name -> property name -> value, in one paginated listing.
+	ListRepoPropertyValues(ctx context.Context, org string) (map[string]map[string]string, error)
+	// GetRepoPropertyValues returns one repo's custom property values.
+	GetRepoPropertyValues(ctx context.Context, org, repo string) (map[string]string, error)
+	// SetRepoPropertyValue sets a single custom property on a repo, leaving the
+	// repo's other property values untouched.
+	SetRepoPropertyValue(ctx context.Context, org, repo, name, value string) error
 }
 
 // Repo is the subset of a repository's fields the tool inspects.

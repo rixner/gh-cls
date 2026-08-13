@@ -146,6 +146,53 @@ func TestDeleteRepoInvitation(t *testing.T) {
 	}
 }
 
+func TestUpdateRepoInvitation(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	if err := c.UpdateRepoInvitation(context.Background(), "org", "hw1-ada", 555, InvitationRead); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "PATCH" || f.paths[0] != "repos/org/hw1-ada/invitations/555" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	// The API's key is "permissions" (plural); "permission" -- the collaborator
+	// API's spelling -- is silently ignored, which would leave the invitation at
+	// write while the call still returns 200.
+	if !strings.Contains(f.bodies[0], `"permissions":"read"`) {
+		t.Errorf("body = %q, want the permissions field set to read", f.bodies[0])
+	}
+}
+
+func TestInvitationPermissionPredicates(t *testing.T) {
+	// The invitation vocabulary must classify the same way the collaborator one
+	// does, or freeze would treat the two paths to a repo inconsistently.
+	tests := []struct {
+		permissions   string
+		wantConfers   bool
+		wantAboveRead bool
+	}{
+		{InvitationRead, false, false},
+		{InvitationTriage, false, true},
+		{InvitationWrite, true, true},
+		{InvitationMaintain, true, true},
+		{InvitationAdmin, true, false}, // staff keep access through a freeze
+		{"", false, false},             // absent field must not read as write
+	}
+	for _, tc := range tests {
+		t.Run(tc.permissions, func(t *testing.T) {
+			i := Invitation{Permissions: tc.permissions}
+			if got := i.ConfersPush(); got != tc.wantConfers {
+				t.Errorf("ConfersPush() = %v, want %v", got, tc.wantConfers)
+			}
+			if got := i.AboveRead(); got != tc.wantAboveRead {
+				t.Errorf("AboveRead() = %v, want %v", got, tc.wantAboveRead)
+			}
+		})
+	}
+}
+
 func TestCollaboratorPermissionPredicates(t *testing.T) {
 	tests := []struct {
 		name                                string

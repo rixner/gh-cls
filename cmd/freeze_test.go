@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -26,15 +27,35 @@ func collab(login, level string) gh.Collaborator {
 	return c
 }
 
+// invite builds a pending Invitation carrying the given invitation-vocabulary
+// permission ("read", "write", ...).
+func invite(id int64, login, permission string) gh.Invitation {
+	i := gh.Invitation{ID: id, Permissions: permission}
+	i.Invitee.Login = login
+	return i
+}
+
 // fakeFreezeState configures a ghtest.Fake for freeze tests and captures what
 // it observed.
 type fakeFreezeState struct {
 	role      string
 	repos     []gh.Repo
 	collabs   map[string][]gh.Collaborator
-	dontApply bool // record the change but leave the permission unchanged
+	invites   map[string][]gh.Invitation
+	frozen    map[string]freezeState // the recorded freeze state per repo
+	dontApply bool                   // record the change but leave the permission unchanged
+	// noProperty simulates an org that never ran setup, so freeze cannot record.
+	noProperty bool
+	// dontRecord accepts the property write but leaves the value unchanged, the
+	// way a silently-ignored API call would.
+	dontRecord bool
 
-	changes  []string // "repo:user=permission"
+	// changes records access changes only ("repo:user=permission" for
+	// collaborators, "repo:user=invite:permission" for invitations). Freeze-record
+	// writes go to recorded instead, so tests asserting that a given student's
+	// access was untouched are not tripped by a property write naming their repo.
+	changes  []string
+	recorded []string // "repo=value"
 	apiCalls int      // count of calls into the fake, to assert an aborted run made none
 }
 
@@ -83,6 +104,56 @@ func (s *fakeFreezeState) fake() *ghtest.Fake {
 		s.collabs[repo] = cs
 		return nil
 	}
+	fk.ListRepoInvitationsFunc = func(_ context.Context, _, repo string) ([]gh.Invitation, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		return append([]gh.Invitation(nil), s.invites[repo]...), nil
+	}
+	fk.UpdateRepoInvitationFunc = func(_ context.Context, _, repo string, id int64, permission string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		for i, inv := range s.invites[repo] {
+			if inv.ID != id {
+				continue
+			}
+			s.changes = append(s.changes, repo+":"+inv.Invitee.Login+"=invite:"+permission)
+			if !s.dontApply {
+				s.invites[repo][i].Permissions = permission
+			}
+			return nil
+		}
+		return fmt.Errorf("no invitation %d on %s", id, repo)
+	}
+	fk.GetPropertyDefinitionFunc = func(_ context.Context, _, name string) (*gh.PropertyDefinition, bool, error) {
+		if s.noProperty {
+			return nil, false, nil
+		}
+		return &gh.PropertyDefinition{
+			PropertyName:     name,
+			ValueType:        gh.PropertyTypeTrueFalse,
+			ValuesEditableBy: gh.PropertyEditableByOrg,
+		}, true, nil
+	}
+	fk.SetRepoPropertyValueFunc = func(_ context.Context, _, repo, name, value string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		if name != frozenProperty {
+			return fmt.Errorf("unexpected property %q on %s", name, repo)
+		}
+		s.recorded = append(s.recorded, repo+"="+value)
+		if !s.dontRecord {
+			if s.frozen == nil {
+				s.frozen = map[string]freezeState{} // tests may build the fake as a literal
+			}
+			s.frozen[repo] = freezeState(value)
+		}
+		return nil
+	}
+	fk.GetRepoPropertyValuesFunc = func(_ context.Context, _, repo string) (map[string]string, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		return map[string]string{frozenProperty: string(s.frozen[repo])}, nil
+	}
 	return fk
 }
 
@@ -110,6 +181,8 @@ func freezeFake(role string) *fakeFreezeState {
 			"hw1-ada":  {collab("ada", "push"), collab("prof", "admin")},
 			"hw1-alan": {collab("alan", "pull")}, // already frozen
 		},
+		invites: map[string][]gh.Invitation{},
+		frozen:  map[string]freezeState{},
 	}
 }
 
@@ -154,6 +227,212 @@ func TestFreezeUndoRestoresPush(t *testing.T) {
 		if strings.Contains(c, "prof") {
 			t.Error("admins must be left untouched by undo")
 		}
+	}
+}
+
+func TestFreezeDowngradesPendingInvitations(t *testing.T) {
+	// The loophole: a student who has not accepted yet is not a collaborator, so
+	// walking collaborators alone leaves their invitation carrying write. They
+	// accept after the deadline and can push. Freeze must downgrade the invitation
+	// itself.
+	fake := freezeFake("admin")
+	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationWrite)}
+	o := newFreezeOpts(t, fake, false, false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !contains(fake.changes, "hw1-alan:alan=invite:read") {
+		t.Errorf("a pending write invitation must be downgraded to read: %v", fake.changes)
+	}
+	if !strings.Contains(buf.String(), "1 pending invitation(s) downgraded to read") {
+		t.Errorf("the summary should report the invitation:\n%s", buf.String())
+	}
+}
+
+func TestFreezeUndoRestoresPendingInvitations(t *testing.T) {
+	// The reverse: an extension for a student who still has not accepted must put
+	// their invitation back to write, or the extension grants them nothing.
+	fake := freezeFake("admin")
+	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationRead)}
+	o := newFreezeOpts(t, fake, true, false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !contains(fake.changes, "hw1-alan:alan=invite:write") {
+		t.Errorf("undo should restore a frozen invitation to write: %v", fake.changes)
+	}
+	if !strings.Contains(buf.String(), "1 pending invitation(s) restored to write") {
+		t.Errorf("the summary should report the invitation:\n%s", buf.String())
+	}
+}
+
+func TestFreezeLeavesSettledInvitationsAlone(t *testing.T) {
+	// An expired invitation cannot be accepted, so it is not a way past the freeze
+	// and there is nothing to change; one already at read is already frozen. Both
+	// must be left untouched so freeze stays idempotent and does not resurrect a
+	// lapsed invitation.
+	fake := freezeFake("admin")
+	expired := invite(8, "grace", gh.InvitationWrite)
+	expired.Expired = true
+	fake.invites["hw1-ada"] = []gh.Invitation{expired, invite(9, "bob", gh.InvitationRead)}
+	o := newFreezeOpts(t, fake, false, false)
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fake.changes {
+		if strings.Contains(c, "invite:") {
+			t.Errorf("an expired or already-read invitation must not be touched: %v", fake.changes)
+		}
+	}
+}
+
+func TestFreezeVerifiesInvitationDowngradeTookEffect(t *testing.T) {
+	// As with a collaborator grant, a 200 on the invitation PATCH is not proof.
+	// The post-condition re-read must catch an invitation that still confers write
+	// and fail loudly rather than report a deadline lock with a hole in it.
+	fake := freezeFake("admin")
+	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationWrite)}
+	fake.dontApply = true
+	o := newFreezeOpts(t, fake, false, false)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", nil)
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("freeze should fail when the invitation downgrade did not take, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "pending invitation still confers write") {
+		t.Errorf("the failure should name the invitation as the reason:\n%s", buf.String())
+	}
+}
+
+func TestFreezeDryRunLeavesInvitationsAlone(t *testing.T) {
+	fake := freezeFake("admin")
+	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationWrite)}
+	o := newFreezeOpts(t, fake, false, true)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.changes) != 0 {
+		t.Errorf("dry-run must not change any invitation, got %v", fake.changes)
+	}
+	if !strings.Contains(buf.String(), "1 pending invitation(s)") {
+		t.Errorf("dry-run should still report what it would change:\n%s", buf.String())
+	}
+}
+
+func TestFreezeRecordsTheFreezeState(t *testing.T) {
+	fake := freezeFake("admin")
+	o := newFreezeOpts(t, fake, false, false)
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"hw1-ada=true", "hw1-alan=true"} {
+		if !contains(fake.recorded, want) {
+			t.Errorf("every frozen repo should be recorded: %v", fake.recorded)
+		}
+	}
+	for _, r := range fake.recorded {
+		if strings.HasPrefix(r, "project-x") {
+			t.Errorf("only this assignment's repos should be recorded: %v", fake.recorded)
+		}
+	}
+}
+
+func TestFreezeUndoRecordsThawedNotUnset(t *testing.T) {
+	// An extension records false rather than clearing the value. "Never frozen" and
+	// "deliberately thawed" must stay distinguishable, or a later reader cannot
+	// tell an extension from a repo that predates the record.
+	fake := freezeFake("admin")
+	fake.frozen["hw1-ada"] = freezeFrozen
+	fake.frozen["hw1-alan"] = freezeFrozen
+	o := newFreezeOpts(t, fake, true, false)
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.recorded, "hw1-ada=false") {
+		t.Errorf("undo should record the repo as thawed: %v", fake.recorded)
+	}
+	if fake.frozen["hw1-alan"] != freezeFrozen {
+		t.Errorf("an unnamed repo's record must not change: %v", fake.frozen)
+	}
+}
+
+func TestFreezeRecordsBeforeRemovingAccess(t *testing.T) {
+	// Ordering matters for a run that dies midway. Recording first leaves the safe
+	// intermediate state (recorded frozen, still writable), so a later renew
+	// withholds write from a half-locked repo. The reverse order would leave a
+	// locked repo unrecorded, and renew would hand push back.
+	fake := freezeFake("admin")
+	var order []string
+	fk := fake.fake()
+	setProp := fk.SetRepoPropertyValueFunc
+	fk.SetRepoPropertyValueFunc = func(ctx context.Context, org, repo, name, value string) error {
+		fk.Lock()
+		order = append(order, "record:"+repo)
+		fk.Unlock()
+		return setProp(ctx, org, repo, name, value)
+	}
+	addCollab := fk.AddCollaboratorFunc
+	fk.AddCollaboratorFunc = func(ctx context.Context, org, repo, user, perm string) error {
+		fk.Lock()
+		order = append(order, "access:"+repo)
+		fk.Unlock()
+		return addCollab(ctx, org, repo, user, perm)
+	}
+	o := &freezeOpts{
+		g:         assignGlobals(),
+		newClient: func(context.Context) (freezeClient, error) { return fk, nil },
+	}
+	o.g.concurrency = 1 // deterministic ordering across repos
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ada"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(order) < 2 || order[0] != "record:hw1-ada" || order[1] != "access:hw1-ada" {
+		t.Errorf("the freeze must be recorded before access is removed, got %v", order)
+	}
+}
+
+func TestFreezeVerifiesTheRecordTookEffect(t *testing.T) {
+	// A 200 on the property write is not proof. If the record did not take, a later
+	// renew would restore write on a frozen repo, so freeze must fail loudly.
+	fake := freezeFake("admin")
+	fake.dontRecord = true
+	o := newFreezeOpts(t, fake, false, false)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", nil)
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("freeze should fail when the record did not take, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "audit --renew") {
+		t.Errorf("the failure should say what it would break:\n%s", buf.String())
+	}
+}
+
+func TestFreezeAbortsWithoutTheFreezeProperty(t *testing.T) {
+	// An org that never ran setup cannot record a freeze. Freezing anyway would
+	// lock the repos while leaving renew free to unlock them, so freeze refuses
+	// before touching anything.
+	fake := freezeFake("admin")
+	fake.noProperty = true
+	o := newFreezeOpts(t, fake, false, false)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil)
+	if err == nil || !strings.Contains(err.Error(), "gh cls setup") {
+		t.Fatalf("freeze should abort and name the fix, got %v", err)
+	}
+	if len(fake.changes) != 0 || len(fake.recorded) != 0 {
+		t.Errorf("nothing may change when the freeze cannot be recorded: %v %v", fake.changes, fake.recorded)
 	}
 }
 

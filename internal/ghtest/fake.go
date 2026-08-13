@@ -59,6 +59,12 @@ type Fake struct {
 	ListDirectCollaboratorsFunc       func(ctx context.Context, owner, repo string) ([]gh.Collaborator, error)
 	ListRepoInvitationsFunc           func(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
 	DeleteRepoInvitationFunc          func(ctx context.Context, owner, repo string, id int64) error
+	UpdateRepoInvitationFunc          func(ctx context.Context, owner, repo string, id int64, permission string) error
+	GetPropertyDefinitionFunc         func(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
+	SetPropertyDefinitionFunc         func(ctx context.Context, org string, def gh.PropertyDefinition) error
+	ListRepoPropertyValuesFunc        func(ctx context.Context, org string) (map[string]map[string]string, error)
+	GetRepoPropertyValuesFunc         func(ctx context.Context, org, repo string) (map[string]string, error)
+	SetRepoPropertyValueFunc          func(ctx context.Context, org, repo, name, value string) error
 }
 
 var _ gh.Client = (*Fake)(nil)
@@ -373,4 +379,52 @@ func (f *Fake) DeleteRepoInvitation(ctx context.Context, owner, repo string, id 
 		missing("DeleteRepoInvitation")
 	}
 	return f.DeleteRepoInvitationFunc(ctx, owner, repo, id)
+}
+
+func (f *Fake) UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) error {
+	f.record("UpdateRepoInvitation")
+	if f.UpdateRepoInvitationFunc == nil {
+		missing("UpdateRepoInvitation")
+	}
+	return f.UpdateRepoInvitationFunc(ctx, owner, repo, id, permission)
+}
+
+func (f *Fake) GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error) {
+	f.record("GetPropertyDefinition")
+	if f.GetPropertyDefinitionFunc == nil {
+		missing("GetPropertyDefinition")
+	}
+	return f.GetPropertyDefinitionFunc(ctx, org, name)
+}
+
+func (f *Fake) SetPropertyDefinition(ctx context.Context, org string, def gh.PropertyDefinition) error {
+	f.record("SetPropertyDefinition")
+	if f.SetPropertyDefinitionFunc == nil {
+		missing("SetPropertyDefinition")
+	}
+	return f.SetPropertyDefinitionFunc(ctx, org, def)
+}
+
+func (f *Fake) ListRepoPropertyValues(ctx context.Context, org string) (map[string]map[string]string, error) {
+	f.record("ListRepoPropertyValues")
+	if f.ListRepoPropertyValuesFunc == nil {
+		missing("ListRepoPropertyValues")
+	}
+	return f.ListRepoPropertyValuesFunc(ctx, org)
+}
+
+func (f *Fake) GetRepoPropertyValues(ctx context.Context, org, repo string) (map[string]string, error) {
+	f.record("GetRepoPropertyValues")
+	if f.GetRepoPropertyValuesFunc == nil {
+		missing("GetRepoPropertyValues")
+	}
+	return f.GetRepoPropertyValuesFunc(ctx, org, repo)
+}
+
+func (f *Fake) SetRepoPropertyValue(ctx context.Context, org, repo, name, value string) error {
+	f.record("SetRepoPropertyValue")
+	if f.SetRepoPropertyValueFunc == nil {
+		missing("SetRepoPropertyValue")
+	}
+	return f.SetRepoPropertyValueFunc(ctx, org, repo, name, value)
 }

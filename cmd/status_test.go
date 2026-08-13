@@ -26,7 +26,10 @@ type fakeStatusClient struct {
 	repos         []gh.Repo
 	listErr       error
 	collaborators map[string][]gh.Collaborator
-	issueState    map[string]string // repo -> state; absent means not found
+	invitations   map[string][]gh.Invitation
+	frozen        map[string]freezeState // recorded freeze state per repo
+	noProperty    bool                   // org never ran setup: no freeze record readable
+	issueState    map[string]string      // repo -> state; absent means not found
 	prState       map[string]string
 
 	listCalls int // count of ListOrgReposByPrefix calls, to assert it lists at most once
@@ -58,6 +61,26 @@ func (s *fakeStatusClient) fake() *ghtest.Fake {
 	}
 	fk.ListDirectCollaboratorsFunc = func(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
 		return s.collaborators[repo], nil
+	}
+	fk.ListRepoInvitationsFunc = func(_ context.Context, _, repo string) ([]gh.Invitation, error) {
+		return s.invitations[repo], nil
+	}
+	fk.GetPropertyDefinitionFunc = func(_ context.Context, _, name string) (*gh.PropertyDefinition, bool, error) {
+		if s.noProperty {
+			return nil, false, nil
+		}
+		return &gh.PropertyDefinition{
+			PropertyName:     name,
+			ValueType:        gh.PropertyTypeTrueFalse,
+			ValuesEditableBy: gh.PropertyEditableByOrg,
+		}, true, nil
+	}
+	fk.ListRepoPropertyValuesFunc = func(context.Context, string) (map[string]map[string]string, error) {
+		out := make(map[string]map[string]string, len(s.frozen))
+		for repo, state := range s.frozen {
+			out[repo] = map[string]string{frozenProperty: string(state)}
+		}
+		return out, nil
 	}
 	fk.FindIssueByTitleFunc = func(_ context.Context, _, repo, _ string) (int, string, bool, error) {
 		state, ok := s.issueState[repo]
@@ -258,6 +281,77 @@ func TestStatusVisibilityMismatch(t *testing.T) {
 	}
 }
 
+func TestStatusRepoCountIsNotRepeated(t *testing.T) {
+	// The count and the visibility share one column. When every repo has the same
+	// visibility the total must appear exactly once on the line, not as a bare
+	// count and again inside the breakdown ("2   2 private").
+	fake := &fakeStatusClient{
+		members: []string{"ta1"},
+		repos:   []gh.Repo{{Name: "hw1-ada", Private: true}, {Name: "hw1-alan", Private: true}},
+	}
+	var buf bytes.Buffer
+	if err := newStatusOpts(fake).run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := buf.String()
+	if strings.Contains(out, "VISIBILITY") {
+		t.Errorf("the visibility column should be folded into REPOS:\n%s", out)
+	}
+	line := lineContaining(t, out, "hw1")
+	if got := strings.Count(line, "2"); got != 1 {
+		t.Errorf("the repo count should appear once on the line, got %d in %q", got, line)
+	}
+	if !strings.Contains(line, "2 private") {
+		t.Errorf("the line should read as a count with its visibility: %q", line)
+	}
+}
+
+func TestStatusDetailCountsWriteInvitationAsUnfrozen(t *testing.T) {
+	// The same loophole freeze closes: hw1-ada's only collaborator is read-only,
+	// but a pending invitation still confers write, so accepting it would reopen
+	// the repo. Reporting that as "frozen" would tell the instructor the deadline
+	// held when it did not.
+	fake := &fakeStatusClient{
+		members:       []string{"ta1"},
+		repos:         []gh.Repo{{Name: "hw1-ada", Private: true}},
+		collaborators: map[string][]gh.Collaborator{"hw1-ada": {collab("ada", "pull")}},
+		invitations:   map[string][]gh.Invitation{"hw1-ada": {invite(1, "alan", gh.InvitationWrite)}},
+		issueState:    map[string]string{"hw1-ada": "open"},
+	}
+	o := newStatusOptsG(feedbackGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "inv.csv")
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1 mixed") {
+		t.Errorf("a read collaborator plus a write invitation is a partial freeze:\n%s", buf.String())
+	}
+}
+
+func TestStatusDetailIgnoresSettledInvitations(t *testing.T) {
+	// An expired invitation cannot be accepted and a read invitation confers no
+	// write, so neither should keep a genuinely frozen repo from reading as frozen.
+	expired := invite(1, "alan", gh.InvitationWrite)
+	expired.Expired = true
+	fake := &fakeStatusClient{
+		members:       []string{"ta1"},
+		repos:         []gh.Repo{{Name: "hw1-ada", Private: true}},
+		collaborators: map[string][]gh.Collaborator{"hw1-ada": {collab("ada", "pull")}},
+		invitations:   map[string][]gh.Invitation{"hw1-ada": {expired, invite(2, "bob", gh.InvitationRead)}},
+		issueState:    map[string]string{"hw1-ada": "open"},
+	}
+	o := newStatusOptsG(feedbackGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "settled.csv")
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if !strings.Contains(buf.String(), "1 frozen") {
+		t.Errorf("expired and read invitations should not unfreeze the repo:\n%s", buf.String())
+	}
+}
+
 func TestStatusMissingStaffTeam(t *testing.T) {
 	fake := &fakeStatusClient{teamMissing: true}
 	var buf bytes.Buffer
@@ -318,7 +412,7 @@ func TestStatusDetail(t *testing.T) {
 	}
 
 	recs := readCSV(t, csvPath)
-	wantHeader := []string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "feedback"}
+	wantHeader := []string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "recorded", "feedback"}
 	if len(recs) != 4 || !equalRow(recs[0], wantHeader) {
 		t.Fatalf("CSV header/row count wrong: %v", recs)
 	}
@@ -326,7 +420,10 @@ func TestStatusDetail(t *testing.T) {
 	if bob == nil {
 		t.Fatalf("no hw1-bob row in CSV: %v", recs)
 	}
-	if want := []string{"hw1", "hw1-bob", "bob", "private", "private", "frozen", "closed"}; !equalRow(bob, want) {
+	// bob's access is read-only but this fake records no freeze state, so the row
+	// shows the access and the record disagreeing in the benign direction: nothing
+	// was recorded, which is what a repo frozen before the record existed looks like.
+	if want := []string{"hw1", "hw1-bob", "bob", "private", "private", "frozen", "not recorded", "closed"}; !equalRow(bob, want) {
 		t.Errorf("hw1-bob row = %v, want %v", bob, want)
 	}
 }
@@ -350,6 +447,78 @@ func TestStatusDetailMixed(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "1 mixed") {
 		t.Errorf("a partial freeze should read as mixed:\n%s", buf.String())
+	}
+}
+
+func TestStatusDetailFlagsDriftFromTheRecord(t *testing.T) {
+	// The check the record makes possible: hw1-ada is recorded frozen but its
+	// student still has push, so the freeze did not fully take. Without the record
+	// this is invisible, since a writable repo looks like any unfrozen one.
+	fake := &fakeStatusClient{
+		members:       []string{"ta1"},
+		repos:         []gh.Repo{{Name: "hw1-ada", Private: true}, {Name: "hw1-bob", Private: true}},
+		collaborators: map[string][]gh.Collaborator{
+			"hw1-ada": {collab("ada", "push")}, // contradicts the record
+			"hw1-bob": {collab("bob", "pull")}, // agrees with it
+		},
+		frozen:     map[string]freezeState{"hw1-ada": freezeFrozen, "hw1-bob": freezeFrozen},
+		issueState: map[string]string{"hw1-ada": "open", "hw1-bob": "open"},
+	}
+	o := newStatusOptsG(feedbackGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "drift.csv")
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DRIFT hw1-ada") {
+		t.Errorf("a repo recorded frozen but still writable is drift:\n%s", out)
+	}
+	if strings.Contains(out, "DRIFT hw1-bob") {
+		t.Errorf("a repo whose access matches its record is not drift:\n%s", out)
+	}
+}
+
+func TestStatusDetailFlagsAThawedRepoThatIsStillFrozen(t *testing.T) {
+	// The other direction: an extension was recorded but the access was never
+	// restored, so the student cannot work during their extension.
+	fake := &fakeStatusClient{
+		members:       []string{"ta1"},
+		repos:         []gh.Repo{{Name: "hw1-ada", Private: true}},
+		collaborators: map[string][]gh.Collaborator{"hw1-ada": {collab("ada", "pull")}},
+		frozen:        map[string]freezeState{"hw1-ada": freezeThawed},
+		issueState:    map[string]string{"hw1-ada": "open"},
+	}
+	o := newStatusOptsG(feedbackGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "thaw.csv")
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DRIFT hw1-ada") || !strings.Contains(out, "--undo") {
+		t.Errorf("a repo recorded thawed but still frozen should be flagged with the fix:\n%s", out)
+	}
+}
+
+func TestStatusStillWorksWithoutTheFreezeProperty(t *testing.T) {
+	// status reads only and must stay usable on an org that never ran setup: it
+	// reports every repo as not recorded and says why, rather than failing.
+	fake := &fakeStatusClient{
+		members:       []string{"ta1"},
+		repos:         []gh.Repo{{Name: "hw1-ada", Private: true}},
+		collaborators: map[string][]gh.Collaborator{"hw1-ada": {collab("ada", "pull")}},
+		noProperty:    true,
+		issueState:    map[string]string{"hw1-ada": "open"},
+	}
+	o := newStatusOptsG(feedbackGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "noprop.csv")
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("a missing freeze property must not fail a read-only status: %v", err)
+	}
+	if !strings.Contains(buf.String(), "no freeze record is readable") {
+		t.Errorf("the blank record column should be explained:\n%s", buf.String())
 	}
 }
 

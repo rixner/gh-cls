@@ -93,6 +93,20 @@ func TestLoad(t *testing.T) {
 		if !strings.Contains(err.Error(), "proj") || !strings.Contains(err.Error(), "proj-final") {
 			t.Fatalf("overlap error should name both assignments, got %v", err)
 		}
+		// The rejection is correct but the way out is not obvious from "rename one",
+		// so the message must point at a separator that works.
+		if !strings.Contains(err.Error(), "_") {
+			t.Errorf("overlap error should suggest a non-dash separator, got %v", err)
+		}
+	})
+
+	t.Run("a variant separated by something other than a dash is accepted", func(t *testing.T) {
+		// The documented workaround for paired assignments (an in-class exercise and
+		// its makeup): only "-" starts a repo prefix, so "_" keeps them distinct.
+		_, err := Load(write(t, "org: x\nstaff_team: staff\nassignments:\n  hw1:\n    type: individual\n  hw1_makeup:\n    type: individual\n"))
+		if err != nil {
+			t.Fatalf("hw1/hw1_makeup should be accepted, got %v", err)
+		}
 	})
 }
 

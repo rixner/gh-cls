@@ -26,6 +26,9 @@ type statusClient interface {
 	ListTeamMembers(ctx context.Context, org, slug string) ([]string, error)
 	ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]gh.Repo, error)
 	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]gh.Collaborator, error)
+	ListRepoInvitations(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
+	GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
+	ListRepoPropertyValues(ctx context.Context, org string) (map[string]map[string]string, error)
 	FindIssueByTitle(ctx context.Context, owner, repo, title string) (int, string, bool, error)
 	FindPRByBase(ctx context.Context, owner, repo, base string) (int, string, bool, error)
 }
@@ -54,9 +57,10 @@ the staff team and how many members it has, and for each assignment (or just
 that contradict the assignment's policy.
 
 With --detail, scan each repository for its freeze state (write vs read for
-non-admins) and its feedback issue/PR state (open, closed, or missing), printing
-per-assignment counts and writing a per-repo CSV. --detail costs one or two API
-calls per repository, so it scales with class size; the default summary does not.
+non-admins, counting a pending invitation as the access it will confer) and its
+feedback issue/PR state (open, closed, or missing), printing per-assignment
+counts and writing a per-repo CSV. --detail costs two or three API calls per
+repository, so it scales with class size; the default summary does not.
 
 Reads only, so it needs no org-owner role and is safe to run anytime.`,
 		Example: `  gh cls status
@@ -175,13 +179,13 @@ func (o *statusOpts) runSummary(ctx context.Context, out io.Writer, org string, 
 
 	fmt.Fprintln(out)
 	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
-	fmt.Fprintln(tw, "ASSIGNMENT\tTYPE\tREPOS\tVISIBILITY")
+	fmt.Fprintln(tw, "ASSIGNMENT\tTYPE\tREPOS")
 	for _, s := range results {
 		if s.err != nil {
-			fmt.Fprintf(tw, "%s\t%s\t?\t(unreadable)\n", s.name, s.typ)
+			fmt.Fprintf(tw, "%s\t%s\t(unreadable)\n", s.name, s.typ)
 			continue
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%d\t%s\n", s.name, s.typ, s.repos, visibilitySummary(s))
+		fmt.Fprintf(tw, "%s\t%s\t%s\n", s.name, s.typ, repoSummary(s))
 	}
 	tw.Flush()
 
@@ -254,11 +258,14 @@ func (o *statusOpts) listRepos(ctx context.Context, client statusClient, org str
 	return byName, nil
 }
 
-// visibilitySummary describes a repo count's private/public split and flags any
-// visibility that contradicts the assignment's policy.
-func visibilitySummary(s assignmentStatus) string {
+// repoSummary describes an assignment's student repositories as a count broken
+// down by visibility, and flags any visibility that contradicts the assignment's
+// policy. Count and visibility share one column: splitting them repeated the
+// total in both whenever an assignment's repos were uniformly private or public,
+// which is the normal case.
+func repoSummary(s assignmentStatus) string {
 	if s.repos == 0 {
-		return "(none)"
+		return "none"
 	}
 	var parts []string
 	if s.private > 0 {
@@ -288,8 +295,25 @@ type repoDetail struct {
 	private    bool
 	wantPublic bool
 	frozen     string // frozen | writable | mixed | none
+	recorded   freezeState
 	feedback   string // open | closed | missing | none
 	err        error
+}
+
+// driftsFromRecord reports whether the access on the repo contradicts what
+// freeze recorded. It is the check the record makes possible: a repo recorded
+// frozen but still writable means the freeze did not fully take, and one
+// recorded thawed but read-only means an extension was never actually granted.
+// Neither is visible without the record, since both look like ordinary states.
+func (d repoDetail) driftsFromRecord() bool {
+	switch d.recorded {
+	case freezeFrozen:
+		return d.frozen == "writable" || d.frozen == "mixed"
+	case freezeThawed:
+		return d.frozen == "frozen"
+	default:
+		return false
+	}
 }
 
 func (d repoDetail) visibility() string {
@@ -311,7 +335,7 @@ func (d repoDetail) row() []string {
 	if d.err != nil {
 		frozen, feedback = "error", "error"
 	}
-	return []string{d.assignment, d.repo, d.key, d.visibility(), d.expectedVisibility(), frozen, feedback}
+	return []string{d.assignment, d.repo, d.key, d.visibility(), d.expectedVisibility(), frozen, d.recorded.describe(), feedback}
 }
 
 func (o *statusOpts) runDetail(ctx context.Context, out io.Writer, org string, names []string, client statusClient) error {
@@ -341,8 +365,25 @@ func (o *statusOpts) runDetail(ctx context.Context, out io.Writer, org string, n
 		}
 	}
 
+	// One org-wide listing gives every repo's recorded freeze state, so the record
+	// costs one call for the whole run rather than one per repo. status reads only,
+	// so a missing property is reported as "not recorded" rather than aborting: an
+	// org that has not run setup can still be inspected.
+	recorded := map[string]freezeState{}
+	recordNote := ""
+	if states, err := readFrozenStates(ctx, client, org); err != nil {
+		// Not a failure: status reads only and must stay usable on an org that has
+		// not run setup. The note says why every repo reads as not recorded, so the
+		// blank column is never mistaken for "nothing has been frozen".
+		recordNote = fmt.Sprintf("\nnote: no freeze record is readable, so every repo below shows as not recorded\n  %v\n", err)
+	} else {
+		recorded = states
+	}
+
 	details := runConcurrent(ctx, o.g.concurrency, items, func(ctx context.Context, w work) repoDetail {
-		return o.scanRepo(ctx, client, org, w.assignment, w.policy, w.repo)
+		d := o.scanRepo(ctx, client, org, w.assignment, w.policy, w.repo)
+		d.recorded = recorded[w.repo.Name]
+		return d
 	})
 
 	// Write the per-repo CSV first (it is what the run produces); a failure to
@@ -357,6 +398,9 @@ func (o *statusOpts) runDetail(ctx context.Context, out io.Writer, org string, n
 	}
 
 	printDetailSummary(out, o.g.cfg, names, details)
+	if recordNote != "" {
+		fmt.Fprint(out, recordNote)
+	}
 	if csvNote != "" {
 		fmt.Fprint(out, csvNote)
 	}
@@ -396,7 +440,12 @@ func (o *statusOpts) scanRepo(ctx context.Context, client statusClient, org, ass
 		d.err = fmt.Errorf("listing collaborators: %w", err)
 		return d
 	}
-	d.frozen = classifyFrozen(collabs)
+	invitations, err := client.ListRepoInvitations(ctx, org, r.Name)
+	if err != nil {
+		d.err = fmt.Errorf("listing pending invitations: %w", err)
+		return d
+	}
+	d.frozen = classifyFrozen(collabs, invitations)
 
 	state, err := feedbackArtifactState(ctx, client, org, r.Name, policy.Feedback)
 	if err != nil {
@@ -407,10 +456,17 @@ func (o *statusOpts) scanRepo(ctx context.Context, client statusClient, org, ass
 	return d
 }
 
-// classifyFrozen reports a repo's freeze state from its direct collaborators,
-// using the same write/read distinction freeze applies (push/maintain/triage are
-// write; admins are ignored, since staff keep access through a freeze).
-func classifyFrozen(collabs []gh.Collaborator) string {
+// classifyFrozen reports a repo's freeze state from its direct collaborators and
+// pending invitations, using the same write/read distinction freeze applies
+// (push/maintain/triage are write; admins are ignored, since staff keep access
+// through a freeze).
+//
+// A pending invitation counts as the access it will confer on acceptance, so a
+// repo whose collaborators are all read-only but which still has a write
+// invitation outstanding reads as writable rather than frozen -- it is exactly
+// the state freeze exists to prevent. Expired invitations can no longer be
+// accepted and are ignored.
+func classifyFrozen(collabs []gh.Collaborator, invitations []gh.Invitation) string {
 	var write, read int
 	for _, c := range collabs {
 		if c.Permissions.Admin {
@@ -420,6 +476,17 @@ func classifyFrozen(collabs []gh.Collaborator) string {
 		case c.AboveRead():
 			write++
 		case c.Permissions.Pull:
+			read++
+		}
+	}
+	for _, inv := range invitations {
+		if inv.Expired {
+			continue
+		}
+		switch {
+		case inv.AboveRead():
+			write++
+		case inv.Permissions == gh.InvitationRead:
 			read++
 		}
 	}
@@ -450,7 +517,22 @@ func printDetailSummary(out io.Writer, cfg *config.Config, names []string, detai
 		} else {
 			fmt.Fprintf(out, "  feedback: %s\n", feedbackSummary(ds))
 		}
+		for _, d := range ds {
+			if d.err == nil && d.driftsFromRecord() {
+				fmt.Fprintf(out, "  DRIFT %s: recorded %s but access is %s; re-run `gh cls freeze %s%s`\n",
+					d.repo, d.recorded.describe(), d.frozen, n, undoSuffix(d.recorded))
+			}
+		}
 	}
+}
+
+// undoSuffix names the flag that would bring a drifted repo back in line with
+// what freeze recorded for it.
+func undoSuffix(recorded freezeState) string {
+	if recorded == freezeThawed {
+		return " --undo"
+	}
+	return ""
 }
 
 // frozenSummary renders the repo count and a breakdown of freeze states, listing
@@ -520,7 +602,7 @@ func (o *statusOpts) writeCSV(org string, names []string, details []repoDetail) 
 		return "", err
 	}
 	w := csv.NewWriter(f)
-	werr := w.Write([]string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "feedback"})
+	werr := w.Write([]string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "recorded", "feedback"})
 	for _, d := range details {
 		if werr != nil {
 			break

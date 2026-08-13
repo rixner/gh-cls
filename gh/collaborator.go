@@ -34,6 +34,17 @@ func (c Collaborator) AboveRead() bool {
 	return c.Permissions.Push || c.Permissions.Maintain || c.Permissions.Triage
 }
 
+// Invitation permission levels. GitHub's invitation API uses its own vocabulary
+// for the access an invitation will confer, rather than the collaborator API's
+// pull/push/... names.
+const (
+	InvitationRead     = "read"
+	InvitationTriage   = "triage"
+	InvitationWrite    = "write"
+	InvitationMaintain = "maintain"
+	InvitationAdmin    = "admin"
+)
+
 // Invitation is a pending repository collaborator invitation. A user added via
 // AddCollaborator who is not an organization member receives an invitation
 // rather than immediate access, and stays here until they accept it or it
@@ -46,6 +57,33 @@ type Invitation struct {
 	// Expired is true once the seven-day acceptance window has lapsed; such an
 	// invitation conveys no access and must be re-issued for the user to join.
 	Expired bool `json:"expired"`
+	// Permissions is the access the invitee will hold the moment they accept. An
+	// unaccepted invitation keeps whatever it was issued with, independent of the
+	// repository's current collaborators, so a freeze that changes only
+	// collaborators leaves it as a way in.
+	Permissions string `json:"permissions"`
+}
+
+// ConfersPush reports whether accepting the invitation would grant effective
+// write (push) access. It mirrors Collaborator.CanPush over the invitation
+// vocabulary.
+func (i Invitation) ConfersPush() bool {
+	switch i.Permissions {
+	case InvitationWrite, InvitationMaintain, InvitationAdmin:
+		return true
+	}
+	return false
+}
+
+// AboveRead reports whether accepting the invitation would grant more than plain
+// read. It mirrors Collaborator.AboveRead over the invitation vocabulary,
+// including the exclusion of admin: staff keep access through a freeze.
+func (i Invitation) AboveRead() bool {
+	switch i.Permissions {
+	case InvitationWrite, InvitationMaintain, InvitationTriage:
+		return true
+	}
+	return false
 }
 
 // ListOrgReposByPrefix returns every repository in the org whose name starts
@@ -81,6 +119,15 @@ func (c *restClient) ListDirectCollaborators(ctx context.Context, owner, repo st
 func (c *restClient) DeleteRepoInvitation(ctx context.Context, owner, repo string, id int64) error {
 	path := fmt.Sprintf("repos/%s/%s/invitations/%d", url.PathEscape(owner), url.PathEscape(repo), id)
 	_, err := c.do(ctx, "DELETE", path, nil, nil)
+	return err
+}
+
+// UpdateRepoInvitation changes the access a pending invitation will confer once
+// accepted. permission uses the invitation vocabulary (the Invitation* constants
+// above), not the collaborator API's pull/push names.
+func (c *restClient) UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) error {
+	path := fmt.Sprintf("repos/%s/%s/invitations/%d", url.PathEscape(owner), url.PathEscape(repo), id)
+	_, err := c.do(ctx, "PATCH", path, map[string]any{"permissions": permission}, nil)
 	return err
 }
 
