@@ -3,6 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/rixner/gh-cls/gh"
 )
@@ -84,6 +86,41 @@ func frozenStates(values map[string]map[string]string) map[string]freezeState {
 type propertyReader interface {
 	GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
 	ListRepoPropertyValues(ctx context.Context, org string) (map[string]map[string]string, error)
+}
+
+// checkGrantRace re-reads the freeze record after a run that granted write and
+// returns the repos that are recorded frozen despite having just been granted
+// push. That means a freeze landed while this run was in flight, on a repo this
+// run had already read as unfrozen.
+//
+// This detects, it does not prevent. Closing the window would need an atomic
+// compare-and-set across two separate GitHub resources (the property and the
+// collaborator grant), which the API does not offer, so the honest guarantee is
+// that a concurrent freeze is never silent: the run fails and names the repos to
+// re-freeze. Callers must run this after their grants, not before.
+func checkGrantRace(ctx context.Context, client propertyReader, org string, grantedWrite []string) ([]string, error) {
+	if len(grantedWrite) == 0 {
+		return nil, nil
+	}
+	states, err := readFrozenStates(ctx, client, org)
+	if err != nil {
+		return nil, fmt.Errorf("re-reading the freeze record to check for a concurrent freeze: %w", err)
+	}
+	var reopened []string
+	for _, repo := range grantedWrite {
+		if states[repo] == freezeFrozen {
+			reopened = append(reopened, repo)
+		}
+	}
+	sort.Strings(reopened)
+	return reopened, nil
+}
+
+// grantRaceError renders the failure for repos a concurrent freeze reopened,
+// naming the command that puts them back.
+func grantRaceError(name string, reopened []string) error {
+	return fmt.Errorf("a freeze landed on %s while this run was granting access, so %s may now be writable past the deadline:\n  %s\nre-run `gh cls freeze %s` to re-assert the lock, and avoid running two gh-cls commands against one org at the same time",
+		strings.Join(reopened, ", "), plural(len(reopened), "repository"), strings.Join(reopened, "\n  "), name)
 }
 
 // readFrozenStates returns each repository's recorded freeze state, or an error

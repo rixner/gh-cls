@@ -356,6 +356,48 @@ A custom property was chosen over the alternatives on four counts:
 Reading it is cheap: one org-wide call returns every repository's value, so it
 does not scale with class size.
 
+## Running commands concurrently
+
+> [!WARNING]
+> **Run only one `gh cls` command against an organization at a time.** The tool
+> has no way to lock an org, and GitHub offers no atomic update across a
+> repository's freeze record and its access grants, so two runs against the same
+> org can interleave badly. In particular, a `freeze` running at the same time as
+> an `assign` or an `audit --renew` can leave an assignment writable past its
+> deadline.
+
+This is not theoretical, and it is not fully preventable. What the tool does
+instead is refuse to hide it:
+
+- `assign` and `audit --renew` re-read the freeze record **after** their grants.
+  If a repository they granted write to has since been recorded frozen, the run
+  fails, names those repositories, and tells you to re-run `gh cls freeze <name>`.
+- `freeze` verifies every repository after changing it, so an access grant that
+  landed underneath it fails that repository loudly rather than reporting a lock
+  that did not hold.
+
+Either way you get a non-zero exit and a named repair, never a clean-looking run.
+A `freeze` is also not instantaneous: it works through repositories concurrently,
+so on a large class there are seconds to minutes between the first repository
+being locked and the last. Treat the deadline as "when freeze finishes", and
+prefer `collect --commits` to pin exact SHAs if you need a precise cut-off.
+
+### What students do concurrently is safe
+
+Student activity is not a hazard for these commands, with one exception:
+
+- **Pushing** does not affect `freeze`, `audit`, `status`, or `feedback` at all;
+  those read and write access and metadata, never refs. `assign` reshapes the
+  default branch only when it first creates a feedback PR, which happens before
+  anyone is granted access.
+- **Accepting an invitation** is handled: `freeze` downgrades invitations before
+  collaborators precisely so a student accepting mid-run cannot slip between the
+  two.
+- **`collect`** is the one command a push can race, by design: the default target
+  is the default-branch tip, so a push during collection is simply collected.
+  Pin exact commits with `--commits` when that matters, and note that `collect`
+  reports a forced (history-rewriting) update rather than silently accepting it.
+
 ## Before a real run
 
 Preview any command with `--dry-run` first. The `--branch-protection` ruleset

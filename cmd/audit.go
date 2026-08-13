@@ -463,7 +463,30 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 		}
 		return r
 	})
-	return reportRenew(out, o.dryRun, res)
+
+	// Post-condition, matching assign: a freeze that landed while these grants were
+	// in flight would leave repos writable past their deadline, and the record read
+	// above could not have seen it.
+	var grantedWrite []string
+	if !o.dryRun {
+		for i, j := range jobs {
+			if j.permission == "push" && res[i].err == nil {
+				grantedWrite = append(grantedWrite, j.repo)
+			}
+		}
+	}
+	reopened, raceErr := checkGrantRace(ctx, client, org, grantedWrite)
+
+	if err := reportRenew(out, o.dryRun, res); err != nil {
+		return err
+	}
+	if raceErr != nil {
+		return raceErr
+	}
+	if len(reopened) > 0 {
+		return grantRaceError(name, reopened)
+	}
+	return nil
 }
 
 // verifyRenewed confirms a re-issued student now holds the access they were

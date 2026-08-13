@@ -244,7 +244,28 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) unitResult {
 		return o.provision(ctx, client, org, name, tmplOwner, tmplName, staffTeam, policy, frozen, u)
 	})
-	return reportResults(out, results)
+
+	// Post-condition: a freeze that started while this run was granting would have
+	// been invisible to the record read above, leaving repos writable past their
+	// deadline. Re-read and fail loudly if so, rather than reporting a clean run.
+	var grantedWrite []string
+	for _, r := range results {
+		if r.err == nil && !r.frozen {
+			grantedWrite = append(grantedWrite, r.repo)
+		}
+	}
+	reopened, raceErr := checkGrantRace(ctx, client, org, grantedWrite)
+
+	if err := reportResults(out, results); err != nil {
+		return err
+	}
+	if raceErr != nil {
+		return raceErr
+	}
+	if len(reopened) > 0 {
+		return grantRaceError(name, reopened)
+	}
+	return nil
 }
 
 // checkGroupConsistency enforces the roster/groups consistency findings: an

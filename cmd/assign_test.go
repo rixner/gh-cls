@@ -52,12 +52,15 @@ type fakeAssignClient struct {
 	forcePublic    bool // generation produces public repos regardless of the request
 	exists         map[string]bool
 	frozen         map[string]freezeState // recorded freeze state per repo
-	noProperty     bool                   // org never ran setup
-	public         map[string]bool        // "owner/name" -> repo is public; absent means private
-	invited        []string               // "repo:username" entries modeled as pending invitations
-	dropGrants     map[string]bool        // usernames whose grant silently evaporates
-	branches       []gh.BranchCount
-	isTemplate     map[string]bool // "owner/name" -> repo is a template repository
+	// freezeAfterRead is merged into frozen once the record has been read, so a
+	// second read sees a freeze that landed mid-run.
+	freezeAfterRead map[string]freezeState
+	noProperty      bool            // org never ran setup
+	public          map[string]bool // "owner/name" -> repo is public; absent means private
+	invited         []string        // "repo:username" entries modeled as pending invitations
+	dropGrants      map[string]bool // usernames whose grant silently evaporates
+	branches        []gh.BranchCount
+	isTemplate      map[string]bool // "owner/name" -> repo is a template repository
 
 	generated []string
 	deleted   []string
@@ -195,6 +198,12 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 		for repo, state := range f.frozen {
 			out[repo] = map[string]string{frozenProperty: string(state)}
 		}
+		// Apply any simulated concurrent freeze only after this first read, so the
+		// run proceeds on a stale picture exactly as it would in the real race.
+		for repo, state := range f.freezeAfterRead {
+			f.frozen[repo] = state
+		}
+		f.freezeAfterRead = nil
 		return out, nil
 	}
 	fk.AddTeamRepoFunc = func(_ context.Context, _, _, _, repo, _ string) error {
@@ -526,6 +535,30 @@ func TestAssignKeepsFrozenReposFrozen(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "1 existing repo(s) are recorded frozen") {
 		t.Errorf("the run should say it withheld write:\n%s", buf.String())
+	}
+}
+
+func TestAssignDetectsAConcurrentFreeze(t *testing.T) {
+	// A freeze that starts after assign read the record is invisible to it, so
+	// assign grants push on a repo that is being locked. It cannot prevent that
+	// (there is no atomic compare-and-set across the property and the grant), but
+	// it must not report a clean run: the re-read afterwards catches it and names
+	// the repos to re-freeze.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	// The record is empty when assign reads it and frozen when it re-reads.
+	fake.freezeAfterRead = map[string]freezeState{"hw1-ada": freezeFrozen}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{})
+	if err == nil {
+		t.Fatalf("a concurrent freeze must not be reported as a clean run:\n%s", buf.String())
+	}
+	for _, want := range []string{"hw1-ada", "gh cls freeze hw1", "same time"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should name the repo and the fix, got: %v", err)
+		}
 	}
 }
 

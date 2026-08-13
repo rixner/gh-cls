@@ -31,6 +31,9 @@ type fakeAuditState struct {
 	// noProperty simulates an org that never ran setup, so the freeze record
 	// cannot be read at all.
 	noProperty bool
+	// freezeAfterRead is merged into frozen once the record has been read, so a
+	// later re-read sees a freeze that landed mid-run.
+	freezeAfterRead map[string]freezeState
 
 	added   []string // "repo:login:perm"
 	deleted []string // "repo:invID"
@@ -70,6 +73,12 @@ func (s *fakeAuditState) withProperties(fk *ghtest.Fake) {
 		for repo, state := range s.frozen {
 			out[repo] = map[string]string{frozenProperty: string(state)}
 		}
+		// Apply any simulated concurrent freeze only after this read, so the run
+		// proceeds on a stale picture exactly as it would in the real race.
+		for repo, state := range s.freezeAfterRead {
+			s.frozen[repo] = state
+		}
+		s.freezeAfterRead = nil
 		return out, nil
 	}
 }
@@ -493,6 +502,26 @@ func TestAuditRenewGrantsWriteWhenNothingIsFrozen(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "restored to read") {
 		t.Errorf("nothing is frozen, so no read-restore note belongs:\n%s", buf.String())
+	}
+}
+
+func TestAuditRenewDetectsAConcurrentFreeze(t *testing.T) {
+	// Same post-condition as assign: a freeze that landed after renew read the
+	// record leaves repos it granted push to writable past the deadline. It cannot
+	// be prevented, so it must at least be reported rather than passing silently.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true}
+	fake.freezeAfterRead = map[string]freezeState{"hw1-ada": freezeFrozen}
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.renew = true
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil {
+		t.Fatalf("a concurrent freeze must not pass silently:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "hw1-ada") || !strings.Contains(err.Error(), "gh cls freeze hw1") {
+		t.Errorf("the error should name the repo and the fix, got: %v", err)
 	}
 }
 
