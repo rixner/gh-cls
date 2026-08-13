@@ -27,6 +27,8 @@ type assignClient interface {
 	DeleteRepo(ctx context.Context, org, name string) error
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
 	AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error
+	GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
+	ListRepoPropertyValues(ctx context.Context, org string) (map[string]map[string]string, error)
 	ApplyRuleset(ctx context.Context, org, repo string) error
 	CreateRef(ctx context.Context, owner, repo, ref, sha string) error
 	RebaseOntoEmptyRoot(ctx context.Context, owner, repo, branch string) (string, error)
@@ -130,6 +132,7 @@ type unitResult struct {
 	repo    string
 	status  string   // "created" or "skipped"
 	pending []string // members whose grant is a not-yet-accepted invitation
+	frozen  bool     // the repo is recorded frozen, so members were granted read
 	err     error
 }
 
@@ -228,8 +231,18 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
+	// Preflight 6: each repo's recorded freeze state, so re-asserting grants on an
+	// existing repo restores the access that repo is supposed to have rather than
+	// unconditionally push. assign is idempotent by design and re-run freely, so
+	// without this, adding one late student after a deadline re-opens the whole
+	// assignment. One org-wide call covers every repo.
+	frozen, err := readFrozenStates(ctx, client, org)
+	if err != nil {
+		return err
+	}
+
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) unitResult {
-		return o.provision(ctx, client, org, name, tmplOwner, tmplName, staffTeam, policy, u)
+		return o.provision(ctx, client, org, name, tmplOwner, tmplName, staffTeam, policy, frozen, u)
 	})
 	return reportResults(out, results)
 }
@@ -363,7 +376,7 @@ func checkRosterUsers(ctx context.Context, client assignClient, concurrency int,
 // Branch protection is applied once, when the repo is first created; the
 // feedback artifact is reconciled on every run so a partial failure is repaired
 // on re-run without reopening a closed PR or issue.
-func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, tmplOwner, tmplName, staffTeam string, policy config.Policy, u unit.Unit) unitResult {
+func (o *assignOpts) provision(ctx context.Context, client assignClient, org, name, tmplOwner, tmplName, staffTeam string, policy config.Policy, frozen map[string]freezeState, u unit.Unit) unitResult {
 	repo := name + "-" + u.Key
 	res := unitResult{repo: repo}
 
@@ -416,10 +429,18 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 		return res
 	}
 
-	// Re-assert grants so re-running is safe and access is correct.
+	// Re-assert grants so re-running is safe and access is correct. "Correct" is
+	// the repo's recorded freeze state, not always push: a repo frozen at its
+	// deadline must stay read-only through a later assign, or re-running this to
+	// add one late student would hand write back to the whole assignment. A repo
+	// just created has no record and so gets push, which is right.
+	grant := frozen[repo].grantPermission()
+	if grant != "push" {
+		res.frozen = true
+	}
 	for _, member := range u.Members {
-		if err := client.AddCollaborator(ctx, org, repo, member, "push"); err != nil {
-			res.err = fmt.Errorf("granting push to %s on %s: %w", member, repo, err)
+		if err := client.AddCollaborator(ctx, org, repo, member, grant); err != nil {
+			res.err = fmt.Errorf("granting %s to %s on %s: %w", grant, member, repo, err)
 			return res
 		}
 	}
@@ -576,7 +597,7 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 
 // reportResults summarizes the run and returns an error if any unit failed.
 func reportResults(out io.Writer, results []unitResult) error {
-	var created, skipped, failed, pending int
+	var created, skipped, failed, pending, frozen int
 	for _, r := range results {
 		switch {
 		case r.err != nil:
@@ -586,6 +607,9 @@ func reportResults(out io.Writer, results []unitResult) error {
 		default:
 			created++
 		}
+		if r.frozen {
+			frozen++
+		}
 		pending += len(r.pending)
 	}
 	fmt.Fprintf(out, "\n%d created, %d skipped, %d failed\n", created, skipped, failed)
@@ -594,9 +618,11 @@ func reportResults(out io.Writer, results []unitResult) error {
 		// until then the repo is provisioned but the student cannot push.
 		fmt.Fprintf(out, "note: %d student invitation(s) are still pending — those students must accept the GitHub invitation before they can push\n", pending)
 	}
-	if skipped > 0 {
-		// Re-asserting push on existing repos un-does a prior freeze on them.
-		fmt.Fprintf(out, "note: re-asserted push on %d existing repo(s); if these were frozen, they are now writable again\n", skipped)
+	if frozen > 0 {
+		// The opposite of the old hazard: these repos keep their deadline lock
+		// through the re-assert, so say so rather than leaving the instructor to
+		// wonder why those students cannot push.
+		fmt.Fprintf(out, "note: %d existing repo(s) are recorded frozen, so their members were granted read, not write\n", frozen)
 	}
 	if failed > 0 {
 		for _, r := range results {

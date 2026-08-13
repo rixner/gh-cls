@@ -51,15 +51,18 @@ type fakeAssignClient struct {
 	withholdBranch bool // simulate generation that never lands the default branch
 	forcePublic    bool // generation produces public repos regardless of the request
 	exists         map[string]bool
-	public         map[string]bool // "owner/name" -> repo is public; absent means private
-	invited        []string        // "repo:username" entries modeled as pending invitations
-	dropGrants     map[string]bool // usernames whose grant silently evaporates
+	frozen         map[string]freezeState // recorded freeze state per repo
+	noProperty     bool                   // org never ran setup
+	public         map[string]bool        // "owner/name" -> repo is public; absent means private
+	invited        []string               // "repo:username" entries modeled as pending invitations
+	dropGrants     map[string]bool        // usernames whose grant silently evaporates
 	branches       []gh.BranchCount
 	isTemplate     map[string]bool // "owner/name" -> repo is a template repository
 
 	generated []string
 	deleted   []string
 	collabs   []string
+	perms     []string // "repo:login=permission", to assert what access was granted
 	teamRepos []string
 	rulesets  map[string]bool // repos a protection ruleset was applied to
 	refs      []string        // "repo:ref"
@@ -132,10 +135,11 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 		f.deleted = append(f.deleted, name)
 		return nil
 	}
-	fk.AddCollaboratorFunc = func(_ context.Context, _, repo, username, _ string) error {
+	fk.AddCollaboratorFunc = func(_ context.Context, _, repo, username, permission string) error {
 		fk.Lock()
 		defer fk.Unlock()
 		f.collabs = append(f.collabs, repo+":"+username)
+		f.perms = append(f.perms, repo+":"+username+"="+permission)
 		return nil
 	}
 	fk.ListDirectCollaboratorsFunc = func(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
@@ -171,6 +175,25 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 			var inv gh.Invitation
 			inv.Invitee.Login = parts[1]
 			out = append(out, inv)
+		}
+		return out, nil
+	}
+	fk.GetPropertyDefinitionFunc = func(_ context.Context, _, name string) (*gh.PropertyDefinition, bool, error) {
+		if f.noProperty {
+			return nil, false, nil
+		}
+		return &gh.PropertyDefinition{
+			PropertyName:     name,
+			ValueType:        gh.PropertyTypeTrueFalse,
+			ValuesEditableBy: gh.PropertyEditableByOrg,
+		}, true, nil
+	}
+	fk.ListRepoPropertyValuesFunc = func(context.Context, string) (map[string]map[string]string, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		out := make(map[string]map[string]string, len(f.frozen))
+		for repo, state := range f.frozen {
+			out[repo] = map[string]string{frozenProperty: string(state)}
 		}
 		return out, nil
 	}
@@ -249,6 +272,7 @@ func newFakeAssign(role string) *fakeAssignClient {
 		exists:     map[string]bool{"cs101-spring26/hw1-template": true, "cs101-spring26/project-template": true},
 		isTemplate: map[string]bool{"cs101-spring26/hw1-template": true, "cs101-spring26/project-template": true},
 		branches:   []gh.BranchCount{{Name: "main", Commits: 1}},
+		frozen:     map[string]freezeState{},
 	}
 }
 
@@ -453,13 +477,71 @@ func TestAssignIdempotentSkip(t *testing.T) {
 	if contains(fake.generated, "hw1-ada") {
 		t.Error("existing repo should be skipped for generation")
 	}
-	// Grants are still re-asserted on the skipped repo.
+	// Grants are still re-asserted on the skipped repo, and since it carries no
+	// freeze record the re-assert is push. (The old "re-asserted push" warning is
+	// gone: assign now consults the record instead of warning that it might have
+	// undone a freeze. See TestAssignKeepsFrozenReposFrozen.)
 	if !contains(fake.collabs, "hw1-ada:ada") {
 		t.Error("grants should be re-asserted on a skipped repo")
 	}
+	if !contains(fake.perms, "hw1-ada:ada=push") {
+		t.Errorf("an unfrozen repo should be re-asserted at push: %v", fake.perms)
+	}
 	out := buf.String()
-	if !strings.Contains(out, "1 skipped") || !strings.Contains(out, "re-asserted push") {
-		t.Errorf("skip summary/warning missing: %s", out)
+	if !strings.Contains(out, "1 skipped") {
+		t.Errorf("skip summary missing: %s", out)
+	}
+	if strings.Contains(out, "recorded frozen") {
+		t.Errorf("nothing is frozen, so no frozen note belongs: %s", out)
+	}
+}
+
+func TestAssignKeepsFrozenReposFrozen(t *testing.T) {
+	// assign is idempotent and re-run freely, and it re-asserts grants on existing
+	// repos. Doing that unconditionally at push meant adding one late student
+	// after a deadline handed write back to the whole assignment. The grant now
+	// follows each repo's recorded freeze state.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/project-group-alpha"] = true
+	fake.frozen["project-group-alpha"] = freezeFrozen
+	o := newAssignOpts(t, fake, assignRoster, assignGroups)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "project", config.Overrides{}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	for _, want := range []string{"project-group-alpha:ada=pull", "project-group-alpha:grace=pull"} {
+		if !contains(fake.perms, want) {
+			t.Errorf("a frozen repo's members must be re-asserted at read: %v", fake.perms)
+		}
+	}
+	for _, p := range fake.perms {
+		if strings.HasPrefix(p, "project-group-alpha:") && strings.HasSuffix(p, "=push") {
+			t.Errorf("no push may be granted on a frozen repo: %v", fake.perms)
+		}
+	}
+	// group-beta is newly created, so it is not frozen and gets push as usual.
+	if !contains(fake.perms, "project-group-beta:alan=push") {
+		t.Errorf("a freshly created repo should get push: %v", fake.perms)
+	}
+	if !strings.Contains(buf.String(), "1 existing repo(s) are recorded frozen") {
+		t.Errorf("the run should say it withheld write:\n%s", buf.String())
+	}
+}
+
+func TestAssignAbortsWithoutTheFreezeProperty(t *testing.T) {
+	// Without the record assign cannot tell whether re-asserting push would
+	// reopen a frozen assignment, so it refuses rather than guessing.
+	fake := newFakeAssign("admin")
+	fake.noProperty = true
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "gh cls setup") {
+		t.Fatalf("assign should abort and name the fix, got %v", err)
+	}
+	if len(fake.generated) != 0 || len(fake.collabs) != 0 {
+		t.Errorf("nothing may be created or granted when the freeze state is unknown: %v %v", fake.generated, fake.collabs)
 	}
 }
 

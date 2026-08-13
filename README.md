@@ -225,6 +225,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   branch is generated unless `-a/--all-branches` copies them all. The template
   must be fully squashed (each branch a single commit); `-U/--allow-unsquashed`
   overrides that preflight and clones the history as-is.
+  Grants on an existing repo follow that repo's freeze record, so re-running
+  assign after a deadline (to add a late student, say) re-asserts read on the
+  frozen repos instead of handing write back to the class.
   For a group assignment, an enrolled student in no group, or a student in more
   than one group, aborts the whole run before any repo is created, listing every
   problem so the groups file can be fixed in one pass; `--force` (`-F`) downgrades
@@ -318,9 +321,12 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 
 `freeze` records each repository's deadline state in a `gh-cls-frozen`
 organization custom property (`true` when frozen, `false` after an `--undo`,
-absent if never frozen). `setup` declares the property; `freeze` refuses to run
-until it exists, because a freeze it cannot record is one that `audit --renew`
-can silently undo.
+absent if never frozen). `setup` declares the property, and `assign`, `freeze`
+and `audit --renew` all refuse to run until it exists.
+
+Every command that grants student access consults it, which is the point: a
+freeze that only `freeze` knows about is one that `assign` or `audit --renew`
+silently undoes the next time either re-asserts a grant.
 
 The record exists because freeze state cannot be reliably inferred from
 permissions. `audit --renew` restores access to students who have **none**, so
