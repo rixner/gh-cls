@@ -72,6 +72,40 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
+	t.Run("a misspelled course key is rejected", func(t *testing.T) {
+		// Dropped silently, this is a whole class of repositories created without the
+		// feedback artifact the config asked for, and nothing in the run says so.
+		_, err := Load(write(t, "org: x\nstaff_team: staff\nfeedbck: pr\n"))
+		if err == nil {
+			t.Fatal("Load should reject an unknown top-level key")
+		}
+		if !strings.Contains(err.Error(), "feedbck") || !strings.Contains(err.Error(), "line 3") {
+			t.Fatalf("the error should name the key and its line, got %v", err)
+		}
+	})
+
+	t.Run("a misspelled assignment key is rejected", func(t *testing.T) {
+		_, err := Load(write(t, "org: x\nstaff_team: staff\nassignments:\n  hw1:\n    type: individual\n    branch_protecton: true\n"))
+		if err == nil {
+			t.Fatal("Load should reject an unknown per-assignment key")
+		}
+		if !strings.Contains(err.Error(), "branch_protecton") || !strings.Contains(err.Error(), "line 6") {
+			t.Fatalf("the error should name the key and its line, got %v", err)
+		}
+		// The message is the user's, so it must not leak the Go type it came from.
+		if strings.Contains(err.Error(), "config.Assignment") {
+			t.Errorf("the error should not name a Go type, got %v", err)
+		}
+	})
+
+	t.Run("an empty config still reports the required keys", func(t *testing.T) {
+		// An empty file decodes as EOF; the useful answer is Validate's, not "EOF".
+		_, err := Load(write(t, ""))
+		if err == nil || !strings.Contains(err.Error(), "org") {
+			t.Fatalf("an empty config should ask for org, got %v", err)
+		}
+	})
+
 	t.Run("missing file is an error", func(t *testing.T) {
 		if _, err := Load(filepath.Join(t.TempDir(), "nope.yml")); err == nil {
 			t.Fatal("Load should error on a missing file")
