@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -42,6 +44,9 @@ type gitRunner interface {
 	WorktreeClean(ctx context.Context, dir string) (bool, error)
 	Head(ctx context.Context, dir string) (string, error)
 	TagExists(ctx context.Context, dir, tag string) (bool, error)
+	// TagSHA returns the commit a tag points at, which is the state that was
+	// collected under that tag however the clone has been moved since.
+	TagSHA(ctx context.Context, dir, tag string) (string, error)
 	// Fetch shallow-fetches ref (a branch name or a SHA) from origin, reporting
 	// whether the update rewrote history (a forced, non-fast-forward update).
 	Fetch(ctx context.Context, dir, ref string) (forced bool, err error)
@@ -309,8 +314,16 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string,
 		res.err = fmt.Errorf("checking tag on %s: %w", it.repo, err)
 		return res
 	} else if has {
+		// Read the tag rather than HEAD: this SHA goes into the manifest when the
+		// row is missing from it, and a grading checkout may have moved HEAD since
+		// the collection. The error is no longer discarded for the same reason.
+		sha, err := o.git.TagSHA(ctx, dir, tag)
+		if err != nil {
+			res.err = fmt.Errorf("reading the %s tag on %s: %w", tag, it.repo, err)
+			return res
+		}
 		res.status = collectStatusUpToDate
-		res.sha, _ = o.git.Head(ctx, dir)
+		res.sha = sha
 		return res
 	}
 	if clean, err := o.git.WorktreeClean(ctx, dir); err != nil {
@@ -368,13 +381,34 @@ func (o *collectOpts) tagHead(ctx context.Context, dir, tag, status string, res 
 	return res
 }
 
-// writeManifest appends a row per newly collected/updated repo to
-// <out>/collected.csv, so the graded SHAs live in one place.
+// writeManifest appends a row to <out>/collected.csv for every repo this run
+// collected under the label, so the graded SHAs live in one place.
+//
+// An up-to-date repo is included when the manifest has no row for it. Tags are
+// created per repo as the run proceeds but the manifest is written at the end,
+// so a run that dies partway leaves repos tagged and unrecorded; on the re-run
+// those repos are up-to-date, and skipping them would leave a hole in the record
+// of what was graded that no later run could ever fill. Rows already present are
+// never written twice, which is what makes the repair safe to repeat.
 func (o *collectOpts) writeManifest(label string, results []collectResult) error {
+	path := filepath.Join(o.out, "collected.csv")
+	recorded, err := readManifestKeys(path)
+	if err != nil {
+		return err
+	}
+
 	var rows [][]string
 	stamp := o.now().Format(time.RFC3339)
 	for _, r := range results {
-		if r.err != nil || (r.status != collectStatusCollected && r.status != collectStatusUpdated) {
+		if r.err != nil {
+			continue
+		}
+		switch r.status {
+		case collectStatusCollected, collectStatusUpdated, collectStatusUpToDate:
+		default: // dirty or no pinned SHA: nothing was collected to record
+			continue
+		}
+		if recorded[manifestKey(label, r.repo)] {
 			continue
 		}
 		rows = append(rows, []string{label, r.key, r.repo, r.sha, r.ref, stamp})
@@ -382,7 +416,6 @@ func (o *collectOpts) writeManifest(label string, results []collectResult) error
 	if len(rows) == 0 {
 		return nil
 	}
-	path := filepath.Join(o.out, "collected.csv")
 	_, statErr := os.Stat(path)
 	isNew := os.IsNotExist(statErr)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
@@ -406,6 +439,43 @@ func (o *collectOpts) writeManifest(label string, results []collectResult) error
 		return fmt.Errorf("closing manifest %s: %w", path, cerr)
 	}
 	return nil
+}
+
+// manifestKey identifies one manifest row: a repository under one label. A
+// second collection of the same repo under a new label is a new row, which is
+// the point of labels.
+func manifestKey(label, repo string) string { return label + "\x00" + repo }
+
+// readManifestKeys returns the (label, repo) pairs the manifest already records,
+// so a row is written once and only once. A missing file is an empty set; a file
+// that cannot be read or parsed is an error, since appending to a manifest whose
+// contents are unknown would duplicate rows silently.
+func readManifestKeys(path string) (map[string]bool, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]bool{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("opening manifest %s: %w", path, err)
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	// Rows are read only for their label and repo, so a row of another width (a
+	// hand-edited file) is tolerated rather than failing the run.
+	r.FieldsPerRecord = -1
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("parsing manifest %s: %w; fix or remove it, then re-run", path, err)
+	}
+	keys := make(map[string]bool, len(records))
+	for _, rec := range records {
+		if len(rec) < 3 {
+			continue
+		}
+		keys[manifestKey(rec[0], rec[2])] = true
+	}
+	return keys, nil
 }
 
 // reportReconcile prints the missing/unexpected reconciliation up front.
@@ -544,6 +614,16 @@ func (g execGit) TagExists(ctx context.Context, dir, tag string) (bool, error) {
 		return false, fmt.Errorf("git tag -l: %w: %s", err, strings.TrimSpace(errb))
 	}
 	return strings.TrimSpace(out) == tag, nil
+}
+
+func (g execGit) TagSHA(ctx context.Context, dir, tag string) (string, error) {
+	// ^{} dereferences an annotated tag to its commit; on the lightweight tags
+	// collect creates it is a no-op.
+	out, errb, err := g.run(ctx, dir, "rev-parse", tag+"^{}")
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse %s: %w: %s", tag, err, strings.TrimSpace(errb))
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func (g execGit) Fetch(ctx context.Context, dir, ref string) (bool, error) {

@@ -195,6 +195,14 @@ groups file) to tell you whether that set matches the class:
 time`). It is the quick answer to "what SHA did I grade for this student," without
 opening each clone. It is appended to, never overwritten.
 
+Tags are written per repository as a run proceeds, but the manifest is written at
+the end, so a run that is interrupted can leave repositories collected and
+unrecorded. Re-running under the same label fills those rows in from each repo's
+tag, and never writes a row twice, so the manifest ends up complete whether or not
+a run finished. A row filled in by a later run carries that run's timestamp, since
+the moment of the original collection is not recoverable; the `sha` is the
+collected one either way.
+
 ## Pairing with `gh cls feedback`
 
 Collect writes working copies; `feedback` reads a separate directory of feedback

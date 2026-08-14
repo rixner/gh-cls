@@ -37,6 +37,9 @@ type fakeClone struct {
 	origin    string
 	clean     bool
 	tags      map[string]bool
+	// tagSHA is the commit each tag names, which is not necessarily the clone's
+	// current sha: a grading checkout can move HEAD after a collection.
+	tagSHA map[string]string
 }
 
 // originURL is the remote a clone of org/repo carries, as gh writes it.
@@ -65,9 +68,10 @@ func newFakeGit() *fakeGit {
 
 // seed registers an existing clone at dir, cloned from origin.
 func (f *fakeGit) seed(dir, origin, sha string, clean bool, tags ...string) {
-	c := &fakeClone{sha: sha, origin: origin, clean: clean, tags: map[string]bool{}}
+	c := &fakeClone{sha: sha, origin: origin, clean: clean, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	for _, t := range tags {
 		c.tags[t] = true
+		c.tagSHA[t] = sha
 	}
 	f.clones[dir] = c
 }
@@ -84,7 +88,7 @@ func (f *fakeGit) Clone(_ context.Context, org, repo, dir string) error {
 	if e := f.cloneErr[repo]; e != nil {
 		return e
 	}
-	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), clean: true, tags: map[string]bool{}}
+	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), clean: true, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	f.cloned = append(f.cloned, dir)
 	return nil
 }
@@ -113,6 +117,16 @@ func (f *fakeGit) TagExists(_ context.Context, dir, tag string) (bool, error) {
 	return f.clones[dir].tags[tag], nil
 }
 
+func (f *fakeGit) TagSHA(_ context.Context, dir, tag string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.clones[dir]
+	if !c.tags[tag] {
+		return "", errors.New("unknown revision " + tag)
+	}
+	return c.tagSHA[tag], nil
+}
+
 func (f *fakeGit) Fetch(_ context.Context, dir, ref string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -137,10 +151,11 @@ func (f *fakeGit) Checkout(_ context.Context, dir, ref string) error {
 	return nil
 }
 
-func (f *fakeGit) CreateTag(_ context.Context, dir, tag, _ string) error {
+func (f *fakeGit) CreateTag(_ context.Context, dir, tag, sha string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clones[dir].tags[tag] = true
+	f.clones[dir].tagSHA[tag] = sha
 	return nil
 }
 
@@ -357,6 +372,85 @@ func TestCollectDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(o.out, "collected.csv")); !errors.Is(err, os.ErrNotExist) {
 		t.Error("dry-run must not write a manifest")
+	}
+}
+
+func TestCollectFillsManifestHolesLeftByAnInterruptedRun(t *testing.T) {
+	// Tags are written per repo as the run proceeds, the manifest only at the end.
+	// A run that dies at 80/100 leaves those 80 tagged and unrecorded, and on the
+	// re-run they are "up-to-date": they used to be filtered out of the manifest,
+	// so their SHAs never entered the record of what was graded and no later run
+	// could ever put them there.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	tag := "gh-cls/collect/test"
+	// ada and alan were collected and tagged before the interruption; the manifest
+	// was never written. grace was never reached.
+	git.seed(filepath.Join(o.out, "ada"), originURL("cs101-spring26", "hw1-ada"), "sha-ada-collected", true, tag)
+	git.seed(filepath.Join(o.out, "alan"), originURL("cs101-spring26", "hw1-alan"), "sha-alan-collected", true, tag)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "1 collected, 0 updated, 2 up-to-date") {
+		t.Errorf("the tagged repos should read as up-to-date:\n%s", buf.String())
+	}
+	recs := readCSV(t, filepath.Join(o.out, "collected.csv"))
+	if len(recs) != 4 {
+		t.Fatalf("every repo belongs in the manifest, got %v", recs)
+	}
+	// Each recovered row carries the SHA its tag names, which is what was graded.
+	for repo, sha := range map[string]string{
+		"hw1-ada":   "sha-ada-collected",
+		"hw1-alan":  "sha-alan-collected",
+		"hw1-grace": "sha-hw1-grace",
+	} {
+		row := manifestRow(recs, repo)
+		if row == nil {
+			t.Errorf("%s is missing from the manifest: %v", repo, recs)
+			continue
+		}
+		if row[3] != sha {
+			t.Errorf("%s recorded at %q, want the tagged commit %q", repo, row[3], sha)
+		}
+	}
+}
+
+func TestCollectNeverWritesAManifestRowTwice(t *testing.T) {
+	// The repair reads the manifest to decide what is missing, so it has to be
+	// safe to run again: a third, fourth, fifth run must not keep appending the
+	// same rows.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	for i := range 3 {
+		if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+			t.Fatalf("run %d: %v", i+1, err)
+		}
+	}
+	recs := readCSV(t, filepath.Join(o.out, "collected.csv"))
+	if len(recs) != 4 {
+		t.Errorf("three runs should leave header + 3 rows, got %v", recs)
+	}
+}
+
+func TestCollectUpToDateReadsTheTagNotHead(t *testing.T) {
+	// A grading checkout can move HEAD after a collection. The manifest records
+	// what was collected, so the recovered row must come from the tag.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	tag := "gh-cls/collect/test"
+	adaDir := filepath.Join(o.out, "ada")
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-collected", true, tag)
+	git.clones[adaDir].sha = "sha-moved-by-grader" // HEAD moved since; the tag did not
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	row := manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada")
+	if row == nil || row[3] != "sha-collected" {
+		t.Errorf("the manifest should record the tagged commit, got %v", row)
 	}
 }
 
