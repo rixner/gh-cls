@@ -817,6 +817,50 @@ func TestAssignRaceCheckCoversAGrantThatLandedBeforeALaterFailure(t *testing.T) 
 	}
 }
 
+func TestAssignExplainsAFeedbackBranchItCannotAdd(t *testing.T) {
+	// The state an assign run leaves if it dies between generating the repo and
+	// creating the feedback branch: the repo exists, its default branch is there,
+	// the feedback branch is not. Re-running cannot repair it, because building
+	// the branch rewrites the default branch's history. The refusal is right, but
+	// the instructor is the one who has to act, so the message has to say how.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.refs = []string{"hw1-ada:refs/heads/main"} // no refs/heads/feedback
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackPR)})
+	if err == nil {
+		t.Fatalf("a missing feedback branch on an existing repo must fail that repo:\n%s", buf.String())
+	}
+	msg := buf.String()
+	if !strings.Contains(msg, "FAILED hw1-ada") {
+		t.Fatalf("the repo should be reported as failed:\n%s", msg)
+	}
+	// Both ways out, since the tool cannot tell which repo this is: delete and
+	// re-run when it came from an interrupted run, restore the branch when it
+	// holds student work. Switching the assignment to issues is called out as a
+	// non-answer: it would leave every other repo carrying two artifacts, and the
+	// config describing something other than what exists.
+	for _, want := range []string{
+		"gh repo delete cs101-spring26/hw1-ada",
+		"before anyone is granted access",
+		"no student is a collaborator on it",
+		"do not delete it",
+		"restore the feedback branch from its pull request",
+		"Do not switch the assignment to feedback: issue",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the message should contain %q:\n%s", want, msg)
+		}
+	}
+	// The refusal happens before any grant, which is what makes the delete advice
+	// true in the first place.
+	if contains(fake.collabs, "hw1-ada:ada") || contains(fake.rebased, "hw1-ada") {
+		t.Errorf("nothing should be granted or rewritten on the refused repo: collabs=%v rebased=%v", fake.collabs, fake.rebased)
+	}
+}
+
 func TestAssignAbortsWithoutTheFreezeProperty(t *testing.T) {
 	// Without the record assign cannot tell whether re-asserting push would
 	// reopen a frozen assignment, so it refuses rather than guessing.
