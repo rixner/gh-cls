@@ -19,10 +19,13 @@ sole owner cannot test (see *The freeze caveat* below).
    ```
    gh auth refresh -s admin:org -s delete_repo
    ```
-   `admin:org` is for org settings and teams; `delete_repo` is for cleanup. Every
-   command — including `template` — runs purely against the GitHub API, so no
-   `git` binary or credential helper is involved.
-3. **A "student" login.** A second throwaway GitHub account is the recommended
+   `admin:org` is for org settings and teams; `delete_repo` is for cleanup.
+   Every command except `collect` (`template` included) runs purely against the
+   GitHub API, with no credential helper involved.
+3. **`git` on your PATH.** The walkthrough below runs `collect`, which clones
+   each repository; it is the one command that shells out to `git` (and to `gh
+   repo clone`, which inherits the same auth).
+4. **A "student" login.** A second throwaway GitHub account is the recommended
    path. For the `freeze` downgrade to be observable it should **accept
    membership** in the sandbox org once (invite it, then accept from that
    account). After that, repo grants to it take effect immediately.
@@ -40,8 +43,10 @@ gh extension install .  # registers this directory as `gh cls`
 ```
 
 `gh` strips the `gh-` prefix, so the `gh-cls` binary becomes the `gh cls`
-command. The install is a symlink to this directory, so a later `go build ./...`
-is picked up with no reinstall.
+command. The install is a symlink to this directory, so a later `go build` is
+picked up with no reinstall (plain `go build`, since only that rewrites the
+`./gh-cls` binary the symlink runs; `go build ./...` compiles the packages and
+leaves the binary untouched).
 
 ## The freeze caveat (why a second account matters)
 

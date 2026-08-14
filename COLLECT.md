@@ -36,7 +36,7 @@ hw1/
   ada/          a git clone of hw1-ada at the collected commit
   alan/
   grace/
-  collected.csv a record of what was collected (key, repo, SHA, time)
+  collected.csv a record of what was collected (label, key, repo, sha, ref, time)
 ```
 
 `--out` is required on purpose, so repositories are never cloned into a surprise

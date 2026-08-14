@@ -337,9 +337,10 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   unfrozen. Each repo's actual access is compared against its freeze record and
   any disagreement is reported as `DRIFT`, which catches a freeze that did not
   fully take or an extension that was never actually granted. The CSV is a
-  timestamped file in the current
-  directory (or `--out <path>`) and is never overwritten: a same-second re-run
-  rolls to a new name, so a run, fix, re-run loop leaves both files to compare.
+  timestamped file in the current directory, or `--out <path>`, and is never
+  overwritten: the timestamped name rolls to a new one on a same-second re-run,
+  so a run, fix, re-run loop leaves both files to compare, while an explicit
+  `--out` that already exists is refused instead.
   `--detail` costs two to three API calls per repo, plus one org-wide call for the
   freeze record; the default summary costs neither. status reads only, so it needs
   no org-owner role, and it still works on an org that has not run `setup`,
@@ -428,6 +429,16 @@ Student activity is not a hazard for these commands, with one exception:
   matters, and note that `collect` reports a forced (history-rewriting) update
   rather than silently accepting it.
 
+## Rate limits
+
+A bulk command issues many API calls, so GitHub may rate-limit a run. Every
+request waits and retries on both the primary limit and the secondary one
+("You have exceeded a secondary rate limit"), honoring GitHub's own
+`Retry-After` and reset headers, so most limiting never surfaces. If a run does
+exhaust its retries it fails naming the request that was refused; re-running is
+safe, since every command skips what already exists, and lowering
+`-j/--concurrency` makes a repeat less likely.
+
 ## Before a real run
 
 Preview any command with `--dry-run` first. A dry run changes nothing, but it
@@ -436,10 +447,9 @@ reports what each repository would get, so it also catches a missing staff team,
 an unsquashed or unmarked template, a roster username that does not exist, and
 repositories that already exist or are recorded frozen.
 
-The `--branch-protection` ruleset
-requires the organization to be on GitHub's Team plan or higher; confirm under
-**Billing & plans** that the org shows "Team". The freeze record needs no paid
-plan.
+The `--branch-protection` ruleset requires the organization to be on GitHub's
+Team plan or higher; confirm under **Billing & plans** that the org shows
+"Team". The freeze record needs no paid plan.
 
 ## Development
 
