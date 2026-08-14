@@ -769,6 +769,54 @@ func TestAssignDetectsAConcurrentFreeze(t *testing.T) {
 	}
 }
 
+func TestAssignReportsAFailureAndAConcurrentFreezeTogether(t *testing.T) {
+	// Returning on the first failed repo discarded the race result, so one
+	// unrelated failure hid "other repos are writable past their deadline" in
+	// exactly the messy run where a freeze is most likely to be racing. Both must
+	// be reported.
+	fake := newFakeAssign("admin")
+	fake.dropGrants = map[string]bool{"ada": true}                          // hw1-ada fails verification
+	fake.freezeAfterRead = map[string]freezeState{"hw1-alan": freezeFrozen} // a freeze lands mid-run
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{})
+	if err == nil {
+		t.Fatalf("both problems must surface:\n%s", buf.String())
+	}
+	for _, want := range []string{"1 repo(s) failed", "hw1-alan", "gh cls freeze hw1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should mention %q, got: %v", want, err)
+		}
+	}
+	// The per-repo detail still reaches the terminal.
+	if !strings.Contains(buf.String(), "FAILED hw1-ada") {
+		t.Errorf("the failed repo should still be named in the report:\n%s", buf.String())
+	}
+}
+
+func TestAssignRaceCheckCoversAGrantThatLandedBeforeALaterFailure(t *testing.T) {
+	// The grant is what makes a repo writable, and it lands before the steps that
+	// follow it. Excluding a repo because a later step failed dropped the one repo
+	// that is both writable and known to be in a bad state from the race check.
+	fake := newFakeAssign("admin")
+	fake.dropGrants = map[string]bool{"ada": true} // hw1-ada: push granted, verification then fails
+	fake.freezeAfterRead = map[string]freezeState{"hw1-ada": freezeFrozen}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{})
+	if err == nil {
+		t.Fatalf("the concurrent freeze must be reported:\n%s", buf.String())
+	}
+	if !contains(fake.perms, "hw1-ada:ada=push") {
+		t.Fatalf("the test needs the push grant to have landed: %v", fake.perms)
+	}
+	if !strings.Contains(err.Error(), "writable past the deadline") || !strings.Contains(err.Error(), "hw1-ada") {
+		t.Errorf("a repo granted write before its later failure must still be race-checked, got: %v", err)
+	}
+}
+
 func TestAssignAbortsWithoutTheFreezeProperty(t *testing.T) {
 	// Without the record assign cannot tell whether re-asserting push would
 	// reopen a frozen assignment, so it refuses rather than guessing.

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -374,7 +375,11 @@ func reportExtras(out io.Writer, results []repoAudit) {
 type renewResult struct {
 	repo  string
 	login string
-	err   error
+	// granted records that the collaborator add landed. Like assign's
+	// grantedWrite it is independent of err: a grant whose verification then
+	// failed still handed out the access.
+	granted bool
+	err     error
 }
 
 // runRenew re-issues access for every expired or missing student. It refuses to
@@ -457,6 +462,7 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 			r.err = fmt.Errorf("re-inviting %s on %s with %s (an expired invitation, if any, was already cancelled; re-run `gh cls assign %s` if access is now absent): %w", j.login, j.repo, j.permission, name, err)
 			return r
 		}
+		r.granted = true
 		if err := o.verifyRenewed(ctx, client, org, j.repo, j.login, j.permission); err != nil {
 			r.err = err
 			return r
@@ -466,27 +472,29 @@ func (o *auditOpts) runRenew(ctx context.Context, out io.Writer, client auditCli
 
 	// Post-condition, matching assign: a freeze that landed while these grants were
 	// in flight would leave repos writable past their deadline, and the record read
-	// above could not have seen it.
+	// above could not have seen it. What counts is the grant having landed, not the
+	// job having finished cleanly, since a write handed out before a later step
+	// failed is still a write.
 	var grantedWrite []string
 	if !o.dryRun {
 		for i, j := range jobs {
-			if j.permission == "push" && res[i].err == nil {
+			if j.permission == "push" && res[i].granted {
 				grantedWrite = append(grantedWrite, j.repo)
 			}
 		}
 	}
 	reopened, raceErr := checkGrantRace(ctx, client, org, grantedWrite)
 
-	if err := reportRenew(out, o.dryRun, res); err != nil {
-		return err
+	// Report both and return both: a failed renewal must not swallow the news that
+	// other repos are writable past their deadline.
+	errs := []error{reportRenew(out, o.dryRun, res)}
+	switch {
+	case raceErr != nil:
+		errs = append(errs, raceErr)
+	case len(reopened) > 0:
+		errs = append(errs, grantRaceError(name, reopened))
 	}
-	if raceErr != nil {
-		return raceErr
-	}
-	if len(reopened) > 0 {
-		return grantRaceError(name, reopened)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // verifyRenewed confirms a re-issued student now holds the access they were

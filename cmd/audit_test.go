@@ -525,6 +525,30 @@ func TestAuditRenewDetectsAConcurrentFreeze(t *testing.T) {
 	}
 }
 
+func TestAuditRenewReportsAFailureAndAConcurrentFreezeTogether(t *testing.T) {
+	// Same shape as assign: reporting the renewals first and returning on their
+	// error discarded the race result, so a failed renewal hid the repos left
+	// writable past the deadline. A grant that landed and then failed
+	// verification is also still a grant, so it belongs in the race check.
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true}
+	fake.silent = map[string]bool{"ada": true} // the add lands, verification then fails
+	fake.freezeAfterRead = map[string]freezeState{"hw1-ada": freezeFrozen}
+	o := newAuditOpts(t, fake, assignRoster, "")
+	o.renew = true
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil {
+		t.Fatalf("both problems must surface:\n%s", buf.String())
+	}
+	for _, want := range []string{"failed to renew", "hw1-ada", "gh cls freeze hw1"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should mention %q, got: %v", want, err)
+		}
+	}
+}
+
 func TestAuditRenewAbortsWithoutTheFreezeRecord(t *testing.T) {
 	// An org that never ran setup has no record to consult. Defaulting to "nothing
 	// is frozen" would re-grant write across an assignment whose deadline may have

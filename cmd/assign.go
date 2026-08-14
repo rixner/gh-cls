@@ -134,7 +134,12 @@ type unitResult struct {
 	status  string   // "created" or "skipped"
 	pending []string // members whose grant is a not-yet-accepted invitation
 	frozen  bool     // the repo is recorded frozen, so members were granted read
-	err     error
+	// grantedWrite records that at least one member was actually granted push,
+	// which is what makes the repo worth re-checking against a concurrent freeze.
+	// It is deliberately independent of err: a grant that landed before a later
+	// step failed still handed out write.
+	grantedWrite bool
+	err          error
 }
 
 func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov config.Overrides) error {
@@ -253,24 +258,30 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	// Post-condition: a freeze that started while this run was granting would have
 	// been invisible to the record read above, leaving repos writable past their
 	// deadline. Re-read and fail loudly if so, rather than reporting a clean run.
+	// What matters is whether write was actually handed out, not whether the repo
+	// finished cleanly: a repo whose grant landed and whose next step then failed
+	// is writable just the same, and is exactly the one worth re-checking.
 	var grantedWrite []string
 	for _, r := range results {
-		if r.err == nil && !r.frozen {
+		if r.grantedWrite {
 			grantedWrite = append(grantedWrite, r.repo)
 		}
 	}
 	reopened, raceErr := checkGrantRace(ctx, client, org, grantedWrite)
 
-	if err := reportResults(out, results); err != nil {
-		return err
+	// Both outcomes are reported and both errors returned. Returning early on a
+	// failed repo used to discard the race result entirely, so one unrelated
+	// failure hid "other repos are writable past their deadline" -- the silent
+	// outcome this check exists to prevent, lost precisely in the messy run where
+	// it is most likely.
+	errs := []error{reportResults(out, results)}
+	switch {
+	case raceErr != nil:
+		errs = append(errs, raceErr)
+	case len(reopened) > 0:
+		errs = append(errs, grantRaceError(name, reopened))
 	}
-	if raceErr != nil {
-		return raceErr
-	}
-	if len(reopened) > 0 {
-		return grantRaceError(name, reopened)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // checkGroupConsistency enforces the roster/groups consistency findings: an
@@ -578,6 +589,9 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 		if err := client.AddCollaborator(ctx, org, repo, member, grant); err != nil {
 			res.err = fmt.Errorf("granting %s to %s on %s: %w", grant, member, repo, err)
 			return res
+		}
+		if grant == "push" {
+			res.grantedWrite = true
 		}
 	}
 	if err := client.AddTeamRepo(ctx, org, staffTeam, org, repo, "push"); err != nil {
