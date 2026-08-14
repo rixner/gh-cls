@@ -285,6 +285,28 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 		defer fk.Unlock()
 		return contains(f.issues, repo), nil
 	}
+	// The Find lookups answer with the same recorded state as the Exists ones,
+	// numbered so a report can name them.
+	fk.FindPRByBaseFunc = func(_ context.Context, _, repo, base string) (int, string, bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		for i, p := range f.prs {
+			if strings.HasPrefix(p, repo+":") && strings.HasSuffix(p, "->"+base) {
+				return i + 1, "open", true, nil
+			}
+		}
+		return 0, "", false, nil
+	}
+	fk.FindIssueByTitleFunc = func(_ context.Context, _, repo, _ string) (int, string, bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		for i, r := range f.issues {
+			if r == repo {
+				return i + 1, "open", true, nil
+			}
+		}
+		return 0, "", false, nil
+	}
 	return fk
 }
 
@@ -814,6 +836,61 @@ func TestAssignRaceCheckCoversAGrantThatLandedBeforeALaterFailure(t *testing.T) 
 	}
 	if !strings.Contains(err.Error(), "writable past the deadline") || !strings.Contains(err.Error(), "hw1-ada") {
 		t.Errorf("a repo granted write before its later failure must still be race-checked, got: %v", err)
+	}
+}
+
+func TestAssignRefusesASecondFeedbackArtifact(t *testing.T) {
+	// The config declares what to create; it is not a record of what exists. An
+	// assignment whose feedback is changed after its repos were made would
+	// otherwise get an issue added to every repo that already carries a feedback
+	// pull request, splitting the class between two artifacts with nothing saying
+	// which one a student read.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.refs = []string{"hw1-ada:refs/heads/main", "hw1-ada:refs/heads/feedback"}
+	fake.prs = []string{"hw1-ada:main->feedback"} // the PR an earlier pr-configured run made
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	// The config now says issue.
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackIssue)})
+	if err == nil {
+		t.Fatalf("adding an issue to a repo that has a feedback PR must fail that repo:\n%s", buf.String())
+	}
+	if contains(fake.issues, "hw1-ada") {
+		t.Error("no second artifact should be created")
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"already has a feedback pull request (#1)",
+		"now configured for a feedback issue",
+		"will not add a second one",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the failure should say %q:\n%s", want, out)
+		}
+	}
+	// The repos that carry nothing yet are unaffected: they get the issue.
+	if !contains(fake.issues, "hw1-alan") || !contains(fake.issues, "hw1-grace") {
+		t.Errorf("repos with no artifact should still get one: %v", fake.issues)
+	}
+}
+
+func TestAssignKeepsTheArtifactARepoAlreadyHas(t *testing.T) {
+	// Re-running assign on an assignment whose repos already carry the configured
+	// artifact must be a no-op, not a second create.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.hasIssues = true
+	fake.issues = []string{"hw1-ada"}
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackIssue)}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if count(fake.issues, "hw1-ada") != 1 {
+		t.Errorf("the existing issue should be left alone, got %v", fake.issues)
 	}
 }
 
