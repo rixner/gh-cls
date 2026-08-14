@@ -3,6 +3,7 @@ package cmd
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -21,6 +22,13 @@ type fakeSetupState struct {
 	copilotPresent bool
 	teamExists     bool
 	ignorePatches  bool // accept PATCH/PUT calls but leave the org state unchanged
+	// actionsErr fails the Actions policy read, which happens after the base
+	// permission and the member toggles have already been applied.
+	actionsErr error
+	// verifyOrgErr fails only the second GetOrg, the post-condition re-read, so a
+	// verification pass can be exercised with its org read broken.
+	verifyOrgErr error
+	orgReads     int
 
 	// property is the existing freeze-state property declaration, nil when the org
 	// has none yet.
@@ -36,6 +44,10 @@ func (s *fakeSetupState) fake() *ghtest.Fake {
 	fk := &ghtest.Fake{}
 	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return s.role, nil }
 	fk.GetOrgFunc = func(context.Context, string) (*gh.OrgSettings, error) {
+		s.orgReads++
+		if s.verifyOrgErr != nil && s.orgReads > 1 {
+			return nil, s.verifyOrgErr
+		}
 		settings := s.settings
 		return &settings, nil
 	}
@@ -67,6 +79,9 @@ func (s *fakeSetupState) fake() *ghtest.Fake {
 		return nil
 	}
 	fk.GetActionsPermissionsFunc = func(context.Context, string) (*gh.ActionsPermissions, error) {
+		if s.actionsErr != nil {
+			return nil, s.actionsErr
+		}
 		return &gh.ActionsPermissions{EnabledRepositories: s.actions}, nil
 	}
 	fk.SetActionsEnabledRepositoriesFunc = func(_ context.Context, _, v string) error {
@@ -297,6 +312,81 @@ func TestSetupWarnsWhenSettingDoesNotStick(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("expected a post-condition warning containing %q:\n%s", want, out)
 		}
+	}
+}
+
+func TestSetupReportsWhatItChangedBeforeFailing(t *testing.T) {
+	// Hardening is a series of separate mutations. Aborting on a later step used
+	// to print nothing but the error, so a run that had already lowered the base
+	// permission and disabled member repo creation looked like it had done
+	// nothing: the instructor could not tell which half of the org was hardened.
+	state := &fakeSetupState{
+		role:       "admin",
+		teamExists: true,
+		settings: gh.OrgSettings{
+			DefaultRepositoryPermission:  "write",
+			MembersCanCreateRepositories: boolp(true),
+			MembersCanCreatePages:        boolp(true),
+			MembersCanForkPrivateRepos:   boolp(true),
+		},
+		actionsErr: errors.New("503 from GitHub"), // fails after the settings above are applied
+	}
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf)
+	if err == nil {
+		t.Fatalf("the failed step must fail the run:\n%s", buf.String())
+	}
+	if !strings.Contains(err.Error(), "reading Actions policy") {
+		t.Errorf("the error should name the step that failed, got %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"base repository permission",
+		"was write, now none",
+		"member repository creation",
+		"Stopped here: the actions above were applied",
+		"re-run `gh cls setup`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the report should contain %q:\n%s", want, out)
+		}
+	}
+	// The mutations really did happen, which is why they must be reported.
+	if state.patched["default_repository_permission"] != "none" {
+		t.Errorf("the base permission should have been changed: %v", state.patched)
+	}
+	// Steps after the failure never ran, so they must not be claimed.
+	if strings.Contains(out, "staff team") || state.createdTeam != "" {
+		t.Errorf("a step after the failure must not be reported as done:\n%s", out)
+	}
+}
+
+func TestSetupVerificationReportsEveryProblem(t *testing.T) {
+	// These warnings are the instructor's list of settings to fix by hand. A
+	// failed org re-read used to return immediately, so the Actions check never
+	// ran and the list came back short with nothing saying so.
+	state := &fakeSetupState{
+		role:          "admin",
+		teamExists:    true,
+		actions:       "all",
+		ignorePatches: true, // the tier accepts the changes without applying them
+		verifyOrgErr:  errors.New("502 from GitHub"),
+	}
+	o := newSetupOpts(t, state, "cs101-spring26", "staff", false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf); err != nil {
+		t.Fatalf("a failed verification read is a warning, not a failure: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "could not re-read org settings to confirm") {
+		t.Errorf("the failed re-read should be reported:\n%s", out)
+	}
+	// The check after it still ran: Actions is still "all" despite the change.
+	if !strings.Contains(out, "GitHub Actions") || !strings.Contains(out, `still "all" after the change`) {
+		t.Errorf("a failed org re-read must not hide the Actions warning:\n%s", out)
 	}
 }
 

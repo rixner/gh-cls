@@ -85,11 +85,20 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 	}
 
 	results, err := hardenOrg(ctx, client, org, staffTeam)
+	// Report what was applied before reporting the failure. Hardening is a series
+	// of separate mutations, so a run that aborts partway has already changed the
+	// org; printing only the error would leave the instructor with no idea which
+	// settings took and which never ran.
+	if len(results) > 0 {
+		fmt.Fprintf(out, "\nHardening %s:\n", org)
+		printResults(out, results)
+	}
 	if err != nil {
+		if len(results) > 0 {
+			fmt.Fprintf(out, "\nStopped here: the actions above were applied, the rest were not. Every action is idempotent, so re-run `gh cls setup` once the error below is resolved.\n")
+		}
 		return err
 	}
-	fmt.Fprintf(out, "\nHardening %s:\n", org)
-	printResults(out, results)
 	printManualSteps(out, []string{
 		"Confirm the Copilot policy toggle is off (no public API on a free/Education org).",
 		"Review any school-specific member-privilege settings.",
@@ -106,13 +115,16 @@ func (o *setupOpts) run(ctx context.Context, out io.Writer) error {
 }
 
 // hardenOrg applies the idempotent hardening actions, returning a per-action
-// report. It aborts on the first API error.
+// report. It aborts on the first API error, but returns the report of everything
+// applied up to that point alongside it: each action is a separate mutation, so
+// an abort partway leaves the org part-hardened and the caller has to be able to
+// say which part.
 func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) ([]result, error) {
 	var results []result
 
 	cur, err := client.GetOrg(ctx, org)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s settings: %w", org, err)
+		return results, fmt.Errorf("reading %s settings: %w", org, err)
 	}
 
 	// Base repository permission -> none.
@@ -120,7 +132,7 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 		results = append(results, result{"base repository permission", statusAlready, "none"})
 	} else {
 		if err := client.PatchOrg(ctx, org, map[string]any{"default_repository_permission": "none"}); err != nil {
-			return nil, fmt.Errorf("setting base permission: %w", err)
+			return results, fmt.Errorf("setting base permission: %w", err)
 		}
 		results = append(results, result{"base repository permission", statusChanged, "was " + cur.DefaultRepositoryPermission + ", now none"})
 	}
@@ -128,14 +140,14 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 	// Members creating repositories.
 	r, err := toggleOff(ctx, client, org, "members_can_create_repositories", "member repository creation", cur.MembersCanCreateRepositories)
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, r)
 
 	// Members creating Pages.
 	r, err = toggleOff(ctx, client, org, "members_can_create_pages", "member Pages creation", cur.MembersCanCreatePages)
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, r)
 
@@ -143,20 +155,20 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 	// would put a copy outside the org where none of this hardening applies.
 	r, err = toggleOff(ctx, client, org, "members_can_fork_private_repositories", "private repository forking", cur.MembersCanForkPrivateRepos)
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, r)
 
 	// GitHub Actions org-wide.
 	ap, err := client.GetActionsPermissions(ctx, org)
 	if err != nil {
-		return nil, fmt.Errorf("reading Actions policy: %w", err)
+		return results, fmt.Errorf("reading Actions policy: %w", err)
 	}
 	if ap.EnabledRepositories == "none" {
 		results = append(results, result{"GitHub Actions", statusAlready, "disabled org-wide"})
 	} else {
 		if err := client.SetActionsEnabledRepositories(ctx, org, "none"); err != nil {
-			return nil, fmt.Errorf("disabling Actions: %w", err)
+			return results, fmt.Errorf("disabling Actions: %w", err)
 		}
 		results = append(results, result{"GitHub Actions", statusChanged, "disabled org-wide"})
 	}
@@ -164,7 +176,7 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 	// Copilot is reported, never changed (no master toggle via the API).
 	count, present, err := client.CopilotSeatCount(ctx, org)
 	if err != nil {
-		return nil, fmt.Errorf("reading Copilot status: %w", err)
+		return results, fmt.Errorf("reading Copilot status: %w", err)
 	}
 	if !present {
 		results = append(results, result{"Copilot", statusReported, "none present, nothing to disable"})
@@ -174,11 +186,11 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 
 	// Staff team. Required by the config, so it is always ensured.
 	if _, exists, err := client.GetTeam(ctx, org, staffTeam); err != nil {
-		return nil, fmt.Errorf("checking staff team: %w", err)
+		return results, fmt.Errorf("checking staff team: %w", err)
 	} else if exists {
 		results = append(results, result{"staff team", statusAlready, staffTeam})
 	} else if _, err := client.CreateTeam(ctx, org, staffTeam); err != nil {
-		return nil, fmt.Errorf("creating staff team: %w", err)
+		return results, fmt.Errorf("creating staff team: %w", err)
 	} else {
 		results = append(results, result{"staff team", statusChanged, "created " + staffTeam})
 	}
@@ -188,7 +200,7 @@ func hardenOrg(ctx context.Context, client setupClient, org, staffTeam string) (
 	// before the first freeze rather than being created on demand at a deadline.
 	r, err = ensureFrozenProperty(ctx, client, org)
 	if err != nil {
-		return nil, err
+		return results, err
 	}
 	results = append(results, r)
 
@@ -252,32 +264,34 @@ func ensureFrozenProperty(ctx context.Context, client setupClient, org string) (
 // verifyHardening re-reads the org and returns a warning for each setting that
 // did not reach its hardened value. It returns nothing when everything stuck,
 // keeping a clean run quiet.
+//
+// Every check runs, including after one of the re-reads fails: these warnings are
+// the instructor's list of settings to fix by hand, and stopping at the first
+// problem would hand back a list that is short for no stated reason.
 func verifyHardening(ctx context.Context, client setupClient, org string) []result {
 	var warnings []result
 
-	cur, err := client.GetOrg(ctx, org)
-	if err != nil {
-		return append(warnings, result{"verification", statusWarning, "could not re-read org settings to confirm: " + err.Error()})
-	}
-	if cur.DefaultRepositoryPermission != "none" {
-		warnings = append(warnings, result{"base repository permission", statusWarning,
-			fmt.Sprintf("still %q after the change; your plan may not allow it, so set it manually", cur.DefaultRepositoryPermission)})
-	}
-	if cur.MembersCanCreateRepositories != nil && *cur.MembersCanCreateRepositories {
-		warnings = append(warnings, result{"member repository creation", statusWarning, "still enabled after the change; set it manually"})
-	}
-	if cur.MembersCanCreatePages != nil && *cur.MembersCanCreatePages {
-		warnings = append(warnings, result{"member Pages creation", statusWarning, "still enabled after the change; set it manually"})
-	}
-	if cur.MembersCanForkPrivateRepos != nil && *cur.MembersCanForkPrivateRepos {
-		warnings = append(warnings, result{"private repository forking", statusWarning, "still enabled after the change; set it manually"})
+	if cur, err := client.GetOrg(ctx, org); err != nil {
+		warnings = append(warnings, result{"verification", statusWarning, "could not re-read org settings to confirm: " + err.Error()})
+	} else {
+		if cur.DefaultRepositoryPermission != "none" {
+			warnings = append(warnings, result{"base repository permission", statusWarning,
+				fmt.Sprintf("still %q after the change; your plan may not allow it, so set it manually", cur.DefaultRepositoryPermission)})
+		}
+		if cur.MembersCanCreateRepositories != nil && *cur.MembersCanCreateRepositories {
+			warnings = append(warnings, result{"member repository creation", statusWarning, "still enabled after the change; set it manually"})
+		}
+		if cur.MembersCanCreatePages != nil && *cur.MembersCanCreatePages {
+			warnings = append(warnings, result{"member Pages creation", statusWarning, "still enabled after the change; set it manually"})
+		}
+		if cur.MembersCanForkPrivateRepos != nil && *cur.MembersCanForkPrivateRepos {
+			warnings = append(warnings, result{"private repository forking", statusWarning, "still enabled after the change; set it manually"})
+		}
 	}
 
-	ap, err := client.GetActionsPermissions(ctx, org)
-	if err != nil {
-		return append(warnings, result{"verification", statusWarning, "could not re-read Actions policy to confirm: " + err.Error()})
-	}
-	if ap.EnabledRepositories != "none" {
+	if ap, err := client.GetActionsPermissions(ctx, org); err != nil {
+		warnings = append(warnings, result{"verification", statusWarning, "could not re-read Actions policy to confirm: " + err.Error()})
+	} else if ap.EnabledRepositories != "none" {
 		warnings = append(warnings, result{"GitHub Actions", statusWarning,
 			fmt.Sprintf("still %q after the change; set it manually", ap.EnabledRepositories)})
 	}
