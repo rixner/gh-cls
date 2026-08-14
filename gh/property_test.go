@@ -90,6 +90,53 @@ func TestListRepoPropertyValues(t *testing.T) {
 	}
 }
 
+func TestListRepoPropertyValuesSurvivesNonStringValues(t *testing.T) {
+	// GitHub types a custom property's value null | string | string[]. A
+	// multi_select property (an array) may be defined by any org actor, on any
+	// repository, for reasons that have nothing to do with this tool; decoding it
+	// strictly would fail the org-wide listing that freeze, audit, status, and
+	// assign all read.
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`[{"repository_name":"hw1-ada","properties":[
+		                  {"property_name":"languages","value":["go","c"]},
+		                  {"property_name":"owner","value":null},
+		                  {"property_name":"gh-cls-frozen","value":"true"}]}]`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	out, err := c.ListRepoPropertyValues(context.Background(), "org")
+	if err != nil {
+		t.Fatalf("a multi_select value elsewhere in the org must not break the listing: %v", err)
+	}
+	if out["hw1-ada"]["gh-cls-frozen"] != "true" {
+		t.Errorf("the tool's own property should still read, got %v", out)
+	}
+	if v := out["hw1-ada"]["languages"]; v != "" {
+		t.Errorf("an array value should be kept as empty, got %q", v)
+	}
+	if v := out["hw1-ada"]["owner"]; v != "" {
+		t.Errorf("a null value should be kept as empty, got %q", v)
+	}
+}
+
+func TestGetRepoPropertyValuesSurvivesNonStringValues(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`[{"property_name":"languages","value":["go","c"]},
+		                {"property_name":"gh-cls-frozen","value":"true"}]`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	out, err := c.GetRepoPropertyValues(context.Background(), "org", "hw1-ada")
+	if err != nil {
+		t.Fatalf("a multi_select value on the repo must not break the read-back: %v", err)
+	}
+	if out["gh-cls-frozen"] != "true" {
+		t.Errorf("the tool's own property should still read, got %v", out)
+	}
+}
+
 func TestSetRepoPropertyValue(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
 	var waits int

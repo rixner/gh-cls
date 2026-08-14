@@ -2,6 +2,7 @@ package gh
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/url"
 )
@@ -25,15 +26,32 @@ type PropertyDefinition struct {
 	ValuesEditableBy string `json:"values_editable_by"`
 }
 
+// propertyValue is a custom property's value. GitHub types it null | string |
+// string[]: a multi_select property returns an array, and null means the
+// repository has never been given a value. Only a string is kept; anything else
+// decodes to the empty string. Any organization actor can define a multi_select
+// property, so decoding value as a plain string would let one such property on
+// one repository fail the whole org-wide listing every command reads. The tool
+// never needs a multi_select value, it only has to survive its presence.
+type propertyValue string
+
+func (v *propertyValue) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		*v = ""
+		return nil
+	}
+	*v = propertyValue(s)
+	return nil
+}
+
 // repoPropertyValues is one repository's property values as the org-wide values
 // listing returns them.
 type repoPropertyValues struct {
 	RepositoryName string `json:"repository_name"`
 	Properties     []struct {
-		PropertyName string `json:"property_name"`
-		// Value is null for a property the repository has never been given a value
-		// for, which decodes to the empty string.
-		Value string `json:"value"`
+		PropertyName string        `json:"property_name"`
+		Value        propertyValue `json:"value"`
 	} `json:"properties"`
 }
 
@@ -81,7 +99,7 @@ func (c *restClient) ListRepoPropertyValues(ctx context.Context, org string) (ma
 	for _, r := range rows {
 		vals := make(map[string]string, len(r.Properties))
 		for _, p := range r.Properties {
-			vals[p.PropertyName] = p.Value
+			vals[p.PropertyName] = string(p.Value)
 		}
 		out[r.RepositoryName] = vals
 	}
@@ -105,8 +123,8 @@ func (c *restClient) SetRepoPropertyValue(ctx context.Context, org, repo, name, 
 // confirming a write took effect without re-listing the whole organization.
 func (c *restClient) GetRepoPropertyValues(ctx context.Context, org, repo string) (map[string]string, error) {
 	var props []struct {
-		PropertyName string `json:"property_name"`
-		Value        string `json:"value"`
+		PropertyName string        `json:"property_name"`
+		Value        propertyValue `json:"value"`
 	}
 	path := fmt.Sprintf("repos/%s/%s/properties/values", url.PathEscape(org), url.PathEscape(repo))
 	if _, err := c.do(ctx, "GET", path, nil, &props); err != nil {
@@ -114,7 +132,7 @@ func (c *restClient) GetRepoPropertyValues(ctx context.Context, org, repo string
 	}
 	out := make(map[string]string, len(props))
 	for _, p := range props {
-		out[p.PropertyName] = p.Value
+		out[p.PropertyName] = string(p.Value)
 	}
 	return out, nil
 }
