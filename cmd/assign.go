@@ -483,9 +483,10 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 
 	// Post-condition: confirm every member actually holds the access we granted.
 	// A grant to a non-member becomes a GitHub invitation that conveys no access
-	// until accepted, so the only honest end state is "has write, or has a pending
-	// invitation"; a member who is neither means the grant silently did not land.
-	pending, err := o.verifyAccess(ctx, client, org, repo, u.Members)
+	// until accepted, so the only honest end state is "holds the granted
+	// permission, or has a pending invitation"; a member who is neither means the
+	// grant silently did not land.
+	pending, err := o.verifyAccess(ctx, client, org, repo, grant, u.Members)
 	if err != nil {
 		res.err = err
 		return res
@@ -515,18 +516,25 @@ func checkVisibility(repo string, info *gh.Repo, wantPublic bool) error {
 }
 
 // verifyAccess re-reads a repo's collaborators and pending invitations and
-// confirms every granted member is reflected as one or the other. A member who
-// is neither means the grant silently failed, which is a loud error. The pending
-// invitees are returned so the run can report that they must still accept.
-func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org, repo string, members []string) ([]string, error) {
+// confirms every granted member holds the access the grant conferred, or has a
+// pending invitation. A "push" grant requires the collaborator to CanPush; a
+// "pull" grant (a frozen repo) requires only that they hold pull, since every
+// direct collaborator holds at least that. A member who is neither means the
+// grant silently failed, which is a loud error. The pending invitees are
+// returned so the run can report that they must still accept.
+func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org, repo, grant string, members []string) ([]string, error) {
 	collaborators, err := client.ListDirectCollaborators(ctx, org, repo)
 	if err != nil {
 		return nil, fmt.Errorf("verifying access on %s: %w", repo, err)
 	}
-	hasWrite := make(map[string]bool, len(collaborators))
+	hasAccess := make(map[string]bool, len(collaborators))
 	for _, c := range collaborators {
-		if c.CanPush() {
-			hasWrite[strings.ToLower(c.Login)] = true
+		live := c.CanPush()
+		if grant == "pull" {
+			live = c.Permissions.Pull
+		}
+		if live {
+			hasAccess[strings.ToLower(c.Login)] = true
 		}
 	}
 	invitations, err := client.ListRepoInvitations(ctx, org, repo)
@@ -542,12 +550,12 @@ func (o *assignOpts) verifyAccess(ctx context.Context, client assignClient, org,
 	for _, m := range members {
 		key := strings.ToLower(m)
 		switch {
-		case hasWrite[key]:
+		case hasAccess[key]:
 			// access is live
 		case invited[key]:
 			pending = append(pending, m)
 		default:
-			return nil, fmt.Errorf("push grant to %s on %s did not take effect: they are neither a collaborator nor have a pending invitation; re-run assign to repair it", m, repo)
+			return nil, fmt.Errorf("%s grant to %s on %s did not take effect: they are neither a collaborator nor have a pending invitation; re-run assign to repair it", grant, m, repo)
 		}
 	}
 	return pending, nil

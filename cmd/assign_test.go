@@ -161,7 +161,20 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 				continue
 			}
 			c := gh.Collaborator{Login: user}
-			c.Permissions.Push = true
+			// Reflect the permission actually granted (the last AddCollaborator call
+			// for this repo:user), so a "pull" grant comes back holding only pull, not
+			// push, faithfully modeling the real API.
+			permission := "push"
+			for _, p := range f.perms {
+				if grantee, perm, ok := strings.Cut(p, "="); ok && grantee == entry {
+					permission = perm
+				}
+			}
+			if permission == "pull" {
+				c.Permissions.Pull = true
+			} else {
+				c.Permissions.Push = true
+			}
 			out = append(out, c)
 		}
 		return out, nil
@@ -535,6 +548,49 @@ func TestAssignKeepsFrozenReposFrozen(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "1 existing repo(s) are recorded frozen") {
 		t.Errorf("the run should say it withheld write:\n%s", buf.String())
+	}
+}
+
+func TestAssignVerifiesFrozenRepoAlreadyHoldingPull(t *testing.T) {
+	// Re-running assign against a repo recorded frozen, whose members already hold
+	// pull, must succeed: the post-condition check must accept a pull grant as
+	// live access rather than demanding push on a repo that is supposed to stay
+	// read-only. Every member re-asserted at pull is exactly this state.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/project-group-alpha"] = true
+	fake.frozen["project-group-alpha"] = freezeFrozen
+	o := newAssignOpts(t, fake, assignRoster, assignGroups)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "project", config.Overrides{}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "recorded frozen") {
+		t.Errorf("the frozen note should be reported: %s", out)
+	}
+	if strings.Contains(out, "FAILED") {
+		t.Errorf("no repo should fail verification when frozen members hold pull: %s", out)
+	}
+}
+
+func TestAssignVerifiesGrantTookEffectOnFrozenRepo(t *testing.T) {
+	// A member with no access at all on a frozen repo must still fail
+	// verification, even though the grant is only "pull": dropped means dropped,
+	// regardless of which permission was expected.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/project-group-alpha"] = true
+	fake.frozen["project-group-alpha"] = freezeFrozen
+	fake.dropGrants = map[string]bool{"ada": true}
+	o := newAssignOpts(t, fake, assignRoster, assignGroups)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "project", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("a dropped grant on a frozen repo should fail the run, got %v", err)
+	}
+	if !strings.Contains(buf.String(), "pull grant to ada") {
+		t.Errorf("the failure should name the pull grant that did not take: %s", buf.String())
 	}
 }
 
