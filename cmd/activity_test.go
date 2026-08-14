@@ -103,11 +103,11 @@ func oneRepo() *fakeActivityState {
 	}
 }
 
-func TestActivityPinTakesTheLastCommitBeforeUntil(t *testing.T) {
+func TestActivitySnapshotTakesTheLastCommitBeforeTo(t *testing.T) {
 	fake := oneRepo()
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 	o.out = filepath.Join(t.TempDir(), "deadline.yml")
 
 	var buf bytes.Buffer
@@ -120,45 +120,45 @@ func TestActivityPinTakesTheLastCommitBeforeUntil(t *testing.T) {
 	}
 	// ccc is the last push at or before the deadline; ddd landed after it.
 	if !strings.Contains(string(body), "ada: ccc") {
-		t.Errorf("pin file should name the pre-deadline commit:\n%s", body)
+		t.Errorf("the snapshot should name the pre-deadline commit:\n%s", body)
 	}
 	if strings.Contains(string(body), "ddd") {
 		t.Errorf("a post-deadline push must not be pinned:\n%s", body)
 	}
 	if !contains(fake.verified, "ccc") {
-		t.Errorf("the pinned SHA should be verified retrievable: %v", fake.verified)
+		t.Errorf("the recorded SHA should be verified retrievable: %v", fake.verified)
 	}
 }
 
-func TestActivityPinRefusesWhenTheRecordIsBehind(t *testing.T) {
+func TestActivitySnapshotRefusesWhenTheRecordIsBehind(t *testing.T) {
 	// GitHub documents no ingestion latency for this endpoint, so the command
 	// checks rather than assumes: if the branch's current tip is absent from the
 	// record, the record is stale and a pin taken from it could be wrong.
 	fake := oneRepo()
 	fake.tips["hw1-ada"] = "eee" // a push the record has not caught up with
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 
 	var buf bytes.Buffer
 	err := o.run(context.Background(), &buf, "hw1")
 	if err == nil {
-		t.Fatalf("a stale record must not be pinned from:\n%s", buf.String())
+		t.Fatalf("a stale record must not be recorded from:\n%s", buf.String())
 	}
 	if !strings.Contains(buf.String(), "behind") {
 		t.Errorf("the failure should say the record is behind:\n%s", buf.String())
 	}
 }
 
-func TestActivityPinRefusesAnOrphanedCommit(t *testing.T) {
+func TestActivitySnapshotRefusesAnOrphanedCommit(t *testing.T) {
 	// A force push can remove the commit that was the tip at the deadline. Writing
-	// it would produce a pin file collect cannot use, so it is excluded and the
+	// it would produce a snapshot collect cannot use, so it is excluded and the
 	// run fails rather than handing back a broken artifact.
 	fake := oneRepo()
 	fake.gone["ccc"] = true
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 	o.out = filepath.Join(t.TempDir(), "deadline.yml")
 
 	var buf bytes.Buffer
@@ -170,7 +170,7 @@ func TestActivityPinRefusesAnOrphanedCommit(t *testing.T) {
 		t.Errorf("the report should name the unretrievable commit:\n%s", buf.String())
 	}
 	if _, statErr := os.Stat(o.out); statErr == nil {
-		t.Error("no pin file should be written when nothing could be pinned")
+		t.Error("no snapshot should be written when nothing could be recorded")
 	}
 }
 
@@ -186,11 +186,11 @@ func twoRepos() *fakeActivityState {
 	return s
 }
 
-func TestActivityPinWritesTheFileWhenEveryRepoPasses(t *testing.T) {
+func TestActivitySnapshotWritesTheFileWhenEveryRepoPasses(t *testing.T) {
 	fake := twoRepos()
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 	o.out = filepath.Join(t.TempDir(), "deadline.yml")
 
 	var buf bytes.Buffer
@@ -203,16 +203,16 @@ func TestActivityPinWritesTheFileWhenEveryRepoPasses(t *testing.T) {
 	}
 	for _, want := range []string{"ada: ccc", "alan: 222"} {
 		if !strings.Contains(string(body), want) {
-			t.Errorf("pin file should contain %q:\n%s", want, body)
+			t.Errorf("the snapshot should contain %q:\n%s", want, body)
 		}
 	}
 }
 
-func TestActivityPinRefusesAPartialFile(t *testing.T) {
+func TestActivitySnapshotRefusesAPartialFile(t *testing.T) {
 	// COLLECT.md promises the freshness and orphan checks "fail the run rather
 	// than handing back an artifact". A file holding only the repos that passed
 	// looks complete: collect takes it at face value, and the students left out
-	// appear only as "skipped (no pinned SHA)", which is what a student who never
+	// appear only as "skipped (not in the snapshot)", which is what a student who never
 	// pushed looks like too. So one failure blocks the file.
 	cases := map[string]struct {
 		setup func(*fakeActivityState)
@@ -229,15 +229,15 @@ func TestActivityPinRefusesAPartialFile(t *testing.T) {
 			// telling the user to retry would send them in a circle.
 			func(s *fakeActivityState) { s.gone["222"] = true },
 			"no longer retrievable",
-			"use -f to see the force pushes",
+			"use -w to see the force pushes",
 		},
 	}
 	for name, tc := range cases {
 		fake := twoRepos()
 		tc.setup(fake)
 		o := newActivityOpts(fake)
-		o.pin = true
-		o.until = "2026-03-01T23:59:59Z"
+		o.snapshot = true
+		o.to = "2026-03-01T23:59:59Z"
 		o.out = filepath.Join(t.TempDir(), "deadline.yml")
 
 		var buf bytes.Buffer
@@ -253,7 +253,7 @@ func TestActivityPinRefusesAPartialFile(t *testing.T) {
 			t.Errorf("%s: the error should offer %q, got %v", name, tc.next, err)
 		}
 		if _, statErr := os.Stat(o.out); statErr == nil {
-			t.Errorf("%s: no pin file should be written when a repo could not be pinned", name)
+			t.Errorf("%s: no snapshot should be written when a repo could not be recorded", name)
 		}
 		out := buf.String()
 		// The blocked repo is named with its reason, since the error itself points
@@ -262,14 +262,14 @@ func TestActivityPinRefusesAPartialFile(t *testing.T) {
 			t.Errorf("%s: the blocking repo and reason should be reported:\n%s", name, out)
 		}
 		// The repos that did pin are still shown, so the run is not a dead end: their
-		// lines can be copied into a hand-written pin file.
+		// lines can be copied into a hand-written snapshot file.
 		if !strings.Contains(out, "ada: ccc") {
 			t.Errorf("%s: the repos that did pin should still be printed:\n%s", name, out)
 		}
 	}
 }
 
-func TestActivityPinReportsAnUnpinnableRepo(t *testing.T) {
+func TestActivitySnapshotReportsARepoWithNothingToRecord(t *testing.T) {
 	// A student who never pushed before the deadline is named, not silently
 	// omitted, matching how collect reports a student with no repo.
 	fake := oneRepo()
@@ -277,8 +277,8 @@ func TestActivityPinReportsAnUnpinnableRepo(t *testing.T) {
 	fake.tips["hw1-alan"] = ""
 	fake.events["hw1-alan"] = nil
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
@@ -289,15 +289,15 @@ func TestActivityPinReportsAnUnpinnableRepo(t *testing.T) {
 	}
 }
 
-func TestActivityPinIgnoresDeletionsAsTips(t *testing.T) {
+func TestActivitySnapshotIgnoresDeletionsAsTips(t *testing.T) {
 	// A branch deletion's After is all zeroes: pinning it would write a SHA that
 	// is not a commit at all.
 	fake := oneRepo()
 	fake.events["hw1-ada"] = append(fake.events["hw1-ada"],
 		act(gh.ActivityBranchDeletion, "main", "ccc", strings.Repeat("0", 40), "ada", at("2026-03-01T23:30:00Z")))
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 	o.out = filepath.Join(t.TempDir(), "d.yml")
 
 	var buf bytes.Buffer
@@ -319,7 +319,7 @@ func TestActivityListsForcePushesAndDeletions(t *testing.T) {
 		act(gh.ActivityForcePush, "main", "ccc", "fff", "ada", at("2026-03-01T20:00:00Z")),
 		act(gh.ActivityBranchDeletion, "scratch", "ggg", strings.Repeat("0", 40), "ada", at("2026-03-01T21:00:00Z")))
 	o := newActivityOpts(fake)
-	o.forced, o.deleted = true, true
+	o.rewrites = true
 	o.branch = "" // default branch only, so the scratch deletion is out of scope
 
 	var buf bytes.Buffer
@@ -327,11 +327,12 @@ func TestActivityListsForcePushesAndDeletions(t *testing.T) {
 		t.Fatalf("run: %v\n%s", err, buf.String())
 	}
 	out := buf.String()
-	if !strings.Contains(out, "Force pushes: 1") {
+	// One listing covers both kinds; the WHAT column tells them apart.
+	if !strings.Contains(out, "Force pushes and branch deletions: 1") || !strings.Contains(out, "force_push") {
 		t.Errorf("the force push should be listed:\n%s", out)
 	}
 	// The deletion is on another branch, so reporting on main must exclude it.
-	if !strings.Contains(out, "Branch deletions: 0") {
+	if strings.Contains(out, "branch_deletion") {
 		t.Errorf("a deletion on another branch is out of scope:\n%s", out)
 	}
 }
@@ -344,8 +345,8 @@ func TestActivityFiltersByBranchClientSide(t *testing.T) {
 	fake.events["hw1-ada"] = append(fake.events["hw1-ada"],
 		act(gh.ActivityPush, "feature/models", "xxx", "yyy", "ada", at("2026-03-01T23:30:00Z")))
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 	o.out = filepath.Join(t.TempDir(), "b.yml")
 
 	var buf bytes.Buffer
@@ -360,15 +361,15 @@ func TestActivityFiltersByBranchClientSide(t *testing.T) {
 }
 
 func TestActivityWindowValidation(t *testing.T) {
-	tests := map[string]struct{ since, until, want string }{
-		"bad since":    {"nonsense", "", "not an RFC3339 time"},
-		"bad until":    {"", "nonsense", "not an RFC3339 time"},
-		"until before": {"2026-03-02T00:00:00Z", "2026-03-01T00:00:00Z", "is before"},
+	tests := map[string]struct{ from, to, want string }{
+		"bad from":       {"nonsense", "", "not an RFC3339 time"},
+		"bad to":         {"", "nonsense", "not an RFC3339 time"},
+		"to before from": {"2026-03-02T00:00:00Z", "2026-03-01T00:00:00Z", "is before"},
 	}
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			o := newActivityOpts(oneRepo())
-			o.since, o.until = tc.since, tc.until
+			o.from, o.to = tc.from, tc.to
 			err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("want an error mentioning %q, got %v", tc.want, err)
@@ -378,15 +379,15 @@ func TestActivityWindowValidation(t *testing.T) {
 }
 
 func TestActivityOutRequiresOneMode(t *testing.T) {
-	// A pin file and a force-push listing are different artifacts, so there is no
+	// A snapshot and a rewrite listing are different artifacts, so there is no
 	// sensible way to write both to one file.
-	for _, tc := range []struct{ pin, forced bool }{{true, true}, {false, false}} {
+	for _, tc := range []struct{ snapshot, rewrites bool }{{true, true}, {false, false}} {
 		o := newActivityOpts(oneRepo())
-		o.pin, o.forced = tc.pin, tc.forced
+		o.snapshot, o.rewrites = tc.snapshot, tc.rewrites
 		o.out = filepath.Join(t.TempDir(), "x")
 		err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
 		if err == nil || !strings.Contains(err.Error(), "exactly one") {
-			t.Fatalf("pin=%v forced=%v should be rejected, got %v", tc.pin, tc.forced, err)
+			t.Fatalf("snapshot=%v rewrites=%v should be rejected, got %v", tc.snapshot, tc.rewrites, err)
 		}
 	}
 }
@@ -398,8 +399,8 @@ func TestActivityNeverOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := newActivityOpts(oneRepo())
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 	o.out = existing
 
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
@@ -443,8 +444,8 @@ func TestActivityEmptyFieldsUseANeutralPlaceholder(t *testing.T) {
 	// must not claim its student is missing from the roster.
 	fake := oneRepo()
 	o := newActivityOpts(fake)
-	o.since = "2027-01-01T00:00:00Z" // a window after every event
-	o.until = "2027-02-01T00:00:00Z"
+	o.from = "2027-01-01T00:00:00Z" // a window after every event
+	o.to = "2027-02-01T00:00:00Z"
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
@@ -470,12 +471,12 @@ func TestActivityNamesABranchThatFoundNothing(t *testing.T) {
 	}
 }
 
-func TestActivityPinPrintsTheMappingWithoutOut(t *testing.T) {
+func TestActivitySnapshotPrintsTheMappingWithoutOut(t *testing.T) {
 	// -o is a redirect, not the only route to the result: a pin run with no file
 	// must still show what it pinned, in the same form the file uses.
 	o := newActivityOpts(oneRepo())
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
@@ -486,7 +487,7 @@ func TestActivityPinPrintsTheMappingWithoutOut(t *testing.T) {
 	}
 }
 
-func TestActivityPinReportsForcePushesOnBothSides(t *testing.T) {
+func TestActivitySnapshotReportsForcePushesOnBothSides(t *testing.T) {
 	// The two mean different things: before the pin the tip at that instant is
 	// still valid, after it the pinned commit may be gone. Both are reported, and
 	// they must not be conflated.
@@ -504,8 +505,8 @@ func TestActivityPinReportsForcePushesOnBothSides(t *testing.T) {
 	fake.tips["hw1-ada"] = "eee"
 
 	o := newActivityOpts(fake)
-	o.pin = true
-	o.until = "2026-03-01T23:59:59Z"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
@@ -515,7 +516,7 @@ func TestActivityPinReportsForcePushesOnBothSides(t *testing.T) {
 	if !strings.Contains(out, "within the window") || !strings.Contains(out, "alan") {
 		t.Errorf("a force push before the pin should be reported:\n%s", out)
 	}
-	if !strings.Contains(out, "AFTER the pinned instant") || !strings.Contains(out, "ada") {
+	if !strings.Contains(out, "AFTER the snapshot instant") || !strings.Contains(out, "ada") {
 		t.Errorf("a force push after the pin should be reported separately:\n%s", out)
 	}
 }
@@ -559,19 +560,19 @@ func TestActivityListingsReportCoverage(t *testing.T) {
 		fake.events["hw1-"+k] = nil
 	}
 	o := newActivityOpts(fake)
-	o.forced = true
+	o.rewrites = true
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
 		t.Fatalf("run: %v\n%s", err, buf.String())
 	}
-	if !strings.Contains(buf.String(), "Force pushes: 0 in 0 of 3 repos examined") {
+	if !strings.Contains(buf.String(), "Force pushes and branch deletions: 0 in 0 of 3 repos examined") {
 		t.Errorf("an empty listing should still show what it examined:\n%s", buf.String())
 	}
 }
 
 func TestActivityAllListsEveryChangeWithItsActor(t *testing.T) {
-	// The question this exists for: "who has been pushing to this repo". -f and -d
+	// The question this exists for: "who has been pushing to this repo". -w
 	// only show their own kind, so without -a that needs a raw API call.
 	fake := oneRepo()
 	fake.events["hw1-ada"] = append(fake.events["hw1-ada"],
@@ -652,7 +653,7 @@ func TestActivityAllKeepsAnUnknownType(t *testing.T) {
 
 func TestActivityAllCountsAsAModeForOut(t *testing.T) {
 	o := newActivityOpts(oneRepo())
-	o.all, o.forced = true, true
+	o.all, o.rewrites = true, true
 	o.out = filepath.Join(t.TempDir(), "x.csv")
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
 	if err == nil || !strings.Contains(err.Error(), "exactly one") {

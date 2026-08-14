@@ -106,7 +106,7 @@ invitation expired or who is missing entirely (it never removes access).`,
 	}
 	f := cmd.Flags()
 	f.StringVarP(&o.roster, "roster", "r", "", "path to the roster CSV (required)")
-	f.StringVarP(&o.groups, "groups", "G", "", "path to the groups file (required for group, rejected for individual)")
+	f.StringVarP(&o.groups, "groups", "g", "", "path to the groups file (required for group, rejected for individual)")
 	f.BoolVar(&o.all, "all", false, "list every student, including those already on their repo")
 	f.BoolVar(&o.renew, "renew", false, "re-issue access for expired or missing students")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "with --renew, show what would change without doing it")

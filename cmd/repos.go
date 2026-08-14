@@ -9,7 +9,7 @@ import (
 )
 
 // qualifyTemplate gives a bare template name (no owner) the configured org, so
-// "hw1-template" means "<org>/hw1-template" — the common in-org case. A reference
+// "hw1-template" means "<org>/hw1-template", the common in-org case. A reference
 // that already names an owner ("owner/name") is returned unchanged, so a template
 // may live in another org.
 func qualifyTemplate(ref, org string) string {

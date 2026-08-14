@@ -56,7 +56,7 @@ against the GitHub API: no local clone, no git binary, no separate credentials.`
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.source, "source", "s", "", "source repo to squash (owner/name, required)")
+	f.StringVarP(&o.source, "source", "S", "", "source repo to squash (owner/name, required)")
 	f.BoolVar(&o.markSource, "mark-source", false, "mark the source a template repository if it is not already")
 	f.BoolVarP(&o.force, "force", "F", false, "overwrite <repo> if it already exists")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "describe what would be created without doing it")

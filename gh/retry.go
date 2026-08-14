@@ -37,7 +37,7 @@ func defaultPolicy() retryPolicy {
 // failure is retryable at all. A rate-limit response (429 or a secondary
 // rate-limit 403) is always retryable: the server rejected the request outright,
 // so retrying cannot duplicate work. A 5xx or transport-level error is ambiguous
-// — the request may already have been applied — so it is retried only for
+// (the request may already have been applied), so it is retried only for
 // idempotent methods. A definite client error (404, 422, an ordinary 403, ...)
 // is never retried.
 func (p retryPolicy) retryDelay(method string, err error, attempt int) (time.Duration, bool) {
@@ -63,7 +63,7 @@ func (p retryPolicy) retryDelay(method string, err error, attempt int) (time.Dur
 }
 
 // idempotent reports whether a method is safe to retry after an ambiguous failure
-// — one where the request may already have taken effect server-side. POST is the
+// (one where the request may already have taken effect server-side). POST is the
 // only non-idempotent method this tool issues (repo, PR, issue, team, ref, and
 // ruleset creation), so retrying it after a 5xx or dropped connection could
 // duplicate the resource. Re-running the command is the safe recovery instead,

@@ -108,7 +108,7 @@ func notFound(err error) bool {
 
 // emptyRepo reports whether err is the specific 409 ("Git Repository is
 // empty") the API answers for a repository that exists but has no commits
-// yet — the transient state a freshly generated repo passes through before
+// yet, the transient state a freshly generated repo passes through before
 // its starter commit lands. The message is checked alongside the status so a
 // different 409 on the same endpoint is treated as a real error rather than
 // mistaken for "no commits yet".

@@ -19,7 +19,7 @@ import (
 
 // feedbackMarkerPrefix tags a comment this tool posted. The full marker embeds a
 // hash of the file's contents, so a re-run skips a comment whose exact text is
-// already present (idempotent) while edited feedback — carrying a new hash —
+// already present (idempotent) while edited feedback, carrying a new hash,
 // posts a fresh comment. It is an HTML comment, hidden in GitHub's rendered view.
 const feedbackMarkerPrefix = "<!-- gh-cls-feedback v1 sha256:"
 
@@ -83,7 +83,7 @@ new comment; existing comments are never changed.`,
 	f := cmd.Flags()
 	f.StringVarP(&o.dir, "dir", "d", "", "directory of feedback files, one per student/group named <key>.md or <key>.txt (required)")
 	f.StringVarP(&o.roster, "roster", "r", "", "path to the roster CSV (required)")
-	f.StringVarP(&o.groups, "groups", "G", "", "path to the groups file (required for group, rejected for individual)")
+	f.StringVarP(&o.groups, "groups", "g", "", "path to the groups file (required for group, rejected for individual)")
 	f.BoolVarP(&o.force, "force", "F", false, "post the matching subset even when the directory is not exactly one file per student/group")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "show what would be posted without doing it")
 	_ = cmd.MarkFlagRequired("dir")
@@ -142,8 +142,8 @@ func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) erro
 	}
 	matched, missing, unmatched := matchFiles(units, files)
 
-	// The coverage report is printed before anything is posted — the "is there
-	// feedback for everyone?" message — naming every gap explicitly.
+	// The coverage report is printed before anything is posted (the "is there
+	// feedback for everyone?" message), naming every gap explicitly.
 	printCoverage(out, name, matched, missing, unmatched, ignored)
 
 	if len(missing) > 0 || len(unmatched) > 0 {

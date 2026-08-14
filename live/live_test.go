@@ -7,7 +7,7 @@
 //
 //	go test -tags live -run TestLive -timeout 20m ./live/
 //
-// Auth is inherited from the `gh` CLI exactly as in production — the test never
+// Auth is inherited from the `gh` CLI exactly as in production, so the test never
 // reads or sets a token. The `gh` login that runs it must:
 //   - own the org named by GH_CLS_LIVE_ORG (an organization owner), and
 //   - carry the admin:org and delete_repo scopes (the latter for teardown):
@@ -18,7 +18,7 @@
 //
 // Environment (selectors, not auth):
 //   - GH_CLS_LIVE_ORG  (required) the disposable org to operate in; also the
-//     on/off switch — the test skips when it is unset.
+//     on/off switch: the test skips when it is unset.
 //   - GH_CLS_STUDENT1  (required) a GitHub login to enroll as the student. For
 //     the freeze downgrade assertions to run, this account must be a *member* of
 //     the org (accept the org invite once); an unaccepted outside collaborator
@@ -113,7 +113,7 @@ func TestLive(t *testing.T) {
 	// has a README commit (CreateOrgRepo deliberately makes empty repos).
 	seedSource(t, rc, org, srcName)
 
-	// 1. setup — harden the org, then verify, then prove idempotency.
+	// 1. setup: harden the org, then verify, then prove idempotency.
 	mustRunCLI(t, ctx, "setup")
 	assertOrgHardened(t, ctx, client, org)
 	out := mustRunCLI(t, ctx, "setup")
@@ -121,21 +121,21 @@ func TestLive(t *testing.T) {
 		t.Errorf("re-running setup should report 'already' for hardened settings, got:\n%s", out)
 	}
 
-	// 2. template — build the squashed template repo, verify, then confirm the
+	// 2. template: build the squashed template repo, verify, then confirm the
 	// overwrite guard (no -F errors; -F recreates). --mark-source flags the
 	// freshly-seeded source a template repository (the pre-req to generate from it);
 	// later calls find it already marked.
-	mustRunCLI(t, ctx, "template", name+"-template", "-s", org+"/"+srcName, "--mark-source")
+	mustRunCLI(t, ctx, "template", name+"-template", "-S", org+"/"+srcName, "--mark-source")
 	assertTemplate(t, ctx, client, org, name+"-template")
-	if _, err := runCLI(ctx, "template", name+"-template", "-s", org+"/"+srcName); err == nil {
+	if _, err := runCLI(ctx, "template", name+"-template", "-S", org+"/"+srcName); err == nil {
 		t.Error("re-running template without -F should error (template already exists)")
 	} else if !strings.Contains(err.Error(), "already exists") {
 		t.Errorf("template re-run error = %v, want it to mention 'already exists'", err)
 	}
-	mustRunCLI(t, ctx, "template", name+"-template", "-s", org+"/"+srcName, "-F")
+	mustRunCLI(t, ctx, "template", name+"-template", "-S", org+"/"+srcName, "-F")
 	assertTemplate(t, ctx, client, org, name+"-template")
 
-	// 3. assign (individual) — create the student repo, verify the push grant,
+	// 3. assign (individual): create the student repo, verify the push grant,
 	// then prove idempotency (existing repo skipped).
 	rosterInd := filepath.Join(dir, "roster-individual.csv")
 	writeRoster(t, rosterInd, student1)
@@ -157,22 +157,22 @@ func TestLive(t *testing.T) {
 		t.Errorf("a bogus-username run must leave no repo behind, but %s/%s-%s exists", org, name, bogusLogin)
 	}
 
-	mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "-f", "issue", name)
+	mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "--feedback", "issue", name)
 	repo := name + "-" + student1
 	assertRepoExists(t, ctx, client, org, repo)
 	studentIsCollaborator := assertPushGranted(t, ctx, client, org, repo, student1)
-	out = mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "-f", "issue", name)
+	out = mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "--feedback", "issue", name)
 	if !strings.Contains(out, "1 skipped") {
 		t.Errorf("re-running assign should skip the existing repo (want '1 skipped'), got:\n%s", out)
 	}
 
-	// 3b. feedback — post a graded feedback file to the student's feedback issue,
+	// 3b. feedback: post a graded feedback file to the student's feedback issue,
 	// verify the comment landed, then prove a re-run is idempotent (no duplicate).
 	fbDir := filepath.Join(dir, "feedback")
 	if err := os.Mkdir(fbDir, 0o755); err != nil {
 		t.Fatalf("creating feedback dir: %v", err)
 	}
-	fbBody := "Great work on " + name + " — see inline notes."
+	fbBody := "Great work on " + name + ", see inline notes."
 	if err := os.WriteFile(filepath.Join(fbDir, student1+".md"), []byte(fbBody), 0o600); err != nil {
 		t.Fatalf("writing feedback file: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestLive(t *testing.T) {
 		t.Errorf("re-running feedback must not duplicate the comment, got %d", n)
 	}
 
-	// 3c. status — read-only overview. The student repo was created public (-p)
+	// 3c. status: read-only overview. The student repo was created public (-p)
 	// under the assignment's default-private policy, so status both counts the
 	// one repo and flags the visibility drift. A whole-course run is also
 	// exercised to cover the multi-assignment path.
@@ -216,7 +216,7 @@ func TestLive(t *testing.T) {
 		t.Errorf("CSV feedback for %s = %q, want open", repo, row["feedback"])
 	}
 
-	// 3d. collect — shallow-clone the student repo locally and tag it. Exercises
+	// 3d. collect: shallow-clone the student repo locally and tag it. Exercises
 	// the real gh clone + git tag + manifest path.
 	collectDir := filepath.Join(dir, "collected")
 	mustRunCLI(t, ctx, "collect", name, "--roster", rosterInd, "--out", collectDir, "--label", "livetest")
@@ -231,14 +231,14 @@ func TestLive(t *testing.T) {
 		t.Errorf("collect should tag the commit gh-cls/collect/livetest (err=%v, out=%q)", err, tagOut)
 	}
 
-	// 3e. activity + the pin it feeds to collect --commits. GitHub documents no
+	// 3e. activity + the snapshot it feeds to collect --snapshot. GitHub documents no
 	// ingestion latency for the activity record, so the repo created moments ago
 	// may not be in it yet. Rather than assume either way, wait a bounded time and
-	// assert whichever outcome is correct: caught up, -p pins the current tip and
-	// collect takes exactly that commit; still behind, -p must refuse and say so.
+	// assert whichever outcome is correct: caught up, -s records the current tip and
+	// collect takes exactly that commit; still behind, -s must refuse and say so.
 	mustRunCLI(t, ctx, "activity", name)
-	mustRunCLI(t, ctx, "activity", name, "-a")
-	mustRunCLI(t, ctx, "activity", name, "-f", "-d")
+	mustRunCLI(t, ctx, "activity", name, "--all")
+	mustRunCLI(t, ctx, "activity", name, "-w")
 
 	info, _, err := client.GetRepo(ctx, org, repo)
 	if err != nil {
@@ -248,23 +248,23 @@ func TestLive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading %s tip of %s: %v", info.DefaultBranch, repo, err)
 	}
-	pinPath := filepath.Join(dir, "pin.yml")
+	snapPath := filepath.Join(dir, "snapshot.yml")
 	if waitForActivity(t, ctx, client, org, repo, info.DefaultBranch, tip, 90*time.Second) {
-		out = mustRunCLI(t, ctx, "activity", name, "-p", "-o", pinPath)
+		out = mustRunCLI(t, ctx, "activity", name, "-s", "-o", snapPath)
 		if !strings.Contains(out, student1+": "+tip) {
-			t.Errorf("activity -p should pin %s at its current tip %s, got:\n%s", student1, tip, out)
+			t.Errorf("activity -s should record %s at its current tip %s, got:\n%s", student1, tip, out)
 		}
-		body, rerr := os.ReadFile(pinPath)
+		body, rerr := os.ReadFile(snapPath)
 		if rerr != nil {
-			t.Fatalf("reading the pin file: %v", rerr)
+			t.Fatalf("reading the snapshot file: %v", rerr)
 		}
 		if !strings.Contains(string(body), student1+": "+tip) {
-			t.Errorf("pin file should map %s to %s:\n%s", student1, tip, body)
+			t.Errorf("the snapshot should map %s to %s:\n%s", student1, tip, body)
 		}
-		// The pin is only worth anything if collect can act on it.
+		// The snapshot is only worth anything if collect can act on it.
 		pinnedDir := filepath.Join(dir, "pinned")
 		mustRunCLI(t, ctx, "collect", name, "--roster", rosterInd, "--out", pinnedDir,
-			"--commits", pinPath, "--label", "pinned")
+			"--snapshot", snapPath, "--label", "pinned")
 		headOut, herr := exec.CommandContext(ctx, "git", "-C", filepath.Join(pinnedDir, student1), "rev-parse", "HEAD").Output()
 		if herr != nil {
 			t.Errorf("reading HEAD of the pinned clone: %v", herr)
@@ -273,11 +273,11 @@ func TestLive(t *testing.T) {
 		}
 	} else {
 		// The freshness guard is the point: a record that has not caught up must
-		// produce a refusal, never a pin taken from a stale picture.
-		if _, perr := runCLI(ctx, "activity", name, "-p", "-o", pinPath); perr == nil {
-			t.Error("with the activity record behind the current tip, -p must refuse to write a pin file")
+		// produce a refusal, never a snapshot taken from a stale picture.
+		if _, perr := runCLI(ctx, "activity", name, "-s", "-o", snapPath); perr == nil {
+			t.Error("with the activity record behind the current tip, -s must refuse to write a snapshot file")
 		} else if !strings.Contains(perr.Error(), "behind") {
-			t.Errorf("-p should refuse because the record is behind, got: %v", perr)
+			t.Errorf("-s should refuse because the record is behind, got: %v", perr)
 		}
 	}
 
@@ -310,7 +310,7 @@ func TestLive(t *testing.T) {
 		mustRunCLI(t, ctx, "freeze", "-u", name, student1)
 		assertPushGranted(t, ctx, client, org, repo, student1)
 	case studentIsCollaborator:
-		t.Logf("student %q has admin on %s (likely an org owner) — freeze cannot downgrade "+
+		t.Logf("student %q has admin on %s (likely an org owner), so freeze cannot downgrade "+
 			"an owner's inherited push, so the effective push->pull and pull->push reads are "+
 			"unobservable and are skipped. Use a non-owner member account to exercise them. "+
 			"The grant operations and undo idempotency are still checked.", student1, repo)
@@ -348,7 +348,7 @@ func TestLive(t *testing.T) {
 
 	// 6. group flow: exercises the groups resolution and multi-member grants. The
 	// source is already a template repository by now, so no --mark-source is needed.
-	mustRunCLI(t, ctx, "template", grp+"-template", "-s", org+"/"+srcName)
+	mustRunCLI(t, ctx, "template", grp+"-template", "-S", org+"/"+srcName)
 	assertTemplate(t, ctx, client, org, grp+"-template")
 	rosterGrp := filepath.Join(dir, "roster-group.csv")
 	groupsPath := filepath.Join(dir, "groups.yml")
@@ -358,7 +358,7 @@ func TestLive(t *testing.T) {
 	}
 	writeRoster(t, rosterGrp, members...)
 	writeGroups(t, groupsPath, "alpha", members)
-	mustRunCLI(t, ctx, "assign", "-r", rosterGrp, "-G", groupsPath, "-p", grp)
+	mustRunCLI(t, ctx, "assign", "-r", rosterGrp, "-g", groupsPath, "-p", grp)
 	grpRepo := grp + "-alpha"
 	assertRepoExists(t, ctx, client, org, grpRepo)
 	// The group assignment uses pr feedback: assert the feedback PR actually
@@ -379,7 +379,7 @@ func TestLive(t *testing.T) {
 	if student2 != "" {
 		assertPushGranted(t, ctx, client, org, grpRepo, student2)
 	} else {
-		t.Logf("GH_CLS_STUDENT2 is unset — group %s has a single member, so the "+
+		t.Logf("GH_CLS_STUDENT2 is unset, so group %s has a single member and the "+
 			"multi-member grant path is not exercised; set GH_CLS_STUDENT2 to cover it.", grpRepo)
 	}
 }
@@ -511,7 +511,7 @@ func assertOrgHardened(t *testing.T, ctx context.Context, client gh.Client, org 
 func assertToggledOff(t *testing.T, label string, v *bool) {
 	t.Helper()
 	if v == nil {
-		t.Logf("%s toggle is absent from this org's settings (some plan tiers omit it) — "+
+		t.Logf("%s toggle is absent from this org's settings (some plan tiers omit it), "+
 			"skipping its check.", label)
 		return
 	}
@@ -665,7 +665,7 @@ func assertPushGranted(t *testing.T, ctx context.Context, client gh.Client, org,
 	t.Helper()
 	c, ok := directCollaborator(t, ctx, client, org, repo, login)
 	if !ok {
-		t.Logf("%s is not a direct collaborator on %s/%s (likely a pending invite) — "+
+		t.Logf("%s is not a direct collaborator on %s/%s (likely a pending invite), "+
 			"skipping the push-grant check; have the account accept the org invite to verify it.",
 			login, org, repo)
 		return false
@@ -696,7 +696,7 @@ func waitForActivity(t *testing.T, ctx context.Context, client gh.Client, org, r
 			}
 		}
 		if time.Since(start) > limit {
-			t.Logf("activity record still lacks %s after %s; asserting -p refuses instead", tip[:7], limit)
+			t.Logf("activity record still lacks %s after %s; asserting -s refuses instead", tip[:7], limit)
 			return false
 		}
 		time.Sleep(5 * time.Second)

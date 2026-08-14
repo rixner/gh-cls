@@ -139,7 +139,7 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys [
 	}
 	all = filterAssignmentRepos(o.g.cfg, name, all)
 	// A template repository can match the <name>-* prefix (e.g. hw1-template) but
-	// is not student work — never freeze it. Skipping every template repo keeps
+	// is not student work, so never freeze it. Skipping every template repo keeps
 	// freeze decoupled from which template an assignment names.
 	var repos []gh.Repo
 	for _, r := range all {
@@ -149,7 +149,7 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys [
 	}
 	if len(repos) == 0 {
 		// At a deadline, zero matches almost always means a mistyped assignment
-		// name or the wrong config — not "nothing to do". Fail loudly so a freeze
+		// name or the wrong config, not "nothing to do". Fail loudly so a freeze
 		// is never silently a no-op.
 		return fmt.Errorf("no student repositories named %s-* found in %s; check the assignment name and your config's org", name, org)
 	}
@@ -275,7 +275,7 @@ func (o *freezeOpts) processRepo(ctx context.Context, client freezeClient, org, 
 
 	// Post-condition: re-read and confirm the gate actually moved. The freeze is
 	// the deadline lock, so it is never reported done on the strength of the write
-	// call alone — a 200 is not proof the permission changed.
+	// call alone: a 200 is not proof the permission changed.
 	if !o.dryRun {
 		if err := o.verifyResult(ctx, client, org, repo); err != nil {
 			res.err = err

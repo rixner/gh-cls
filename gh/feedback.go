@@ -154,7 +154,7 @@ func (c *restClient) BranchExists(ctx context.Context, owner, repo, branch strin
 	if _, err := c.do(ctx, "GET", path, nil, nil); err != nil {
 		// 404 means the repo has commits but not this branch; 409 ("Git Repository
 		// is empty") means it has no commits at all. Either way the branch is
-		// absent — a normal answer, not a failure — which also lets a freshly
+		// absent (a normal answer, not a failure), which also lets a freshly
 		// generated repo be polled until its starter commit lands.
 		if notFound(err) || emptyRepo(err) {
 			return false, nil

@@ -20,14 +20,14 @@ type Collaborator struct {
 }
 
 // CanPush reports whether the collaborator holds effective write (push)
-// access: push, maintain, or admin. Triage is not write — a triage-only
+// access: push, maintain, or admin. Triage is not write: a triage-only
 // collaborator cannot push.
 func (c Collaborator) CanPush() bool {
 	return c.Permissions.Admin || c.Permissions.Maintain || c.Permissions.Push
 }
 
 // AboveRead reports whether the collaborator holds any permission above
-// plain read: push, maintain, or triage. This is freeze's downgrade set —
+// plain read: push, maintain, or triage. This is freeze's downgrade set,
 // triage cannot push but is still more than read, so a freeze reduces it to
 // pull. Admin is deliberately excluded: staff keep access through a freeze.
 func (c Collaborator) AboveRead() bool {

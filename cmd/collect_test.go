@@ -159,7 +159,7 @@ func (f *fakeGit) CreateTag(_ context.Context, dir, tag, sha string) error {
 	return nil
 }
 
-func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, groupsYML, commitsYML string) *collectOpts {
+func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, groupsYML, snapshotYML string) *collectOpts {
 	t.Helper()
 	base := t.TempDir()
 	o := &collectOpts{
@@ -183,8 +183,8 @@ func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, gro
 	if groupsYML != "" {
 		o.groups = write("groups.yml", groupsYML)
 	}
-	if commitsYML != "" {
-		o.commits = write("commits.yml", commitsYML)
+	if snapshotYML != "" {
+		o.snapshot = write("snapshot.yml", snapshotYML)
 	}
 	return o
 }
@@ -300,8 +300,8 @@ func TestCollectPinned(t *testing.T) {
 	if git.clones[filepath.Join(o.out, "ada")].sha != "aaaa1111" {
 		t.Errorf("ada should be at the pinned SHA, got %q", git.clones[filepath.Join(o.out, "ada")].sha)
 	}
-	if !strings.Contains(buf.String(), "skipped (no pinned SHA) hw1-grace") {
-		t.Errorf("a unit with no pinned SHA should be skipped:\n%s", buf.String())
+	if !strings.Contains(buf.String(), "skipped (not in the snapshot) hw1-grace") {
+		t.Errorf("a unit absent from the snapshot should be skipped:\n%s", buf.String())
 	}
 	ada := manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada")
 	if ada == nil || ada[3] != "aaaa1111" || ada[4] != "(pinned)" {

@@ -180,8 +180,8 @@ gh cls status hw1 --detail   # per-repo freeze/feedback scan, also writes a CSV
 
 # Anytime: GitHub's record of who moved which branch when.
 gh cls activity hw1                       # per-repo summary
-gh cls activity hw1 -a                    # every change, by who made it
-gh cls activity hw1 -f -d                 # force pushes and branch deletions
+gh cls activity hw1 --all                 # every change, by who made it
+gh cls activity hw1 -w                    # force pushes and branch deletions
 
 # 4. Anytime: reconcile who should be on each repo against who actually is.
 gh cls audit hw1 --roster roster.csv
@@ -200,8 +200,8 @@ gh cls collect hw1 --roster roster.csv --out ./hw1
 
 # 6b. Or pin the deadline commit for every repo first, then collect exactly
 #     those, so every student is cut at the same instant (see COLLECT.md).
-gh cls activity hw1 -p -u 2026-03-01T23:59:59-06:00 -o deadline.yml
-gh cls collect hw1 --roster roster.csv --out ./hw1-final --commits deadline.yml
+gh cls activity hw1 -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
+gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml
 
 # 7. After grading: post one feedback file per student/group as a comment on the
 #    repo's feedback issue or PR. Files are named <username>.md / <group>.md.
@@ -250,24 +250,27 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   those to warnings and proceeds (e.g. a student intentionally excused from the
   group work). `-b` applies an all-branches ruleset blocking force-push and
   deletion, which only org admins bypass (staff get push but cannot force-push or
-  delete protected branches); `-f pr|issue` adds a feedback artifact. Idempotent:
-  existing repos are skipped but access grants are re-asserted.
+  delete protected branches). `--feedback pr|issue` overrides the assignment's
+  feedback setting for one run, which is how a single repo is given the other
+  artifact without editing the config. Idempotent: existing repos are skipped but
+  access grants are re-asserted.
 - **activity** reports GitHub's own record of who moved which branch when. With
-  no mode flag it prints a per-repo summary; `-a` summarizes every recorded
+  no mode flag it prints a per-repo summary; `--all` summarizes every recorded
   change by who made it, answering "who has been pushing to this repo", and with
-  `-o` writes every individual change as CSV; `-f` lists force pushes and `-d`
-  lists branch deletions. Those two matter most on a **free organization**, where
+  `-o` writes every individual change as CSV; `-w/--rewrites` lists force pushes
+  and branch deletions together. Those matter most on a **free organization**, where
   the `--branch-protection` ruleset cannot apply to private repositories and so
   cannot block either: this is how you see what you are unable to prevent. A
   deletion's `before` commit is the tip that was removed, which is often still
-  fetchable, so the report doubles as a route back to deleted work. `-p` writes a
-  pin file of each repo's commit as of `--until`, ready for
-  `collect --commits`, which is how you get a deadline that is identical for
+  fetchable, so the report doubles as a route back to deleted work. `-s/--snapshot`
+  writes a
+  snapshot file of each repo's commit as of `--to`, ready for
+  `collect --snapshot`, which is how you get a deadline that is identical for
   every student (see **The freeze record** and COLLECT.md). Before writing one it
   checks that GitHub's record has caught up with each branch's current tip and
-  that every pinned commit is still retrievable, so it never hands back a pin
-  file that cannot be collected. `-s`/`-u` bound the window (`-u` defaults to
-  now), `-b` picks a branch, and `-o` writes the artifact to a file. Reads only,
+  that every recorded commit is still retrievable, so it never hands back a snapshot
+  file that cannot be collected. `--from`/`--to` bound the window (`--to` defaults
+  to now), `--branch` picks a branch, and `-o` writes the artifact to a file. Reads only,
   so it needs no org-owner role.
 - **audit** reconciles the students who should be on the `<name>-*` repos against
   the actual state, reporting each as *on repo*, *invited (pending)*, *invited
@@ -322,8 +325,8 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 - **collect** clones each student or group repository locally for hand grading,
   one shallow clone per repo under `--out`, taking each to its target commit and
   tagging it (`gh-cls/collect/<label>`) so every collection is preserved. The
-  default target is the default-branch tip; `--commits <yml>` pins exact SHAs
-  (for grading the deadline state), and `gh cls activity -p` is what produces
+  default target is the default-branch tip; `--snapshot <yml>` pins exact SHAs
+  (for grading the deadline state), and `gh cls activity --snapshot` is what produces
   that file. Each collection's tag is named by `--label`
   (default: a timestamp). Re-running a label tops up only repos not yet collected
   under it; a new label advances the clones and tags the new state, leaving prior
@@ -421,7 +424,7 @@ Either way you get a non-zero exit and a named repair, never a clean-looking run
 A `freeze` is also not instantaneous: it works through repositories concurrently,
 so on a large class there are seconds to minutes between the first repository
 being locked and the last. Treat the deadline as "when freeze finishes", and
-prefer `gh cls activity -p` to pin exact SHAs, then `collect --commits`, if you
+prefer `gh cls activity --snapshot` to record exact SHAs, then `collect --snapshot`, if you
 need a precise cut-off.
 
 ### What students do concurrently is safe
@@ -437,7 +440,7 @@ Student activity is not a hazard for these commands, with one exception:
   two.
 - **`collect`** is the one command a push can race, by design: the default target
   is the default-branch tip, so a push during collection is simply collected.
-  Pin exact commits with `gh cls activity -p` and `collect --commits` when that
+  Pin exact commits with `gh cls activity --snapshot` and `collect --snapshot` when that
   matters, and note that `collect` reports a forced (history-rewriting) update
   rather than silently accepting it.
 

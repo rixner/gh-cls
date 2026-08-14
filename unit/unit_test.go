@@ -99,7 +99,7 @@ func TestResolveGroupUnknownIdentifier(t *testing.T) {
 
 func TestResolveGroupCaseMismatchHint(t *testing.T) {
 	// The roster has "student-001"; the groups file uses "Student-001". Identifiers
-	// are case-sensitive, so this is a hard error — but it should hint at the
+	// are case-sensitive, so this is a hard error, but it should hint at the
 	// near-match rather than just say the identifier is missing.
 	src := "group-alpha: [Student-001]\n"
 	_, _, err := unit.Resolve(config.TypeGroup, mustRoster(t), mustGroups(t, src))

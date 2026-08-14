@@ -1,6 +1,6 @@
 # Live testing against GitHub
 
-The unit and command tests in this repo run entirely against fakes — nothing in
+The unit and command tests in this repo run entirely against fakes: nothing in
 them touches GitHub. This document is the procedure for exercising `gh cls`
 against a **real, disposable** organization, both by hand and via the automated
 test in [`live/live_test.go`](live/live_test.go).
@@ -13,7 +13,7 @@ sole owner cannot test (see *The freeze caveat* below).
 
 1. **A disposable org you own.** Create a free organization (e.g.
    `gh-cls-sandbox`). You must be an *owner*; every command guards on it.
-2. **Auth is inherited from `gh` — there is no token to manage.** `gh cls` uses
+2. **Auth is inherited from `gh`, so there is no token to manage.** `gh cls` uses
    your existing `gh auth login`. You only need to ensure that login carries the
    scopes the test needs (the defaults omit `delete_repo`):
    ```
@@ -33,7 +33,7 @@ sole owner cannot test (see *The freeze caveat* below).
 ## Install the extension under test
 
 Both runs below invoke `gh cls`, which resolves to whatever `cls` extension is
-installed — *not* automatically your working copy. Install the local checkout so
+installed, *not* automatically your working copy. Install the local checkout so
 `gh cls` runs the code you are testing rather than the published release:
 
 ```
@@ -53,7 +53,7 @@ leaves the binary untouched).
 `freeze` downgrades every *non-admin* direct collaborator from write to read and
 **skips admins** ([`cmd/freeze.go`](cmd/freeze.go)). An organization owner is an
 admin on every repo, so if you enroll *yourself* as the student, `freeze`
-correctly skips you and reports `0` changes — you can never watch the actual
+correctly skips you and reports `0` changes, so you can never watch the actual
 write→read transition. Only a non-owner collaborator (the throwaway account)
 shows the real behavior. Everything else (`setup`, `template`, `assign`) is fully
 exercisable with a single account.
@@ -81,30 +81,30 @@ GH_CLS_STUDENT2=<optional-second-login> \
 The `activity` step is the one that can legitimately take time: GitHub documents
 no ingestion latency for its ref-change record, so the test waits up to 90s for
 the repo it just created to appear. Whichever way that goes it asserts something,
-pinning the current tip and collecting it if the record caught up, or requiring
-`-p` to refuse if it did not. Either way the log line reporting how long it took
+recording the current tip and collecting it if the record caught up, or requiring
+`-s` to refuse if it did not. Either way the log line reporting how long it took
 is the only measurement of that latency the suite produces, so it is worth
 reading even on a pass.
 
-It runs the full arc in-process against the real API — seed a source template →
+It runs the full arc in-process against the real API: seed a source template →
 `setup` → `template` → `assign` (individual) → `freeze` → `--undo` → a group
-`assign` — asserting each step via the API and re-running each command to check
+`assign`, asserting each step via the API and re-running each command to check
 idempotency. It needs no config file on disk: it writes a throwaway one into a
 temp directory and points `GH_CLS_CONFIG` at it, so your real config is never
 touched. It uses unique per-run repo names and deletes everything it creates in
-`t.Cleanup` (the `staff` team is left behind by design — there is no delete-team
+`t.Cleanup` (the `staff` team is left behind by design, since there is no delete-team
 primitive and `setup` is idempotent).
 
-**`GH_CLS_STUDENT1` is required** — the test skips entirely if it is unset (just
+**`GH_CLS_STUDENT1` is required**: the test skips entirely if it is unset (just
 as the whole run skips when `GH_CLS_LIVE_ORG` is unset). **`GH_CLS_STUDENT2` is
 optional**: it only adds a second member to the group in the final step, for
-extra coverage. With a single student account, leave it unset — the group flow
+extra coverage. With a single student account, leave it unset, and the group flow
 still runs with the one member.
 
 **Set `GH_CLS_STUDENT1` to a throwaway account, not your own login.** As org owner
 you are an admin on every repo, and `freeze` skips admins (see *The freeze caveat*
-above), so it would never downgrade you. Unlike the manual run — where this just
-reports `0` changes — the automated test still enrolls you as a direct
+above), so it would never downgrade you. Unlike the manual run, where this just
+reports `0` changes, the automated test still enrolls you as a direct
 collaborator and then asserts the write→read transition, so the freeze assertion
 would **fail**.
 
@@ -120,7 +120,7 @@ property, which `setup` declares. The run exercises `setup` first, so the
 property is in place by the time it freezes; if you freeze by hand against an org
 that has never run `setup`, the command refuses to start.
 
-Afterward, confirm the org has no `ghclslive*` / `ghclssrc*` repos left — that
+Afterward, confirm the org has no `ghclslive*` / `ghclssrc*` repos left, since that
 verifies cleanup ran.
 
 ## Manual run
@@ -135,7 +135,7 @@ ORG=gh-cls-sandbox
 STU=<throwaway-login>
 ```
 
-There is **no `gh-cls-test.yml` to copy** — you author it (the config is
+There is **no `gh-cls-test.yml` to copy**: you author it (the config is
 per-course; the format is documented in [README.md](README.md)). The tool only
 reads it, never writes it. Create it now with the org and staff team (you add the
 `assignments:` entry before step 5); the `export` above points every command at
@@ -148,22 +148,22 @@ staff_team: staff
 
 Run each step **with `--dry-run` first**, then for real.
 
-1. **setup** — `gh cls setup`. It reads the org and staff team from the config.
+1. **setup**: `gh cls setup`. It reads the org and staff team from the config.
    Re-run; the second run should report `already` for each setting. In the UI
    verify: base permission *None*, member repo/Pages creation off, forking of
    private repositories off, Actions disabled, a `staff` team exists.
 
-   **1b. staff (optional)** — write a `tas.csv` (`identifier,username` with a TA
+   **1b. staff (optional)**: write a `tas.csv` (`identifier,username` with a TA
    login, e.g. `ta-1,<TA>`) and run `gh cls staff --tas tas.csv`. Verify `<TA>` is
    added to the `staff` team (or invited, if not yet an org member). Re-run → it
    reports `already in sync`. Replace `<TA>` with a different login → the run adds
    the new one and **warns** that `<TA>` is still on the team (not removed); re-run
    with `--prune` → `<TA>` is removed and named in the output.
 
-2. **Seed a source.** Create a repo with at least one commit to squash from —
+2. **Seed a source.** Create a repo with at least one commit to squash from,
    e.g. a new repo initialized with a README named `hw1-src`.
 
-3. **`gh cls template hw1-template -s $ORG/hw1-src --mark-source`** — verify
+3. **`gh cls template hw1-template -S $ORG/hw1-src --mark-source`**: verify
    `hw1-template` exists, is marked a *template repository*, is private, and has a
    single commit on its default branch. `--mark-source` flags the source `hw1-src`
    a template repository (the pre-req to generate from it); without the flag the
@@ -172,7 +172,7 @@ Run each step **with `--dry-run` first**, then for real.
 
 4. **Add the assignment to the config** so `assign` can resolve it (`assign`
    errors with *"assignment not found in config"* otherwise). Its `template` is the
-   repo assign clones — `hw1-template`, built in step 3:
+   repo assign clones, `hw1-template`, built in step 3:
    ```yaml
    org: gh-cls-sandbox
    staff_team: staff
@@ -188,12 +188,12 @@ Run each step **with `--dry-run` first**, then for real.
    ```
 
 5. **`gh cls assign hw1 -r roster.csv --public --branch-protection --feedback issue`**
-   — clones `hw1-template` into `hw1-<STU>`; verify `<STU>` is a direct collaborator
+   clones `hw1-template` into `hw1-<STU>`; verify `<STU>` is a direct collaborator
    with **push**, the staff team has push, a protection ruleset is present (public
    repo), and a *Feedback* issue is open. Re-run → it should report the repo
    `skipped`.
 
-6. **`gh cls freeze hw1`** — `<STU>` drops to **read** (the `hw1-template` repo is
+6. **`gh cls freeze hw1`**: `<STU>` drops to **read** (the `hw1-template` repo is
    skipped: freeze ignores template repositories). If `<STU>` has not accepted
    their invite yet, the output instead reports a pending invitation downgraded to
    read; check it under **Settings → Collaborators and teams → Pending
@@ -203,41 +203,41 @@ Run each step **with `--dry-run` first**, then for real.
    fallback: reports `0` changed because you are admin-skipped, but the repo is
    still recorded.)
 
-7. **`gh cls freeze hw1 --undo`** — push restored, any pending invitation goes
+7. **`gh cls freeze hw1 --undo`**: push restored, any pending invitation goes
    back to *Write*, and `gh-cls-frozen` becomes `false` rather than being cleared.
    Re-run → `0` changes.
 
-7b. **`gh cls audit hw1 -r roster.csv --renew` while frozen** — reports nothing to
+7b. **`gh cls audit hw1 -r roster.csv --renew` while frozen**: reports nothing to
    re-issue, since a student on a frozen repo is a settled state. Re-freeze, then
    remove `<STU>`'s access by hand in the web UI and re-run: the renew should
    restore **read**, not write, because the repo is recorded frozen.
 
 7c. **`gh cls activity hw1`**: a per-repo summary of what `<STU>` pushed. Repos
    with no activity are counted, not listed, so a quiet class shows one line
-   rather than a wall of zeroes. Then `gh cls activity hw1 -a` for a per-actor
-   breakdown, and `-f -d` for force pushes and branch deletions (both should be
+   rather than a wall of zeroes. Then `gh cls activity hw1 --all` for a per-actor
+   breakdown, and `-w` for force pushes and branch deletions (both should be
    zero unless you made some; force-push to test, since a free org cannot block
    them on private repos).
 
-7d. **`gh cls activity hw1 -p -u <a time after your last push> -o pin.yml`**:
+7d. **`gh cls activity hw1 -s --to <a time after your last push> -o snapshot.yml`**:
    writes `key: sha` for each repo and prints the same mapping. Check the SHA
    matches `git rev-parse` on the student's branch. Then feed it forward:
-   `gh cls collect hw1 -r roster.csv --out ./hw1-pinned --commits pin.yml`, and
-   confirm the clone is at exactly that commit. Re-running `-p` with an `--until`
+   `gh cls collect hw1 -r roster.csv --out ./hw1-pinned --snapshot snapshot.yml`, and
+   confirm the clone is at exactly that commit. Re-running `-s` with a `--to`
    *before* any push should report the repo as having no activity in the window
-   rather than pinning something arbitrary.
+   rather than recording something arbitrary.
 
-   `-p` refuses to write if GitHub's record has not caught up with the branch's
-   current tip. That is worth provoking once: push, then immediately run `-p`. If
+   `-s` refuses to write if GitHub's record has not caught up with the branch's
+   current tip. That is worth provoking once: push, then immediately run `-s`. If
    it errors saying the record is behind, retry a few seconds later; the delay
    before it succeeds is this endpoint's ingestion latency, which GitHub does not
    document.
 
-8. **Group assignment (optional)** — build a group template
-   (`gh cls template proj-template -s $ORG/hw1-src`), add a `group` assignment with
+8. **Group assignment (optional)**: build a group template
+   (`gh cls template proj-template -S $ORG/hw1-src`), add a `group` assignment with
    `template: proj-template`, write a `groups.yml` (`alpha: [<STU>]`), and
    `gh cls assign proj -r roster.csv --groups groups.yml --public`. Verify
    `proj-alpha` is created with the group's members granted push.
 
-9. **Cleanup** — delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
+9. **Cleanup**: delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
    repos. (Leaving the `staff` team is fine.)

@@ -93,11 +93,11 @@ excused from the group work).`,
 	}
 	f := cmd.Flags()
 	f.StringVarP(&o.roster, "roster", "r", "", "path to the roster CSV (required)")
-	f.StringVarP(&o.groups, "groups", "G", "", "path to the groups file (required for group, rejected for individual)")
+	f.StringVarP(&o.groups, "groups", "g", "", "path to the groups file (required for group, rejected for individual)")
 	f.BoolVarP(&o.public, "public", "p", false, "create public repos (default private)")
 	f.BoolVarP(&o.branchProtection, "branch-protection", "b", false, "apply an all-branches protection ruleset")
 	f.BoolVarP(&o.allBranches, "all-branches", "a", false, "include all template branches (default: default branch only)")
-	f.StringVarP(&o.feedback, "feedback", "f", "", "create a feedback artifact: pr or issue")
+	f.StringVar(&o.feedback, "feedback", "", "override the assignment's feedback artifact for this run: pr or issue")
 	f.BoolVarP(&o.allowUnsquashed, "allow-unsquashed", "U", false, "proceed even if a template branch has more than one commit")
 	f.BoolVarP(&o.force, "force", "F", false, "proceed even if the roster/groups are inconsistent (a student in no group, or in more than one)")
 	f.BoolVar(&o.markTemplate, "mark-template", false, "mark the assignment's template a template repository if it is not already")
@@ -205,7 +205,7 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return fmt.Errorf("checking template %s: %w", tmpl, err)
 	}
 	if !exists {
-		return fmt.Errorf("template %s not found; create it with `gh cls template %s -s <source>` or fix assignments.%s.template", tmpl, tmplName, name)
+		return fmt.Errorf("template %s not found; create it with `gh cls template %s -S <source>` or fix assignments.%s.template", tmpl, tmplName, name)
 	}
 	markTemplate := false
 	if !tmplRepo.IsTemplate {
@@ -551,14 +551,14 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 	}
 
 	// Confirm the repo's visibility matches the policy before granting anyone
-	// access — on a freshly generated repo and on a reused one alike. A private
+	// access, on a freshly generated repo and on a reused one alike. A private
 	// assignment that came out (or has since drifted) public would expose student
 	// work, so abort this repo rather than (re-)assert access on a leaky one.
 	if err := checkVisibility(repo, info, policy.Public); err != nil {
 		// A repo we just generated with the wrong visibility is our own leaky
 		// artifact: no access has been granted yet, so roll it back rather than
-		// leave a wrongly-public repo behind. A reused repo is never deleted — it
-		// may already hold student work — so it is only reported.
+		// leave a wrongly-public repo behind. A reused repo is never deleted (it
+		// may already hold student work), so it is only reported.
 		if res.status == "created" {
 			if delErr := client.DeleteRepo(ctx, org, repo); delErr != nil {
 				res.err = fmt.Errorf("%w; additionally, rolling back the leaked repo failed; delete %s/%s manually: %v", err, org, repo, delErr)
@@ -764,7 +764,7 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 				// acting on that inference destroys the work if it is ever wrong.
 				return fmt.Errorf("feedback branch missing on existing repo %s/%s, and building it force-updates the default branch, so it is refused on a repo that already exists. "+
 					"If this repo is left over from an interrupted assign run it holds no student work, since the branch is built before anyone is granted access: confirm no student is a collaborator on it, then `gh repo delete %s/%s` and re-run assign. "+
-					"If it does hold student work, do not delete it: restore the feedback branch from its pull request if the repo once had one, or, if it never had one, give this repo an issue instead by re-running with -f issue and a roster naming only its student.",
+					"If it does hold student work, do not delete it: restore the feedback branch from its pull request if the repo once had one, or, if it never had one, give this repo an issue instead by re-running with --feedback issue and a roster naming only its student.",
 					org, repo, org, repo)
 			}
 			root, err := client.RebaseOntoEmptyRoot(ctx, org, repo, info.DefaultBranch)

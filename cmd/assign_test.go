@@ -69,7 +69,7 @@ type fakeAssignClient struct {
 	teamRepos []string
 	rulesets  map[string]bool // repos a protection ruleset was applied to
 	refs      []string        // "repo:ref"
-	refSHAs   []string        // "repo:ref@sha" — the SHA each ref was created at
+	refSHAs   []string        // "repo:ref@sha": the SHA each ref was created at
 	rebased   []string        // repos whose default branch was rebased onto an empty root
 	prs       []string        // "repo:head->base"
 	issues    []string        // repo
@@ -949,7 +949,7 @@ func TestAssignExplainsAFeedbackBranchItCannotAdd(t *testing.T) {
 		"no student is a collaborator on it",
 		"do not delete it",
 		"restore the feedback branch from its pull request",
-		"re-running with -f issue and a roster naming only its student",
+		"re-running with --feedback issue and a roster naming only its student",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the message should contain %q:\n%s", want, msg)

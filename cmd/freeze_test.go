@@ -578,7 +578,7 @@ func TestFreezeOwnerGuard(t *testing.T) {
 
 func TestFreezeUnknownAssignmentIsRejected(t *testing.T) {
 	// A typo'd assignment name must be caught before any API call, not left to
-	// the zero-matches fallback below — which a prefix collision (#1) or a stale
+	// the zero-matches fallback below, which a prefix collision (#1) or a stale
 	// assignment could defeat by still matching repos.
 	fake := freezeFake("admin")
 	o := newFreezeOpts(t, fake, false, false)
@@ -660,7 +660,7 @@ func TestFreezeUnknownKeyAbortsWithoutChanges(t *testing.T) {
 
 func TestFreezeSkipsTemplateRepo(t *testing.T) {
 	// hw1-template matches the hw1-* prefix but is a template repository, not
-	// student work — freeze must never touch it.
+	// student work, so freeze must never touch it.
 	fake := freezeFake("admin")
 	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-template", IsTemplate: true})
 	fake.collabs["hw1-template"] = []gh.Collaborator{collab("ada", "push")}

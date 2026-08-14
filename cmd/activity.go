@@ -28,12 +28,11 @@ type activityClient interface {
 type activityOpts struct {
 	g         *globalOpts
 	branch    string
-	since     string
-	until     string
-	pin       bool
+	from      string
+	to        string
+	snapshot  bool
 	all       bool
-	forced    bool
-	deleted   bool
+	rewrites  bool
 	out       string
 	now       func() time.Time
 	newClient func(context.Context) (activityClient, error)
@@ -50,50 +49,49 @@ func newActivityCmd(g *globalOpts) *cobra.Command {
 		Short: "Report pushes, force pushes and deletions on an assignment's repositories",
 		Long: `Read GitHub's record of who moved which branch when, for the <name>-* repos.
 
-With no mode flag, print a per-repo summary of what happened. -a summarizes every
-recorded change by who made it, which answers "who has been pushing to this
+With no mode flag, print a per-repo summary of what happened. --all summarizes
+every recorded change by who made it, which answers "who has been pushing to this
 repo"; with -o it also writes every individual change as CSV, since listing them
 all on a terminal is thousands of lines. Those are push counts, not a measure of
-contribution. -f lists force pushes and -d lists
+contribution. -w lists the two changes that destroy history, force pushes and
 branch deletions, both of which an assignment's branch-protection ruleset would
 prevent, but that ruleset needs a paid plan for private repositories: on a free
 organization this is how you see what you cannot block. A deletion's "before"
 commit is the tip that was removed, which is often still fetchable, so the
 report doubles as a way back to deleted work.
 
--p writes a pin file mapping each student/group key to the commit their repo was
-at, for feeding to ` + "`gh cls collect --commits`" + `. That gives every student the same
-deadline instant, unlike freezing and collecting, where repos are locked over
-the duration of the freeze. Pair it with -f: a force push after the deadline can
-orphan a pinned commit, so -p verifies every SHA it writes is still retrievable
-and refuses to write a file it knows is broken.
+-s writes a snapshot file mapping each student/group key to the commit their repo
+was at, for feeding to ` + "`gh cls collect --snapshot`" + `. That gives every student the
+same deadline instant, unlike freezing and collecting, where repos are locked
+over the duration of the freeze. Pair it with -w: a force push after the deadline
+can orphan a recorded commit, so -s verifies every SHA it writes is still
+retrievable and refuses to write a file it knows is broken.
 
---since and --until bound the window; --until defaults to now. Modes combine on
-the terminal, but -o writes one artifact, so it takes a single mode.
+--from and --to bound the window; --to defaults to now. Modes combine on the
+terminal, but -o writes one artifact, so it takes a single mode.
 
 Timestamps are GitHub's own record of when each change happened, not commit
 dates (which the pusher controls) and not webhook receipt times (which lag).
 
 Reads only, so it needs no org-owner role.`,
 		Example: `  gh cls activity hw1
-  gh cls activity hw1 -a
-  gh cls activity hw1 -f -d
-  gh cls activity project -p -u 2026-03-01T23:59:59-06:00 -o deadline.yml
-  gh cls activity hw1 -f -s 2026-02-01T00:00:00Z`,
+  gh cls activity hw1 --all
+  gh cls activity hw1 -w
+  gh cls activity project -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
+  gh cls activity hw1 -w --from 2026-02-01T00:00:00Z`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0])
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.branch, "branch", "b", "", "branch to report on (default: each repo's default branch)")
-	f.StringVarP(&o.since, "since", "s", "", "only activity at or after this RFC3339 time")
-	f.StringVarP(&o.until, "until", "u", "", "only activity at or before this RFC3339 time (default: now)")
-	f.BoolVarP(&o.pin, "pin", "p", false, "write each repo's commit as of --until, for collect --commits")
-	f.BoolVarP(&o.all, "all", "a", false, "list every recorded change, not just force pushes and deletions")
-	f.BoolVarP(&o.forced, "force-pushes", "f", false, "list force pushes")
-	f.BoolVarP(&o.deleted, "deletions", "d", false, "list branch deletions")
-	f.StringVarP(&o.out, "out", "o", "", "write the output to a file (YAML for -p, CSV otherwise)")
+	f.StringVar(&o.branch, "branch", "", "branch to report on (default: each repo's default branch)")
+	f.StringVarP(&o.from, "from", "f", "", "only activity at or after this RFC3339 time")
+	f.StringVarP(&o.to, "to", "t", "", "only activity at or before this RFC3339 time (default: now)")
+	f.BoolVarP(&o.snapshot, "snapshot", "s", false, "record each repo's commit as of --to, for collect --snapshot")
+	f.BoolVar(&o.all, "all", false, "list every recorded change, not just rewrites")
+	f.BoolVarP(&o.rewrites, "rewrites", "w", false, "list force pushes and branch deletions")
+	f.StringVarP(&o.out, "out", "o", "", "write the output to a file (YAML for --snapshot, CSV otherwise)")
 	return cmd
 }
 
@@ -107,10 +105,10 @@ type repoActivity struct {
 	// caught up with reality.
 	tip    string
 	events []gh.Activity
-	// postWindow holds activity after --until. A force push here can orphan the
-	// commit -p just pinned, which is the case worth reporting; a force push
+	// postWindow holds activity after --to. A force push here can orphan the
+	// commit --snapshot just recorded, which is the case worth reporting; a force push
 	// inside the window merely rewrote history before the pin and leaves it
-	// valid. Use -f to see those.
+	// valid. Use -w to see those.
 	postWindow []gh.Activity
 	err        error
 }
@@ -120,20 +118,20 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 		return fmt.Errorf("assignment %q not found in config", name)
 	}
 
-	since, until, err := o.window()
+	from, to, err := o.window()
 	if err != nil {
 		return err
 	}
 	modes := 0
-	for _, on := range []bool{o.pin, o.all, o.forced, o.deleted} {
+	for _, on := range []bool{o.snapshot, o.all, o.rewrites} {
 		if on {
 			modes++
 		}
 	}
-	// One file holds one artifact: a pin file and a force-push listing have
-	// different shapes, so there is no sensible way to write both to -o.
+	// One file holds one artifact: a snapshot and a rewrite listing have different
+	// shapes, so there is no sensible way to write both to -o.
 	if o.out != "" && modes != 1 {
-		return fmt.Errorf("--out writes a single artifact, so it needs exactly one of -p, -a, -f or -d (got %d)", modes)
+		return fmt.Errorf("--out writes a single artifact, so it needs exactly one of --snapshot, --all or --rewrites (got %d)", modes)
 	}
 
 	client, err := o.newClient(ctx)
@@ -155,7 +153,7 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 	}
 
 	results := runConcurrent(ctx, o.g.concurrency, wanted, func(ctx context.Context, r gh.Repo) repoActivity {
-		return o.read(ctx, client, name, r, since, until)
+		return o.read(ctx, client, name, r, from, to)
 	})
 	sort.Slice(results, func(i, j int) bool { return results[i].repo < results[j].repo })
 
@@ -166,27 +164,24 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 		}
 	}
 
-	fmt.Fprintf(out, "Activity for %s-* in %s (%s)\n", name, o.g.org, describeWindow(since, until))
+	fmt.Fprintf(out, "Activity for %s-* in %s (%s)\n", name, o.g.org, describeWindow(from, to))
 	switch {
-	case o.pin:
-		err = o.reportPin(ctx, out, client, name, results)
+	case o.snapshot:
+		err = o.reportSnapshot(ctx, out, client, name, to, results)
 	default:
 		err = nil
 	}
 	if o.all {
 		o.reportAll(out, results)
 	}
-	if o.forced {
-		o.reportEvents(out, "Force pushes", results, func(a gh.Activity) bool {
-			return a.ActivityType == gh.ActivityForcePush
+	if o.rewrites {
+		// One listing rather than two: a force push and the deletion that followed
+		// it belong in sequence, and the WHAT column names each event exactly.
+		o.reportEvents(out, "Force pushes and branch deletions", results, func(a gh.Activity) bool {
+			return a.ActivityType == gh.ActivityForcePush || a.ActivityType == gh.ActivityBranchDeletion
 		})
 	}
-	if o.deleted {
-		o.reportEvents(out, "Branch deletions", results, func(a gh.Activity) bool {
-			return a.ActivityType == gh.ActivityBranchDeletion
-		})
-	}
-	if !o.pin && !o.all && !o.forced && !o.deleted {
+	if !o.snapshot && !o.all && !o.rewrites {
 		reportActivitySummary(out, results)
 	}
 	// A branch named explicitly that exists nowhere prints a wall of zeroes that
@@ -211,36 +206,36 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 	return nil
 }
 
-// window resolves --since/--until, defaulting until to now. A zero since means
-// no lower bound.
-func (o *activityOpts) window() (since, until time.Time, err error) {
-	if o.since != "" {
-		if since, err = time.Parse(time.RFC3339, o.since); err != nil {
-			return since, until, fmt.Errorf("--since %q is not an RFC3339 time (e.g. 2026-03-01T23:59:59-06:00): %w", o.since, err)
+// window resolves --from/--to, defaulting to to now. A zero from means no lower
+// bound.
+func (o *activityOpts) window() (from, to time.Time, err error) {
+	if o.from != "" {
+		if from, err = time.Parse(time.RFC3339, o.from); err != nil {
+			return from, to, fmt.Errorf("--from %q is not an RFC3339 time (e.g. 2026-03-01T23:59:59-06:00): %w", o.from, err)
 		}
 	}
-	until = o.now()
-	if o.until != "" {
-		if until, err = time.Parse(time.RFC3339, o.until); err != nil {
-			return since, until, fmt.Errorf("--until %q is not an RFC3339 time (e.g. 2026-03-01T23:59:59-06:00): %w", o.until, err)
+	to = o.now()
+	if o.to != "" {
+		if to, err = time.Parse(time.RFC3339, o.to); err != nil {
+			return to, to, fmt.Errorf("--to %q is not an RFC3339 time (e.g. 2026-03-01T23:59:59-06:00): %w", o.to, err)
 		}
 	}
-	if !since.IsZero() && until.Before(since) {
-		return since, until, fmt.Errorf("--until %s is before --since %s", until.Format(time.RFC3339), since.Format(time.RFC3339))
+	if !from.IsZero() && to.Before(from) {
+		return from, to, fmt.Errorf("--to %s is before --from %s", to.Format(time.RFC3339), from.Format(time.RFC3339))
 	}
-	return since, until, nil
+	return from, to, nil
 }
 
-func describeWindow(since, until time.Time) string {
-	if since.IsZero() {
-		return "through " + until.Format(time.RFC3339)
+func describeWindow(from, to time.Time) string {
+	if from.IsZero() {
+		return "through " + to.Format(time.RFC3339)
 	}
-	return since.Format(time.RFC3339) + " through " + until.Format(time.RFC3339)
+	return from.Format(time.RFC3339) + " through " + to.Format(time.RFC3339)
 }
 
 // read fetches one repository's activity and narrows it to the reported branch
 // and window.
-func (o *activityOpts) read(ctx context.Context, client activityClient, name string, r gh.Repo, since, until time.Time) repoActivity {
+func (o *activityOpts) read(ctx context.Context, client activityClient, name string, r gh.Repo, from, to time.Time) repoActivity {
 	branch := o.branch
 	if branch == "" {
 		branch = r.DefaultBranch
@@ -257,16 +252,16 @@ func (o *activityOpts) read(ctx context.Context, client activityClient, name str
 		return res
 	}
 	// Filter by branch again rather than trusting the ref parameter: an ignored
-	// filter would silently mix other branches into the answer, and for -p that
+	// filter would silently mix other branches into the answer, and for --snapshot that
 	// would pin a commit from the wrong branch.
 	for _, a := range all {
 		if a.Branch() != branch {
 			continue
 		}
-		if !since.IsZero() && a.Timestamp.Before(since) {
+		if !from.IsZero() && a.Timestamp.Before(from) {
 			continue
 		}
-		if a.Timestamp.After(until) {
+		if a.Timestamp.After(to) {
 			res.postWindow = append(res.postWindow, a)
 			continue
 		}
@@ -274,8 +269,8 @@ func (o *activityOpts) read(ctx context.Context, client activityClient, name str
 	}
 	sort.Slice(res.events, func(i, j int) bool { return res.events[i].Timestamp.After(res.events[j].Timestamp) })
 
-	// The tip is read for the freshness check below, and only matters to -p.
-	if o.pin {
+	// The tip is read for the freshness check below, and only matters to --snapshot.
+	if o.snapshot {
 		tip, err := client.GetRef(ctx, o.g.org, r.Name, "heads/"+branch)
 		if err != nil {
 			res.err = fmt.Errorf("reading %s tip: %w", branch, err)
@@ -313,9 +308,9 @@ func short(sha string) string {
 	return sha
 }
 
-// reportPin resolves each repo's commit as of --until, verifies every one is
-// still retrievable, and writes the pin file.
-func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client activityClient, name string, results []repoActivity) error {
+// reportSnapshot resolves each repo's commit as of --to, verifies every one is
+// still retrievable, and writes the snapshot file.
+func (o *activityOpts) reportSnapshot(ctx context.Context, out io.Writer, client activityClient, name string, to time.Time, results []repoActivity) error {
 	type pinned struct{ key, repo, sha string }
 	var pins []pinned
 	var noActivity, orphaned, unreadable []string
@@ -323,8 +318,8 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 	for _, r := range results {
 		if r.err != nil {
 			// Kept with its reason rather than merely skipped: a repo whose record is
-			// behind, or that could not be read at all, is the case -p exists to
-			// catch, and it decides below whether a pin file is written at all.
+			// behind, or that could not be read at all, is the case --snapshot exists to
+			// catch, and it decides below whether a snapshot is written at all.
 			unreadable = append(unreadable, fmt.Sprintf("%s: %v", r.key, r.err))
 			continue
 		}
@@ -340,7 +335,7 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 			continue
 		}
 		// A pinned commit that has been orphaned by a force push and collected is
-		// gone: writing it would produce a pin file that cannot be collected.
+		// gone: writing it would produce a snapshot that cannot be collected.
 		ok, err := client.CommitExists(ctx, o.g.org, r.repo, sha)
 		if err != nil {
 			return fmt.Errorf("verifying %s on %s: %w", short(sha), r.repo, err)
@@ -352,28 +347,28 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 		pins = append(pins, pinned{r.key, r.repo, sha})
 	}
 
-	fmt.Fprintf(out, "\npinned %s\n", plural(len(pins), "repo"))
+	fmt.Fprintf(out, "\nrecorded %s\n", plural(len(pins), "repo"))
 	// Print the mapping itself: -o is a redirect, not the only way to see the
 	// result, and a run that says "pinned 49 repos" while showing none of them
 	// has produced nothing the caller can act on. Same form as the file, so a
-	// line can be copied straight into a hand-edited pin file.
+	// line can be copied straight into a hand-edited snapshot file.
 	for _, p := range pins {
 		fmt.Fprintf(out, "  %s: %s\n", p.key, p.sha)
 	}
 	if len(noActivity) > 0 {
 		sort.Strings(noActivity)
-		fmt.Fprintf(out, "no activity in the window, so not pinned (%d): %s\n", len(noActivity), strings.Join(noActivity, ", "))
+		fmt.Fprintf(out, "no activity in the window, so nothing to record (%d): %s\n", len(noActivity), strings.Join(noActivity, ", "))
 	}
 	if len(orphaned) > 0 {
 		sort.Strings(orphaned)
-		fmt.Fprintf(out, "NOT pinned, the commit is no longer retrievable (%d): %s\n", len(orphaned), strings.Join(orphaned, ", "))
+		fmt.Fprintf(out, "NOT recorded, the commit is no longer retrievable (%d): %s\n", len(orphaned), strings.Join(orphaned, ", "))
 	}
 	if len(unreadable) > 0 {
 		sort.Strings(unreadable)
-		fmt.Fprintf(out, "NOT pinned, the repository could not be read (%d):\n  %s\n", len(unreadable), strings.Join(unreadable, "\n  "))
+		fmt.Fprintf(out, "NOT recorded, the repository could not be read (%d):\n  %s\n", len(unreadable), strings.Join(unreadable, "\n  "))
 	}
 
-	// Force pushes are reported whether or not -f was given, split by side of the
+	// Force pushes are reported whether or not -w was given, split by side of the
 	// pinned instant because they mean different things. Before it: history was
 	// rewritten, but the tip at that instant is still the tip at that instant, so
 	// the pin holds. After it: the pinned commit may be gone, which is what
@@ -381,16 +376,16 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 	inWindow := keysWithForcePush(results, func(r repoActivity) []gh.Activity { return r.events })
 	afterPin := keysWithForcePush(results, func(r repoActivity) []gh.Activity { return r.postWindow })
 	if len(inWindow) > 0 {
-		fmt.Fprintf(out, "force-pushed within the window, so history was rewritten before the pin (%d): %s\n",
+		fmt.Fprintf(out, "force-pushed within the window, so history was rewritten before the snapshot (%d): %s\n",
 			len(inWindow), strings.Join(inWindow, ", "))
 	}
 	if len(afterPin) > 0 {
-		fmt.Fprintf(out, "force-pushed AFTER the pinned instant, so a pinned commit may have been orphaned (%d): %s\n",
+		fmt.Fprintf(out, "force-pushed AFTER the snapshot instant, so a recorded commit may have been orphaned (%d): %s\n",
 			len(afterPin), strings.Join(afterPin, ", "))
 	}
 
 	if o.out != "" {
-		// The freshness and orphan checks exist to keep a broken pin file away from
+		// The freshness and orphan checks exist to keep a broken snapshot away from
 		// collection day, so one repo failing either blocks the whole file. Writing
 		// the rest would hand back an artifact that looks complete: collect takes it
 		// at face value and the missing students show up only as "skipped (no pinned
@@ -403,21 +398,21 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 				next = append(next, "re-run once GitHub's record has caught up")
 			}
 			if len(orphaned) > 0 {
-				next = append(next, "use -f to see the force pushes that removed a commit")
+				next = append(next, "use -w to see the force pushes that removed a commit")
 			}
 			next = append(next, "or write the missing entries by hand")
-			return fmt.Errorf("refusing to write %s: %s could not be pinned (listed above); collect would take no commit at all for them, so %s",
+			return fmt.Errorf("refusing to write %s: %s could not be recorded (listed above); collect would take no commit at all for them, so %s",
 				o.out, plural(blocked, "repo"), strings.Join(next, ", "))
 		}
 		if len(pins) == 0 {
-			return fmt.Errorf("nothing to pin, so %s was not written", o.out)
+			return fmt.Errorf("nothing to record, so %s was not written", o.out)
 		}
 		f, err := createNew(o.out)
 		if err != nil {
 			return err
 		}
 		var b strings.Builder
-		fmt.Fprintf(&b, "# gh cls activity %s -p, commits as of %s\n", name, o.until)
+		fmt.Fprintf(&b, "# gh cls activity %s --snapshot, commits as of %s\n", name, to.Format(time.RFC3339))
 		for _, p := range pins {
 			fmt.Fprintf(&b, "%s: %s\n", p.key, p.sha)
 		}
@@ -430,11 +425,12 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 			os.Remove(o.out)
 			return fmt.Errorf("closing %s: %w", o.out, err)
 		}
-		// "pin", not "entry": plural appends a bare "s", which would render "entrys".
-		fmt.Fprintf(out, "wrote %s (%s)\n", o.out, plural(len(pins), "pin"))
+		// "commit", not "entry": plural appends a bare "s", which would render
+		// "entrys".
+		fmt.Fprintf(out, "wrote %s (%s)\n", o.out, plural(len(pins), "commit"))
 	}
 	if len(orphaned) > 0 {
-		return fmt.Errorf("%d repo(s) could not be pinned because their commit is gone; re-run with -f to see the force pushes that removed it", len(orphaned))
+		return fmt.Errorf("%d repo(s) could not be recorded because their commit is gone; re-run with -w to see the force pushes that removed it", len(orphaned))
 	}
 	return nil
 }

@@ -84,7 +84,7 @@ func newTemplateOpts(t *testing.T, state *fakeTemplateState, source string, forc
 	}
 }
 
-// withSource returns a source repo that is already a template repository — the
+// withSource returns a source repo that is already a template repository, the
 // normal, pre-requisite-satisfied state.
 func withSource() map[string]*gh.Repo {
 	return map[string]*gh.Repo{

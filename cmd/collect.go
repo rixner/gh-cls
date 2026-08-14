@@ -59,7 +59,7 @@ type collectOpts struct {
 	g         *globalOpts
 	roster    string
 	groups    string
-	commits   string
+	snapshot  string
 	out       string
 	label     string
 	dryRun    bool
@@ -80,7 +80,8 @@ func newCollectCmd(g *globalOpts) *cobra.Command {
 		Short: "Clone each student's repository locally for grading",
 		Long: `Maintain one shallow clone per student (or group) under --out, taking each repo
 to a target commit and tagging it so every collection is preserved. The default
-target is the repo's default-branch tip; --commits pins exact SHAs. Re-running
+target is the repo's default-branch tip; --snapshot pins the exact SHAs recorded
+by a gh cls activity --snapshot run. Re-running
 the same --label tops up only repos not yet collected under it; a new label
 updates the clones to the new target and tags the new state, leaving prior tags
 in place so no collected state is ever lost.
@@ -92,7 +93,7 @@ A clone with local changes is left untouched, so grading-script edits survive.
 This is the one command that uses git: clones go through gh, updates through git.
 See COLLECT.md for the model and the git you need.`,
 		Example: `  gh cls collect hw1 --roster roster.csv --out ./hw1
-  gh cls collect hw1 --roster roster.csv --out ./hw1-final --commits deadline.yml --label final
+  gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml --label final
   gh cls collect project --groups groups.yml --out ./project`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -102,8 +103,8 @@ See COLLECT.md for the model and the git you need.`,
 	f := cmd.Flags()
 	f.StringVarP(&o.out, "out", "o", "", "destination directory; one clone per repo at <out>/<key> (required)")
 	f.StringVarP(&o.roster, "roster", "r", "", "roster CSV (required for an individual assignment)")
-	f.StringVarP(&o.groups, "groups", "G", "", "groups file (required for a group assignment)")
-	f.StringVar(&o.commits, "commits", "", "YAML of key->commit SHA; collect exactly those commits")
+	f.StringVarP(&o.groups, "groups", "g", "", "groups file (required for a group assignment)")
+	f.StringVarP(&o.snapshot, "snapshot", "s", "", "snapshot file of key->commit SHA, as written by gh cls activity --snapshot; collect exactly those commits")
 	f.StringVar(&o.label, "label", "", "name for this collection's tag (default: a timestamp)")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "resolve and reconcile without cloning anything")
 	_ = cmd.MarkFlagRequired("out")
@@ -135,7 +136,7 @@ const (
 	collectStatusUpdated   = "updated"
 	collectStatusUpToDate  = "up-to-date"
 	collectStatusDirty     = "skipped (local changes)"
-	collectStatusNoSHA     = "skipped (no pinned SHA)"
+	collectStatusNoSHA     = "skipped (not in the snapshot)"
 )
 
 func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error {
@@ -149,9 +150,9 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		return err
 	}
 
-	var commits map[string]string
-	if o.commits != "" {
-		if commits, err = parseCommits(o.commits); err != nil {
+	var pinned map[string]string
+	if o.snapshot != "" {
+		if pinned, err = parseSnapshot(o.snapshot); err != nil {
 			return err
 		}
 	}
@@ -213,7 +214,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	}
 
 	results := runConcurrent(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
-		return o.collectOne(ctx, o.g.org, name, tag, commits, it)
+		return o.collectOne(ctx, o.g.org, name, tag, pinned, it)
 	})
 
 	if err := o.writeManifest(label, results); err != nil {
@@ -261,15 +262,15 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 }
 
 // collectOne clones or updates one repository to its target commit and tags it.
-func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string, commits map[string]string, it repoItem) collectResult {
+func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string, snapshot map[string]string, it repoItem) collectResult {
 	res := collectResult{key: it.key, repo: it.repo, ref: it.defaultBranch}
 	dir := filepath.Join(o.out, it.key)
 
-	pinned := commits != nil
+	pinned := snapshot != nil
 	var sha string
 	if pinned {
 		res.ref = "(pinned)"
-		s, ok := commits[it.lkey]
+		s, ok := snapshot[it.lkey]
 		if !ok {
 			res.status = collectStatusNoSHA
 			return res
@@ -405,7 +406,7 @@ func (o *collectOpts) writeManifest(label string, results []collectResult) error
 		}
 		switch r.status {
 		case collectStatusCollected, collectStatusUpdated, collectStatusUpToDate:
-		default: // dirty or no pinned SHA: nothing was collected to record
+		default: // dirty or absent from the snapshot: nothing was collected to record
 			continue
 		}
 		if recorded[manifestKey(label, r.repo)] {
@@ -533,22 +534,22 @@ func reportCollect(out io.Writer, results []collectResult, missing []string) err
 	return nil
 }
 
-// parseCommits reads a YAML map of key->commit SHA, lower-casing keys for
-// matching and rejecting an empty SHA.
-func parseCommits(path string) (map[string]string, error) {
+// parseSnapshot reads a snapshot file (a YAML map of key->commit SHA), lower-
+// casing keys for matching and rejecting an empty SHA.
+func parseSnapshot(path string) (map[string]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading commits file %s: %w", path, err)
+		return nil, fmt.Errorf("reading snapshot file %s: %w", path, err)
 	}
 	var raw map[string]string
 	if err := yaml.Unmarshal(data, &raw); err != nil {
-		return nil, fmt.Errorf("parsing commits file %s: %w", path, err)
+		return nil, fmt.Errorf("parsing snapshot file %s: %w", path, err)
 	}
 	out := make(map[string]string, len(raw))
 	for k, v := range raw {
 		v = strings.TrimSpace(v)
 		if v == "" {
-			return nil, fmt.Errorf("commits file %s: empty SHA for %q", path, k)
+			return nil, fmt.Errorf("snapshot file %s: empty SHA for %q", path, k)
 		}
 		out[strings.ToLower(k)] = v
 	}

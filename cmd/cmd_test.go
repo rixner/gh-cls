@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 )
 
 // execute runs the root command with the given args, capturing output, and
@@ -63,7 +64,7 @@ func TestPersistentFlagMatrix(t *testing.T) {
 }
 
 // TestOrgIsConfigOnly guards the design that the org and staff team are read
-// only from the config file: no command — not even setup — accepts them as
+// only from the config file: no command, not even setup, accepts them as
 // flags, so a stray -o/--org can never target an unconfigured org.
 func TestOrgIsConfigOnly(t *testing.T) {
 	if NewRootCmd().PersistentFlags().Lookup("org") != nil {
@@ -82,14 +83,15 @@ func TestOrgIsConfigOnly(t *testing.T) {
 func TestLocalFlagMatrix(t *testing.T) {
 	cases := map[string]map[string]string{
 		"setup":    {"n": "dry-run"},
-		"staff":    {"t": "tas", "n": "dry-run"},
-		"template": {"s": "source", "F": "force", "n": "dry-run"},
-		"assign":   {"r": "roster", "G": "groups", "p": "public", "b": "branch-protection", "a": "all-branches", "f": "feedback", "U": "allow-unsquashed", "n": "dry-run"},
+		"staff":    {"n": "dry-run"},
+		"template": {"S": "source", "F": "force", "n": "dry-run"},
+		"assign":   {"r": "roster", "g": "groups", "p": "public", "b": "branch-protection", "a": "all-branches", "U": "allow-unsquashed", "n": "dry-run"},
 		"freeze":   {"u": "undo", "n": "dry-run"},
-		"audit":    {"r": "roster", "G": "groups", "n": "dry-run"},
-		"feedback": {"d": "dir", "r": "roster", "G": "groups", "F": "force", "n": "dry-run"},
+		"audit":    {"r": "roster", "g": "groups", "n": "dry-run"},
+		"feedback": {"d": "dir", "r": "roster", "g": "groups", "F": "force", "n": "dry-run"},
 		"status":   {"o": "out"},
-		"collect":  {"o": "out", "r": "roster", "G": "groups", "n": "dry-run"},
+		"collect":  {"o": "out", "r": "roster", "g": "groups", "s": "snapshot", "n": "dry-run"},
+		"activity": {"s": "snapshot", "f": "from", "t": "to", "w": "rewrites", "o": "out"},
 	}
 	for name, want := range cases {
 		cmd := subcommand(t, name)
@@ -103,6 +105,34 @@ func TestLocalFlagMatrix(t *testing.T) {
 				t.Errorf("%s: -%s maps to %q, want %q", name, short, f.Name, long)
 			}
 		}
+	}
+}
+
+// TestShorthandsMeanOneThing enforces the rule the flag set is built on: a
+// shorthand letter names the same long flag everywhere it appears. Letters that
+// flip meaning between commands are how a hand reaches for one command's -u and
+// lands on another's, so the invariant is checked rather than trusted.
+func TestShorthandsMeanOneThing(t *testing.T) {
+	meaning := map[string]string{} // shorthand -> long name
+	where := map[string]string{}   // shorthand -> the command that claimed it
+	root := NewRootCmd()
+
+	claim := func(cmdName string, f *pflag.Flag) {
+		if f.Shorthand == "" {
+			return
+		}
+		if prev, seen := meaning[f.Shorthand]; seen && prev != f.Name {
+			t.Errorf("-%s is --%s in %s but --%s in %s; one letter must mean one thing",
+				f.Shorthand, f.Name, cmdName, prev, where[f.Shorthand])
+			return
+		}
+		meaning[f.Shorthand] = f.Name
+		where[f.Shorthand] = cmdName
+	}
+
+	root.PersistentFlags().VisitAll(func(f *pflag.Flag) { claim("cls", f) })
+	for _, c := range root.Commands() {
+		c.Flags().VisitAll(func(f *pflag.Flag) { claim(c.Name(), f) })
 	}
 }
 
@@ -136,7 +166,7 @@ func TestAssignRequiresRoster(t *testing.T) {
 func TestAssignFeedbackEnum(t *testing.T) {
 	// Invalid value is rejected in PreRunE, before any work.
 	withConfig(t, "org: cs101-spring26\nstaff_team: staff\n")
-	_, err := execute("assign", "hw1", "-r", "roster.csv", "-f", "bogus")
+	_, err := execute("assign", "hw1", "-r", "roster.csv", "--feedback", "bogus")
 	if err == nil || !strings.Contains(err.Error(), "invalid --feedback") {
 		t.Fatalf("invalid feedback mode should be rejected, got %v", err)
 	}

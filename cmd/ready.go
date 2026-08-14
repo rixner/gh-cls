@@ -25,7 +25,7 @@ type repoReady interface {
 // returning the repo. Repository generation from a template is asynchronous, so
 // the repo object can appear before its starter commit lands; confirming the
 // default branch resolves means later steps act on real content rather than an
-// empty shell — whether that is creating a feedback ref on a student repo or
+// empty shell, whether that is creating a feedback ref on a student repo or
 // generating student repos from a freshly built template.
 func waitRepoReady(ctx context.Context, c repoReady, sleep func(time.Duration), owner, repo string) (*gh.Repo, error) {
 	for i := 0; i < readyAttempts; i++ {

@@ -54,7 +54,7 @@ TA who is not yet an organization member is invited and joins once they accept.`
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.tas, "tas", "t", "", "path to the TA CSV (identifier,username; required)")
+	f.StringVar(&o.tas, "tas", "", "path to the TA CSV (identifier,username; required)")
 	f.BoolVar(&o.prune, "prune", false, "also remove team members not listed in the TA file")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "show what would change without doing it")
 	_ = cmd.MarkFlagRequired("tas")
@@ -99,7 +99,7 @@ func (o *staffOpts) run(ctx context.Context, out io.Writer) error {
 		current[strings.ToLower(m)] = m
 	}
 
-	// toAdd: listed but not yet members. extra: members not listed — removed only
+	// toAdd: listed but not yet members. extra: members not listed, removed only
 	// with --prune, otherwise just reported.
 	var toAdd, extra []string
 	for low, login := range desired {

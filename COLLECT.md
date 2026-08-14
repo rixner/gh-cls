@@ -74,11 +74,11 @@ tags each repo's collected commit `gh-cls/collect/midterm`.
 ## Grading exactly the deadline commit
 
 Give collect a YAML file of `key: sha` and it checks out exactly those commits,
-regardless of anything pushed afterward. `gh cls activity -p` writes that file
-from GitHub's own record of when each push landed:
+regardless of anything pushed afterward. `gh cls activity --snapshot` writes
+that file from GitHub's own record of when each push landed:
 
 ```sh
-gh cls activity hw1 -p -u 2026-03-01T23:59:59-06:00 -o deadline.yml
+gh cls activity hw1 -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
 ```
 
 The file is just a mapping, so you can also write it by hand or edit one to give
@@ -92,7 +92,7 @@ group-alpha: a0b1c2d3...
 ```
 
 ```sh
-gh cls collect hw1 --roster roster.csv --out ./hw1-final --commits deadline.yml --label final
+gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml --label final
 ```
 
 A student with no SHA in the file is skipped and reported, so you grade exactly
@@ -112,7 +112,7 @@ locks repos concurrently, so a student whose repo is locked last had seconds or
 minutes longer than one locked first; the window is bounded by the freeze's own
 duration, and once the freeze finishes the tips cannot move again.
 
-**2. `--commits` from push events: consistent deadline, silent cutoff.** Take
+**2. `--snapshot` from push events: consistent deadline, silent cutoff.** Take
 each repo's SHA from the push events at the deadline instant and every student is
 cut at exactly the same moment, with no window at all. Nothing tells the student:
 a late push succeeds, they watch it land, and they learn only when grades come
@@ -125,32 +125,32 @@ student gets no signal either: their push succeeds whether or not it was
 collected, and whether it counted comes down to the order collect walked the
 class. That is the smear of (1) with the silence of (2).
 
-`gh cls activity -p` produces option (2)'s input for you:
+`gh cls activity --snapshot` produces option (2)'s input for you:
 
 ```sh
-gh cls activity hw1 -p -u 2026-03-01T23:59:59-06:00 -o deadline.yml
-gh cls collect hw1 --roster roster.csv --out ./hw1-final --commits deadline.yml --label final
+gh cls activity hw1 -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
+gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml --label final
 ```
 
 It reads GitHub's own record of ref changes, takes each repo's commit as of
-`--until`, and writes the pin file. The timestamps are GitHub's server-side
+`--to`, and writes the snapshot file. The timestamps are GitHub's server-side
 record of when each push landed, so they are neither commit dates (which the
 pusher controls and can backdate) nor webhook receipt times (which trail the
 push, and by far more when GitHub retries a failed delivery).
 
 That record is [`/repos/{owner}/{repo}/activity`](https://docs.github.com/en/rest/repos/repos#list-repository-activities),
 for which GitHub documents no retention, completeness or latency guarantee. So
-`-p` verifies rather than assumes. It refuses to write a pin file if GitHub's
+`--snapshot` verifies rather than assumes. It refuses to write a file if GitHub's
 record has not yet caught up with a branch's current tip, which is how a lagging
 record is caught instead of silently yielding an earlier commit, and it refuses
 to pin any commit that is no longer retrievable. Both fail the run rather than
 handing back an artifact that would break on collection day, and one repository
-failing either check blocks the whole file: a pin file missing a student looks
+failing either check blocks the whole file: a snapshot missing a student looks
 complete, and `collect` would take no commit at all for them.
 
 A student with no activity in the window is different, and does not block the
 file. There is simply no commit to pin, so they are named in the report, left
-out of the file, and reported by `collect` as `skipped (no pinned SHA)`.
+out of the file, and reported by `collect` as `skipped (not in the snapshot)`.
 
 Do not build such a record on the [events
 API](https://docs.github.com/en/rest/activity/events) (`/repos/{owner}/{repo}/events`)
