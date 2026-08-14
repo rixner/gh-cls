@@ -51,10 +51,17 @@ func newFakeFeedback(role string, repos ...string) *fakeFeedbackState {
 		prNum:    map[string]int{},
 		comments: map[string][]string{},
 	}
+	// A repository carries one artifact, never both: the kind its assignment
+	// configures in feedbackGlobals (hw1 an issue, proj a pull request). Giving
+	// every repo both is a state assign refuses to create and the commands now
+	// refuse to guess at.
 	for i, r := range repos {
 		s.repos[r] = true
-		s.issueNum[r] = i + 1
-		s.prNum[r] = 100 + i
+		if strings.HasPrefix(r, "proj-") {
+			s.prNum[r] = 100 + i
+		} else {
+			s.issueNum[r] = i + 1
+		}
 	}
 	return s
 }
@@ -160,6 +167,49 @@ func TestFeedbackPostsToEveryUnit(t *testing.T) {
 	}
 	if !strings.Contains(buf.String(), "3 posted, 0 up-to-date, 0 failed") {
 		t.Errorf("summary wrong:\n%s", buf.String())
+	}
+}
+
+func TestFeedbackPostsToTheArtifactTheRepoHas(t *testing.T) {
+	// hw1 configures an issue, but this repo carries a pull request, which is what
+	// an assignment whose feedback setting was changed after its repos were made
+	// looks like. The grade has to land where the student is reading, so it goes
+	// to the pull request, and the run says so rather than hiding it.
+	fake := newFakeFeedback("admin", "hw1-ada")
+	fake.issueNum = map[string]int{}
+	fake.prNum = map[string]int{"hw1-ada": 7}
+	o, _ := newFeedbackOpts(t, fake, map[string]string{"ada.md": "Nice work"}, fbRosterSolo, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !contains(fake.posts, "hw1-ada") {
+		t.Errorf("the comment should be posted to the artifact that exists: %v", fake.posts)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "1 repo carries a feedback pull request") || !strings.Contains(out, "hw1-ada") {
+		t.Errorf("the mismatch should be reported:\n%s", out)
+	}
+}
+
+func TestFeedbackRefusesARepoWithBothArtifacts(t *testing.T) {
+	// Two artifacts and no way to tell which one the student reads: posting to
+	// either could put the grade where it is never seen, so the repo fails.
+	fake := newFakeFeedback("admin", "hw1-ada")
+	fake.prNum = map[string]int{"hw1-ada": 7} // plus the issue it already has
+	o, _ := newFeedbackOpts(t, fake, map[string]string{"ada.md": "Nice work"}, fbRosterSolo, "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil {
+		t.Fatalf("a repo carrying both artifacts must fail:\n%s", buf.String())
+	}
+	if len(fake.posts) != 0 {
+		t.Errorf("nothing should be posted when the target is ambiguous: %v", fake.posts)
+	}
+	if !strings.Contains(buf.String(), "carries both a feedback pull request") {
+		t.Errorf("the failure should name both artifacts:\n%s", buf.String())
 	}
 }
 

@@ -111,7 +111,11 @@ type feedbackResult struct {
 	repo   string
 	status string // feedbackPosted or feedbackUpToDate
 	url    string
-	err    error
+	// otherKind names the artifact this repo carries when it is not the kind the
+	// assignment configures. The comment still went to it, since that is where the
+	// student is reading, but the divergence is reported rather than hidden.
+	otherKind string
+	err       error
 }
 
 func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) error {
@@ -261,15 +265,22 @@ func (o *feedbackOpts) post(ctx context.Context, client feedbackClient, org, nam
 		return res
 	}
 
-	number, found, err := findArtifact(ctx, client, org, repo, mode)
+	// Post to the artifact the repository actually carries, not the one the config
+	// names. A grade has to land where the student is reading, and the configured
+	// mode is only what assign was last told to create.
+	existing, found, err := findExisting(ctx, client, org, repo)
 	if err != nil {
-		res.err = fmt.Errorf("locating feedback %s in %s: %w", artifactNoun(mode), repo, err)
+		res.err = fmt.Errorf("locating the feedback artifact in %s: %w", repo, err)
 		return res
 	}
 	if !found {
 		res.err = fmt.Errorf("no feedback %s in %s; run `gh cls assign %s` so the feedback %s exists before posting", artifactNoun(mode), repo, name, artifactNoun(mode))
 		return res
 	}
+	if existing.mode != mode {
+		res.otherKind = existing.mode
+	}
+	number := existing.number
 
 	marker := feedbackMarker(m.file.body)
 	comments, err := client.ListIssueComments(ctx, org, repo, number)
@@ -310,6 +321,28 @@ func reportFeedbackDryRun(out io.Writer, org, name, mode string, matched []match
 	return nil
 }
 
+// reportArtifactMismatch names the repos whose feedback artifact is not the kind
+// the assignment configures. Their comments were posted to what is there, so
+// this is a note rather than a failure, but it is the only place the divergence
+// between the config and the repositories shows up.
+func reportArtifactMismatch(out io.Writer, results []feedbackResult) {
+	byKind := map[string][]string{}
+	for _, r := range results {
+		if r.err == nil && r.otherKind != "" {
+			byKind[r.otherKind] = append(byKind[r.otherKind], r.repo)
+		}
+	}
+	for _, kind := range []string{config.FeedbackPR, config.FeedbackIssue} {
+		repos := byKind[kind]
+		if len(repos) == 0 {
+			continue
+		}
+		sort.Strings(repos)
+		fmt.Fprintf(out, "note: %s %s a feedback %s, not the kind this assignment configures; the comments went to what is there:\n  %s\n",
+			plural(len(repos), "repo"), carry(len(repos)), artifactNoun(kind), strings.Join(repos, "\n  "))
+	}
+}
+
 // reportFeedback prints per-repo outcomes and a summary, and returns an error if
 // any post failed. Posted and failed repos are listed individually; up-to-date
 // repos (the common case on a re-run) are summarized, not enumerated.
@@ -329,6 +362,7 @@ func reportFeedback(out io.Writer, results []feedbackResult, missing, unmatched 
 		}
 	}
 	fmt.Fprintf(out, "\n%d posted, %d up-to-date, %d failed\n", posted, upToDate, failed)
+	reportArtifactMismatch(out, results)
 	if len(missing) > 0 || len(unmatched) > 0 {
 		fmt.Fprintf(out, "note: skipped %d student/group(s) with no file and %d unmatched file(s) (see above)\n", len(missing), len(unmatched))
 	}

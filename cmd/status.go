@@ -297,7 +297,12 @@ type repoDetail struct {
 	frozen     string // frozen | writable | mixed | none
 	recorded   freezeState
 	feedback   string // open | closed | missing | none
-	err        error
+	// feedbackKind is the artifact the repo actually carries (config.FeedbackPR
+	// or config.FeedbackIssue), empty when it carries none. status reports what is
+	// there rather than what the config declares, so an assignment whose feedback
+	// setting changed after its repos were made is visible instead of silent.
+	feedbackKind string
+	err          error
 }
 
 // driftsFromRecord reports whether the access on the repo contradicts what
@@ -331,11 +336,11 @@ func (d repoDetail) expectedVisibility() string {
 }
 
 func (d repoDetail) row() []string {
-	frozen, feedback := d.frozen, d.feedback
+	frozen, feedback, kind := d.frozen, d.feedback, d.feedbackKind
 	if d.err != nil {
-		frozen, feedback = "error", "error"
+		frozen, feedback, kind = "error", "error", "error"
 	}
-	return []string{d.assignment, d.repo, d.key, d.visibility(), d.expectedVisibility(), frozen, d.recorded.describe(), feedback}
+	return []string{d.assignment, d.repo, d.key, d.visibility(), d.expectedVisibility(), frozen, d.recorded.describe(), feedback, kind}
 }
 
 func (o *statusOpts) runDetail(ctx context.Context, out io.Writer, org string, names []string, client statusClient) error {
@@ -447,12 +452,23 @@ func (o *statusOpts) scanRepo(ctx context.Context, client statusClient, org, ass
 	}
 	d.frozen = classifyFrozen(collabs, invitations)
 
-	state, err := feedbackArtifactState(ctx, client, org, r.Name, policy.Feedback)
+	// Ask the repository which artifact it carries rather than assuming the
+	// configured one, including for an assignment that configures none: that is
+	// where a repo carrying an artifact nobody expects would otherwise hide.
+	existing, found, err := findExisting(ctx, client, org, r.Name)
 	if err != nil {
 		d.err = fmt.Errorf("reading feedback artifact: %w", err)
 		return d
 	}
-	d.feedback = state
+	if !found {
+		d.feedback = "missing"
+		if policy.Feedback == config.FeedbackNone {
+			d.feedback = "none"
+		}
+		return d
+	}
+	d.feedback = existing.state
+	d.feedbackKind = existing.mode
 	return d
 }
 
@@ -517,6 +533,7 @@ func printDetailSummary(out io.Writer, cfg *config.Config, names []string, detai
 		} else {
 			fmt.Fprintf(out, "  feedback: %s\n", feedbackSummary(ds))
 		}
+		printArtifactKindNote(out, ds, a.Feedback)
 		for _, d := range ds {
 			if d.err == nil && d.driftsFromRecord() {
 				fmt.Fprintf(out, "  DRIFT %s: recorded %s but access is %s; re-run `gh cls freeze %s%s`\n",
@@ -570,6 +587,34 @@ func frozenSummary(ds []repoDetail) string {
 	return fmt.Sprintf("%s | %s", plural(len(ds), "repo"), strings.Join(parts, ", "))
 }
 
+// printArtifactKindNote names the repositories carrying a feedback artifact that
+// is not the kind the assignment configures, or any at all when it configures
+// none. The counts above cannot show this: they say how many artifacts are open
+// or closed, not which kind. status is the one place the divergence between what
+// the config declares and what the repositories hold becomes visible.
+func printArtifactKindNote(out io.Writer, ds []repoDetail, configured string) {
+	byKind := map[string][]string{}
+	for _, d := range ds {
+		if d.err != nil || d.feedbackKind == "" || d.feedbackKind == configured {
+			continue
+		}
+		byKind[d.feedbackKind] = append(byKind[d.feedbackKind], d.repo)
+	}
+	for _, kind := range []string{config.FeedbackPR, config.FeedbackIssue} {
+		repos := byKind[kind]
+		if len(repos) == 0 {
+			continue
+		}
+		sort.Strings(repos)
+		tail := fmt.Sprintf(", not the %s this assignment configures", artifactNoun(configured))
+		if configured == config.FeedbackNone {
+			tail = ", although this assignment configures no feedback"
+		}
+		fmt.Fprintf(out, "  note: %s %s a feedback %s%s:\n    %s\n",
+			plural(len(repos), "repo"), carry(len(repos)), artifactNoun(kind), tail, strings.Join(repos, "\n    "))
+	}
+}
+
 // feedbackSummary renders the open/closed/missing breakdown of feedback artifacts.
 func feedbackSummary(ds []repoDetail) string {
 	var open, closed, missing, errored int
@@ -602,7 +647,7 @@ func (o *statusOpts) writeCSV(org string, names []string, details []repoDetail) 
 		return "", err
 	}
 	w := csv.NewWriter(f)
-	werr := w.Write([]string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "recorded", "feedback"})
+	werr := w.Write([]string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "recorded", "feedback", "feedback_kind"})
 	for _, d := range details {
 		if werr != nil {
 			break
@@ -666,6 +711,14 @@ func csvLabel(org string, names []string) string {
 }
 
 // plural renders a count with its noun, adding "s" for any count other than one.
+// carry agrees a verb with plural's count, so a note never reads "1 repo carry".
+func carry(n int) string {
+	if n == 1 {
+		return "carries"
+	}
+	return "carry"
+}
+
 func plural(n int, noun string) string {
 	if n == 1 {
 		return fmt.Sprintf("%d %s", n, noun)

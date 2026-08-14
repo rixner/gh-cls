@@ -412,7 +412,7 @@ func TestStatusDetail(t *testing.T) {
 	}
 
 	recs := readCSV(t, csvPath)
-	wantHeader := []string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "recorded", "feedback"}
+	wantHeader := []string{"assignment", "repo", "key", "visibility", "expected_visibility", "frozen", "recorded", "feedback", "feedback_kind"}
 	if len(recs) != 4 || !equalRow(recs[0], wantHeader) {
 		t.Fatalf("CSV header/row count wrong: %v", recs)
 	}
@@ -423,8 +423,50 @@ func TestStatusDetail(t *testing.T) {
 	// bob's access is read-only but this fake records no freeze state, so the row
 	// shows the access and the record disagreeing in the benign direction: nothing
 	// was recorded, which is what a repo frozen before the record existed looks like.
-	if want := []string{"hw1", "hw1-bob", "bob", "private", "private", "frozen", "not recorded", "closed"}; !equalRow(bob, want) {
+	if want := []string{"hw1", "hw1-bob", "bob", "private", "private", "frozen", "not recorded", "closed", "issue"}; !equalRow(bob, want) {
 		t.Errorf("hw1-bob row = %v, want %v", bob, want)
+	}
+}
+
+func TestStatusDetailNamesArtifactsOfTheOtherKind(t *testing.T) {
+	// hw1 configures an issue. Two repos carry a pull request instead, which is
+	// what an assignment whose feedback setting changed after its repos were made
+	// looks like. The open/closed counts cannot show that, so status names them.
+	fake := &fakeStatusClient{
+		members: []string{"ta1"},
+		repos: []gh.Repo{
+			{Name: "hw1-ada", Private: true},
+			{Name: "hw1-bob", Private: true},
+			{Name: "hw1-cy", Private: true},
+		},
+		collaborators: map[string][]gh.Collaborator{
+			"hw1-ada": {collab("ada", "push")},
+			"hw1-bob": {collab("bob", "push")},
+			"hw1-cy":  {collab("cy", "push")},
+		},
+		issueState: map[string]string{"hw1-cy": "open"},
+		prState:    map[string]string{"hw1-ada": "open", "hw1-bob": "closed"},
+	}
+	o := newStatusOptsG(feedbackGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "detail.csv") // --out implies --detail, and keeps the CSV out of the way
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	// The states come from the artifacts that exist, whatever kind they are.
+	if !strings.Contains(out, "feedback: 2 open, 1 closed, 0 missing") {
+		t.Errorf("states should count the artifacts that exist:\n%s", out)
+	}
+	for _, want := range []string{
+		"2 repos carry a feedback pull request, not the issue this assignment configures",
+		"hw1-ada",
+		"hw1-bob",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the note should contain %q:\n%s", want, out)
+		}
 	}
 }
 
