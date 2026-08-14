@@ -173,27 +173,65 @@ func (c *restClient) CreatePR(ctx context.Context, owner, repo, title, head, bas
 	return err
 }
 
-// FindPRByBase returns the number and state ("open"/"closed") of a pull request
-// targeting base in the repository. The feedback PR is the only one whose base is
-// the feedback branch, so this locates an already-created feedback PR without
-// reopening a closed one. found is false (with a nil error) when none matches.
+// FindPRByBase returns the number and state ("open"/"closed") of the tool's pull
+// request targeting base in the repository, so an already-created feedback PR is
+// located without reopening a closed one. found is false (with a nil error) when
+// none matches.
+//
+// Students hold push on their repository and can open a pull request against the
+// same base, so "the newest PR on this base" is not necessarily ours: posting a
+// grade onto a student's PR, or skipping the feedback PR's creation because
+// theirs exists, are both silent wrong answers. The tool's PR is identified by
+// its head instead, which is always this repository's own default branch, and the
+// lowest matching number wins since ours is opened when the repo is provisioned,
+// before a student can reach it.
 func (c *restClient) FindPRByBase(ctx context.Context, owner, repo, base string) (int, string, bool, error) {
-	path := fmt.Sprintf("repos/%s/%s/pulls?state=all&base=%s&per_page=1",
-		url.PathEscape(owner), url.PathEscape(repo), url.QueryEscape(base))
-	var prs []struct {
+	type pull struct {
 		Number int    `json:"number"`
 		State  string `json:"state"`
+		Head   struct {
+			Ref  string `json:"ref"`
+			Repo struct {
+				FullName string `json:"full_name"`
+			} `json:"repo"`
+		} `json:"head"`
+		Base struct {
+			Repo struct {
+				DefaultBranch string `json:"default_branch"`
+			} `json:"repo"`
+		} `json:"base"`
 	}
-	if _, err := c.do(ctx, "GET", path, nil, &prs); err != nil {
+	prs, err := getPaged[pull](ctx, c, func(page int) string {
+		return fmt.Sprintf("repos/%s/%s/pulls?state=all&base=%s&per_page=%d&page=%d",
+			url.PathEscape(owner), url.PathEscape(repo), url.QueryEscape(base), pageSize, page)
+	})
+	if err != nil {
 		return 0, "", false, err
 	}
-	if len(prs) == 0 {
+	full := owner + "/" + repo
+	var ours pull
+	found := false
+	for _, pr := range prs {
+		// The head branch must be this repository's own default branch: a head in a
+		// fork (or any other branch) is not the PR the tool opened.
+		if pr.Head.Ref == "" || pr.Head.Ref != pr.Base.Repo.DefaultBranch {
+			continue
+		}
+		if !strings.EqualFold(pr.Head.Repo.FullName, full) {
+			continue
+		}
+		if !found || pr.Number < ours.Number {
+			ours, found = pr, true
+		}
+	}
+	if !found {
 		return 0, "", false, nil
 	}
-	return prs[0].Number, prs[0].State, true, nil
+	return ours.Number, ours.State, true, nil
 }
 
-// PRExists reports whether any pull request (any state) targets base.
+// PRExists reports whether the tool's pull request targeting base exists, in any
+// state.
 func (c *restClient) PRExists(ctx context.Context, owner, repo, base string) (bool, error) {
 	_, _, found, err := c.FindPRByBase(ctx, owner, repo, base)
 	return found, err

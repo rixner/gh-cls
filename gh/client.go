@@ -73,10 +73,12 @@ type Client interface {
 	BranchExists(ctx context.Context, owner, repo, branch string) (bool, error)
 	// CreatePR opens a pull request.
 	CreatePR(ctx context.Context, owner, repo, title, head, base, body string) error
-	// PRExists reports whether any pull request (any state) targets base.
+	// PRExists reports whether the tool's pull request targeting base exists, in
+	// any state.
 	PRExists(ctx context.Context, owner, repo, base string) (bool, error)
-	// FindPRByBase returns the number and state ("open"/"closed") of a pull
-	// request (any state) targeting base; found is false when none matches.
+	// FindPRByBase returns the number and state ("open"/"closed") of the tool's
+	// pull request (any state) targeting base, identified by a head on the
+	// repository's own default branch; found is false when none matches.
 	FindPRByBase(ctx context.Context, owner, repo, base string) (number int, state string, found bool, err error)
 	// EnableIssues turns on the Issues feature for a repository.
 	EnableIssues(ctx context.Context, owner, repo string) error

@@ -2,6 +2,7 @@ package gh
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -297,16 +298,30 @@ func TestBranchExists(t *testing.T) {
 	})
 }
 
+// toolPR renders the feedback PR as the tool opens it: head is the repository's
+// own default branch.
+func toolPR(number int, state string) string {
+	return fmt.Sprintf(`{"number":%d,"state":%q,"head":{"ref":"main","repo":{"full_name":"org/hw1-ada"}},"base":{"repo":{"default_branch":"main"}}}`,
+		number, state)
+}
+
+// studentPR renders a pull request a student opened against the same base from
+// their own branch.
+func studentPR(number int, state string) string {
+	return fmt.Sprintf(`{"number":%d,"state":%q,"head":{"ref":"my-work","repo":{"full_name":"org/hw1-ada"}},"base":{"repo":{"default_branch":"main"}}}`,
+		number, state)
+}
+
 func TestPRExists(t *testing.T) {
 	t.Run("present", func(t *testing.T) {
-		f := &fakeRequester{steps: []step{{resp: okResp(`[{"number":7}]`)}}}
+		f := &fakeRequester{steps: []step{{resp: okResp(`[` + toolPR(7, "open") + `]`)}}}
 		var waits int
 		c := newTestClient(f, &waits)
 		ok, err := c.PRExists(context.Background(), "org", "hw1-ada", "feedback")
 		if err != nil || !ok {
 			t.Fatalf("want exists, got ok=%v err=%v", ok, err)
 		}
-		if f.paths[0] != "repos/org/hw1-ada/pulls?state=all&base=feedback&per_page=1" {
+		if f.paths[0] != "repos/org/hw1-ada/pulls?state=all&base=feedback&per_page=100&page=1" {
 			t.Errorf("path = %q", f.paths[0])
 		}
 	})
@@ -317,6 +332,18 @@ func TestPRExists(t *testing.T) {
 		ok, err := c.PRExists(context.Background(), "org", "hw1-ada", "feedback")
 		if err != nil || ok {
 			t.Fatalf("empty list should mean absent, got ok=%v err=%v", ok, err)
+		}
+	})
+	t.Run("absent when only a student's PR targets the base", func(t *testing.T) {
+		// A student holds push and can open a pull request onto the feedback branch.
+		// Counting theirs as the feedback PR makes assign skip creating the real one,
+		// leaving the repo with no feedback artifact and no complaint.
+		f := &fakeRequester{steps: []step{{resp: okResp(`[` + studentPR(4, "open") + `]`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		ok, err := c.PRExists(context.Background(), "org", "hw1-ada", "feedback")
+		if err != nil || ok {
+			t.Fatalf("a student's PR is not the feedback PR, got ok=%v err=%v", ok, err)
 		}
 	})
 }
@@ -389,7 +416,7 @@ func TestFindIssueByTitle(t *testing.T) {
 
 func TestFindPRByBase(t *testing.T) {
 	t.Run("returns the PR number and state", func(t *testing.T) {
-		f := &fakeRequester{steps: []step{{resp: okResp(`[{"number":7,"state":"open"}]`)}}}
+		f := &fakeRequester{steps: []step{{resp: okResp(`[` + toolPR(7, "open") + `]`)}}}
 		var waits int
 		c := newTestClient(f, &waits)
 		n, state, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
@@ -399,8 +426,33 @@ func TestFindPRByBase(t *testing.T) {
 		if n != 7 || state != "open" {
 			t.Errorf("got number=%d state=%q, want 7/open", n, state)
 		}
-		if f.paths[0] != "repos/org/hw1-ada/pulls?state=all&base=feedback&per_page=1" {
+		if f.paths[0] != "repos/org/hw1-ada/pulls?state=all&base=feedback&per_page=100&page=1" {
 			t.Errorf("path = %q", f.paths[0])
+		}
+	})
+	t.Run("skips a student's PR on the same base", func(t *testing.T) {
+		// The list is newest-first, so a student's later PR would otherwise win and
+		// the grade comment would land on the student's pull request.
+		f := &fakeRequester{steps: []step{{resp: okResp(
+			`[` + studentPR(12, "open") + `,` + toolPR(1, "closed") + `]`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		n, state, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
+		if err != nil || !found {
+			t.Fatalf("want found, got found=%v err=%v", found, err)
+		}
+		if n != 1 || state != "closed" {
+			t.Errorf("got number=%d state=%q, want the tool's PR 1/closed", n, state)
+		}
+	})
+	t.Run("skips a PR opened from a fork", func(t *testing.T) {
+		fork := `{"number":9,"state":"open","head":{"ref":"main","repo":{"full_name":"ada/hw1-ada"}},"base":{"repo":{"default_branch":"main"}}}`
+		f := &fakeRequester{steps: []step{{resp: okResp(`[` + fork + `]`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		_, _, found, err := c.FindPRByBase(context.Background(), "org", "hw1-ada", "feedback")
+		if err != nil || found {
+			t.Fatalf("a fork's main is not the tool's head, got found=%v err=%v", found, err)
 		}
 	})
 	t.Run("not found on empty list", func(t *testing.T) {
