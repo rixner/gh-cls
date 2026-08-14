@@ -148,6 +148,41 @@ func TestAssignFeedbackEnum(t *testing.T) {
 	}
 }
 
+func TestTextOnlyCommandsNeedNoConfig(t *testing.T) {
+	// Help and completion print text and touch nothing, so they must work on a
+	// machine that has no course config: a shell evaluates the completion script
+	// on every new session, and reading the help is how someone finds out a config
+	// is needed at all.
+	t.Setenv("GH_CLS_CONFIG", "")
+	cases := map[string][]string{
+		"help subcommand":   {"help", "assign"},
+		"completion script": {"completion", "bash"},
+		"shell completion":  {cobra.ShellCompRequestCmd, "assign", ""},
+	}
+	for name, args := range cases {
+		out, err := execute(args...)
+		if err != nil {
+			t.Errorf("%s should not need a config, got %v", name, err)
+			continue
+		}
+		if strings.TrimSpace(out) == "" {
+			t.Errorf("%s produced no output", name)
+		}
+	}
+	// The help subcommand's output is the assign help, not the root's.
+	out, err := execute("help", "assign")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "--roster") {
+		t.Errorf("help assign should render assign's flags:\n%s", out)
+	}
+	// A command that does work still fails fast without a config.
+	if _, err := execute("assign", "hw1", "-r", "roster.csv"); err == nil {
+		t.Error("assign without a config should still error")
+	}
+}
+
 func TestVersionFlag(t *testing.T) {
 	out, err := execute("--version")
 	if err != nil {

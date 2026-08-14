@@ -90,6 +90,22 @@ func (g *globalOpts) load() error {
 	return nil
 }
 
+// textOnly reports whether a command only prints text and so needs no course
+// config: cobra's help and completion commands (and the __complete the shell
+// calls). The --help flag short-circuits before PersistentPreRunE runs, but the
+// help subcommand does not, so `gh cls help assign` and shell completion would
+// otherwise fail on any machine with no config set. The parent chain is walked so
+// a child such as `completion bash` is covered too.
+func textOnly(cmd *cobra.Command) bool {
+	for c := cmd; c != nil; c = c.Parent() {
+		switch c.Name() {
+		case "help", "completion", cobra.ShellCompRequestCmd, cobra.ShellCompNoDescRequestCmd:
+			return true
+		}
+	}
+	return false
+}
+
 // NewRootCmd builds the root `gh cls` command with all subcommands attached.
 func NewRootCmd() *cobra.Command {
 	g := &globalOpts{}
@@ -110,8 +126,15 @@ The org and staff team come from a user-authored config file, located with
 		SilenceUsage:  true,
 		Version:       resolveVersion(),
 		// Load the config once, up front, so every subcommand shares it. Runs for
-		// all subcommands; --version/--help short-circuit before this.
-		PersistentPreRunE: func(*cobra.Command, []string) error { return g.load() },
+		// every subcommand that does work; the --version and --help flags
+		// short-circuit before this, and textOnly covers the commands that produce
+		// text without doing any.
+		PersistentPreRunE: func(cmd *cobra.Command, _ []string) error {
+			if textOnly(cmd) {
+				return nil
+			}
+			return g.load()
+		},
 	}
 
 	pf := root.PersistentFlags()
