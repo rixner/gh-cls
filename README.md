@@ -430,7 +430,13 @@ Student activity is not a hazard for these commands, with one exception:
 
 ## Before a real run
 
-Preview any command with `--dry-run` first. The `--branch-protection` ruleset
+Preview any command with `--dry-run` first. A dry run changes nothing, but it
+does run the command's preflight checks against the real organization and
+reports what each repository would get, so it also catches a missing staff team,
+an unsquashed or unmarked template, a roster username that does not exist, and
+repositories that already exist or are recorded frozen.
+
+The `--branch-protection` ruleset
 requires the organization to be on GitHub's Team plan or higher; confirm under
 **Billing & plans** that the org shows "Team". The freeze record needs no paid
 plan.

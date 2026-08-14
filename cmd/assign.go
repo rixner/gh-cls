@@ -7,6 +7,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/rixner/gh-cls/config"
@@ -96,7 +97,7 @@ excused from the group work).`,
 	f.BoolVarP(&o.allowUnsquashed, "allow-unsquashed", "U", false, "proceed even if a template branch has more than one commit")
 	f.BoolVarP(&o.force, "force", "F", false, "proceed even if the roster/groups are inconsistent (a student in no group, or in more than one)")
 	f.BoolVar(&o.markTemplate, "mark-template", false, "mark the assignment's template a template repository if it is not already")
-	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "list what would be created without doing it")
+	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "run the preflight checks and report what would be created, changing nothing")
 	_ = cmd.MarkFlagRequired("roster")
 	return cmd
 }
@@ -167,19 +168,7 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	staffTeam := o.g.staffTeam
 
 	if o.dryRun {
-		visibility := "private"
-		if policy.Public {
-			visibility = "public"
-		}
 		fmt.Fprintf(out, "DRY RUN: no changes will be made\n\n")
-		fmt.Fprintf(out, "Would create %d %s repo(s) in %s from %s:\n", len(units), visibility, org, tmpl)
-		if extras := planExtras(policy); extras != "" {
-			fmt.Fprintf(out, "  with %s\n", extras)
-		}
-		for _, u := range units {
-			fmt.Fprintf(out, "  %s-%s  ->  push: %s\n", name, u.Key, strings.Join(u.Members, ", "))
-		}
-		return nil
 	}
 
 	client, err := o.newClient(ctx)
@@ -209,12 +198,16 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	if !exists {
 		return fmt.Errorf("template %s not found; create it with `gh cls template %s -s <source>` or fix assignments.%s.template", tmpl, tmplName, name)
 	}
+	markTemplate := false
 	if !tmplRepo.IsTemplate {
 		if !o.markTemplate {
 			return fmt.Errorf("template %s is not a template repository; mark it in the GitHub UI, or re-run with --mark-template to set it", tmpl)
 		}
-		if err := client.SetRepoTemplate(ctx, tmplOwner, tmplName); err != nil {
-			return fmt.Errorf("marking template %s a template repository: %w", tmpl, err)
+		markTemplate = true
+		if !o.dryRun {
+			if err := client.SetRepoTemplate(ctx, tmplOwner, tmplName); err != nil {
+				return fmt.Errorf("marking template %s a template repository: %w", tmpl, err)
+			}
 		}
 	}
 
@@ -239,6 +232,18 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	frozen, err := readFrozenStates(ctx, client, org)
 	if err != nil {
 		return err
+	}
+
+	printPlan(out, len(units), org, tmpl, policy, markTemplate)
+
+	if o.dryRun {
+		// Every preflight above has run against the real org, so what remains is the
+		// per-unit outcome: whether each repo already exists, and what access its
+		// recorded freeze state gives its members. Both are reads.
+		plans := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) planResult {
+			return planUnit(ctx, client, org, name, policy, frozen, u)
+		})
+		return reportPlan(out, plans)
 	}
 
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) unitResult {
@@ -296,6 +301,116 @@ func checkGroupConsistency(out io.Writer, report unit.Report, force bool) error 
 		return fmt.Errorf("roster and groups file are inconsistent (fix it, or pass --force to proceed anyway; no repositories were created):\n%s", joined)
 	}
 	fmt.Fprintf(out, "warning: proceeding with --force despite roster/groups inconsistencies:\n%s\n", joined)
+	return nil
+}
+
+// printPlan states what the run is about to provision, before the first
+// mutation. A real run otherwise said nothing until its results summary, so the
+// org and template it targeted never appeared in the output: with a config per
+// semester and $GH_CLS_CONFIG able to point at either, this line is the last
+// chance to notice the wrong one.
+func printPlan(out io.Writer, units int, org, tmpl string, policy config.Policy, markTemplate bool) {
+	visibility := "private"
+	if policy.Public {
+		visibility = "public"
+	}
+	fmt.Fprintf(out, "Provisioning %d %s repo(s) in %s from %s\n", units, visibility, org, tmpl)
+	if extras := planExtras(policy); extras != "" {
+		fmt.Fprintf(out, "  with %s\n", extras)
+	}
+	if markTemplate {
+		fmt.Fprintf(out, "  marking %s a template repository first (--mark-template)\n", tmpl)
+	}
+}
+
+// planResult is one unit's dry-run outcome: what a real run would do to its
+// repository, read from the same state that run would act on.
+type planResult struct {
+	repo    string
+	members []string
+	create  bool
+	grant   string   // "push", or "read" on a repo recorded frozen
+	notes   []string // why it reads the way it does
+	abort   string   // non-empty: a real run would refuse this repo, and why
+	err     error    // this unit's plan could not be read at all
+}
+
+// planUnit reports what provisioning one unit would do. It reads the same state
+// provision acts on: whether the repository already exists (create or skip), its
+// visibility against the policy (which decides whether the repo is acted on at
+// all), and its recorded freeze state (push or read). Reporting "would create"
+// for an existing repo, push for a frozen one, or a routine skip for a repo the
+// run would refuse to touch is exactly the kind of wrong answer a dry run is run
+// to avoid.
+func planUnit(ctx context.Context, client assignClient, org, name string, policy config.Policy, frozen map[string]freezeState, u unit.Unit) planResult {
+	repo := name + "-" + u.Key
+	res := planResult{repo: repo, members: u.Members, grant: "push"}
+
+	info, exists, err := client.GetRepo(ctx, org, repo)
+	if err != nil {
+		res.err = fmt.Errorf("checking %s: %w", repo, err)
+		return res
+	}
+	res.create = !exists
+	if exists {
+		res.notes = append(res.notes, "exists")
+		// A repo whose visibility disagrees with the policy is aborted by a real
+		// run before any grant, since a private assignment that is public exposes
+		// student work. A freshly generated repo is created at the right
+		// visibility, so only an existing one can be in this state.
+		res.abort = visibilityMismatch(info, policy.Public)
+	}
+	if state := frozen[repo]; state.grantPermission() == "pull" {
+		res.grant = "read"
+		res.notes = append(res.notes, "recorded "+state.describe())
+	}
+	return res
+}
+
+// reportPlan prints the per-unit plan as an aligned table and returns an error
+// if any unit could not be read: a plan missing rows is not a plan.
+func reportPlan(out io.Writer, plans []planResult) error {
+	var create, skip, abort, failed int
+	fmt.Fprintln(out)
+	tw := tabwriter.NewWriter(out, 0, 2, 2, ' ', 0)
+	for _, p := range plans {
+		if p.err != nil {
+			failed++
+			fmt.Fprintf(tw, "  FAILED\t%s\t%v\n", p.repo, p.err)
+			continue
+		}
+		if p.abort != "" {
+			abort++
+			fmt.Fprintf(tw, "  ABORT\t%s\t%s, so a run would refuse it before granting access\n", p.repo, p.abort)
+			continue
+		}
+		action := "skip"
+		if p.create {
+			action = "create"
+			create++
+		} else {
+			skip++
+		}
+		detail := fmt.Sprintf("%s: %s", p.grant, strings.Join(p.members, ", "))
+		if len(p.notes) > 0 {
+			detail += " (" + strings.Join(p.notes, ", ") + ")"
+		}
+		fmt.Fprintf(tw, "  %s\t%s\t%s\n", action, p.repo, detail)
+	}
+	tw.Flush()
+
+	fmt.Fprintf(out, "\n%d would be created, %d already exist", create, skip)
+	if abort > 0 {
+		fmt.Fprintf(out, ", %d would be refused", abort)
+	}
+	fmt.Fprintln(out)
+
+	switch {
+	case failed > 0:
+		return fmt.Errorf("%d repo(s) could not be checked, so this plan is incomplete", failed)
+	case abort > 0:
+		return fmt.Errorf("%d repo(s) would be refused as they stand; fix their visibility before running assign", abort)
+	}
 	return nil
 }
 
@@ -499,11 +614,24 @@ func (o *assignOpts) provision(ctx context.Context, client assignClient, org, na
 // requested. It gates access: a private assignment that is (or has drifted)
 // public would expose student work, so this is checked before any grant.
 func checkVisibility(repo string, info *gh.Repo, wantPublic bool) error {
+	mismatch := visibilityMismatch(info, wantPublic)
+	if mismatch == "" {
+		return nil
+	}
+	return fmt.Errorf("repository %s is %s; aborting before asserting access", repo, mismatch)
+}
+
+// visibilityMismatch describes how a repo's visibility disagrees with the
+// policy ("public but private was requested"), or "" when they agree. The
+// phrase is shared by the error that aborts a repo and by the dry run's report
+// of the same repo, so a preview cannot describe the state differently from the
+// run it is previewing.
+func visibilityMismatch(info *gh.Repo, wantPublic bool) string {
 	// Compare like polarities (Private vs Private) rather than info.Private
 	// against wantPublic, whose opposite meanings make the check easy to misread.
 	wantPrivate := !wantPublic
 	if info.Private == wantPrivate {
-		return nil
+		return ""
 	}
 	actual, want := "private", "private"
 	if !info.Private {
@@ -512,7 +640,7 @@ func checkVisibility(repo string, info *gh.Repo, wantPublic bool) error {
 	if wantPublic {
 		want = "public"
 	}
-	return fmt.Errorf("repository %s is %s but %s was requested; aborting before asserting access", repo, actual, want)
+	return fmt.Sprintf("%s but %s was requested", actual, want)
 }
 
 // verifyAccess re-reads a repo's collaborators and pending invitations and

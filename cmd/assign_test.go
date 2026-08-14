@@ -518,6 +518,157 @@ func TestAssignIdempotentSkip(t *testing.T) {
 	}
 }
 
+func TestAssignRealRunAnnouncesWhatItIsProvisioning(t *testing.T) {
+	// assign mutates a whole class of repositories and, before this, said nothing
+	// until the results summary: the org and template it was aimed at never
+	// appeared. With a config per semester and $GH_CLS_CONFIG able to point at
+	// either, that line is the last chance to notice the wrong one.
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	first := strings.SplitN(buf.String(), "\n", 2)[0]
+	want := "Provisioning 3 private repo(s) in cs101-spring26 from cs101-spring26/hw1-template"
+	if first != want {
+		t.Errorf("first line = %q, want %q", first, want)
+	}
+}
+
+func TestAssignDryRunReportsPerRepoTruth(t *testing.T) {
+	// The old dry run returned before the client was built: it counted existing
+	// repos as "would create" and claimed push for members of a frozen repo, which
+	// is the opposite of what a real run does.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.frozen["hw1-ada"] = freezeFrozen
+	fake.exists["cs101-spring26/hw1-alan"] = true
+	o := newAssignOpts(t, fake, assignRoster, "")
+	o.dryRun = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"DRY RUN: no changes will be made",
+		"Provisioning 3 private repo(s) in cs101-spring26 from cs101-spring26/hw1-template",
+		"skip    hw1-ada    read: ada (exists, recorded frozen)",
+		"skip    hw1-alan   push: alan (exists)",
+		"create  hw1-grace  push: grace",
+		"1 would be created, 2 already exist",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run should report %q:\n%s", want, out)
+		}
+	}
+	// Nothing was touched.
+	if len(fake.generated) > 0 || len(fake.collabs) > 0 || len(fake.teamRepos) > 0 {
+		t.Errorf("a dry run must mutate nothing: generated=%v collabs=%v teams=%v", fake.generated, fake.collabs, fake.teamRepos)
+	}
+}
+
+func TestAssignDryRunFlagsARepoTheRunWouldRefuse(t *testing.T) {
+	// A reused repo whose visibility disagrees with the policy is aborted by a
+	// real run before any grant (TestAssignRejectsExistingPublicRepo). Previewing
+	// it as an ordinary skip would promise access re-assertion that the run then
+	// refuses, so the dry run reports it and exits non-zero, as the run does.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.public = map[string]bool{"cs101-spring26/hw1-ada": true}
+	o := newAssignOpts(t, fake, assignRoster, "")
+	o.dryRun = true
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1", config.Overrides{})
+	if err == nil || !strings.Contains(err.Error(), "would be refused") {
+		t.Fatalf("a repo the run would refuse should fail the dry run, got %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"ABORT   hw1-ada    public but private was requested, so a run would refuse it before granting access",
+		"2 would be created, 0 already exist, 1 would be refused",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dry run should report %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "push: ada") {
+		t.Errorf("a refused repo must not be previewed as a routine grant:\n%s", out)
+	}
+}
+
+func TestAssignDryRunRunsThePreflights(t *testing.T) {
+	// A dry run that skips the preflights reports a plan that a real run would
+	// refuse to carry out, which is worse than no preview at all.
+	cases := map[string]struct {
+		setup func(*fakeAssignClient)
+		want  string
+	}{
+		"missing staff team": {
+			func(f *fakeAssignClient) { f.teamMissing = true },
+			"staff team",
+		},
+		"template is not a template repository": {
+			func(f *fakeAssignClient) { f.isTemplate["cs101-spring26/hw1-template"] = false },
+			"not a template repository",
+		},
+		"unsquashed template": {
+			func(f *fakeAssignClient) {
+				f.branches = []gh.BranchCount{{Name: "main", Commits: 4}}
+			},
+			"not fully squashed",
+		},
+		"roster username that does not exist": {
+			func(f *fakeAssignClient) { f.unknownUsers = map[string]bool{"grace": true} },
+			"do not exist",
+		},
+		"the freeze record was never declared": {
+			func(f *fakeAssignClient) { f.noProperty = true },
+			"run `gh cls setup`",
+		},
+	}
+	for name, tc := range cases {
+		fake := newFakeAssign("admin")
+		tc.setup(fake)
+		o := newAssignOpts(t, fake, assignRoster, "")
+		o.dryRun = true
+
+		err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+		if err == nil {
+			t.Errorf("%s: a dry run should surface this before reporting a plan", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: error should mention %q, got %v", name, tc.want, err)
+		}
+	}
+}
+
+func TestAssignDryRunLeavesTheTemplateUnmarked(t *testing.T) {
+	// --mark-template is a mutation on the template repo, so a dry run reports it
+	// instead of doing it.
+	fake := newFakeAssign("admin")
+	fake.isTemplate["cs101-spring26/hw1-template"] = false
+	o := newAssignOpts(t, fake, assignRoster, "")
+	o.dryRun = true
+	o.markTemplate = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "marking cs101-spring26/hw1-template a template repository first") {
+		t.Errorf("the dry run should report the pending mark:\n%s", buf.String())
+	}
+	if fake.isTemplate["cs101-spring26/hw1-template"] {
+		t.Error("a dry run must not mark the template")
+	}
+}
+
 func TestAssignKeepsFrozenReposFrozen(t *testing.T) {
 	// assign is idempotent and re-run freely, and it re-asserts grants on existing
 	// repos. Doing that unconditionally at push meant adding one late student
