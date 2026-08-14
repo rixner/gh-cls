@@ -105,6 +105,12 @@ is created. Use that if you return grades outside GitHub. Only `issue` and `pr`
 create one, so a value you are unsure about is better left off than guessed at:
 `assign` opens the issue or PR on every student repo the first time it runs.
 
+The key says what `assign` should create; it is not a record of what exists.
+Changing it after an assignment's repos were made does not convert them, and
+`assign` will not add a second artifact to a repo that already has one: it fails
+that repo and names both kinds. `feedback` and `status` read what each repository
+carries, so a mixed assignment still reports and grades correctly.
+
 ### Assignment names
 
 Every command scopes an assignment to the repositories named `<name>-*`, so **no
@@ -300,8 +306,11 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   invitation to write, and records the repo as thawed, including any collaborator
   who was deliberately read-only before the freeze.
 - **feedback** posts one feedback file per student (or group) as a comment on that
-  repo's feedback issue or PR: the artifact assign created, named by the
-  assignment's `feedback` policy. Each file in `--dir` is `<key>.md` or
+  repo's feedback issue or PR: whichever artifact the repository actually carries,
+  found by looking rather than by trusting the assignment's `feedback` policy, so
+  a policy changed after the repos were made cannot send grades to an artifact
+  that is not there. A repo whose kind differs from the policy is named in the
+  run, and one carrying both is an error. Each file in `--dir` is `<key>.md` or
   `<key>.txt`, where `<key>` is the GitHub username (individual) or group name
   (group), resolved from `--roster` (plus `--groups` for a group assignment);
   contents are rendered as Markdown. The directory must hold exactly one
@@ -330,8 +339,11 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   student repositories exist and their visibility, flagging any that contradict
   the assignment's policy. With `--detail` it also scans each repo for its freeze
   state (write vs read for non-admins, including a "mixed" partial freeze) and its
-  feedback issue/PR state (open, closed, or missing), printing per-assignment
-  counts and writing a per-repo CSV. The freeze state counts a pending invitation
+  feedback artifact. The artifact is read from the repository rather than from
+  the config, so the report shows which kind each repo actually carries (a
+  `feedback_kind` column, and a note naming any repo whose kind is not the one
+  the assignment configures) as well as its state (open, closed, or missing). It
+  prints per-assignment counts and writes a per-repo CSV. The freeze state counts a pending invitation
   as the access it will confer on acceptance, so a repo whose collaborators are
   all read-only but which still has a write invitation outstanding reads as
   unfrozen. Each repo's actual access is compared against its freeze record and
