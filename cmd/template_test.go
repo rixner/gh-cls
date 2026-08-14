@@ -138,6 +138,67 @@ func TestTemplateBareOutputDefaultsToOrg(t *testing.T) {
 	}
 }
 
+func TestTemplateRejectsDestinationSameAsSource(t *testing.T) {
+	// With --force, an existing destination is deleted before generating from the
+	// source. If destination and source name the same repository, that delete
+	// would destroy the source. This must be caught before anything is deleted.
+	state := &fakeTemplateState{role: "admin", repos: withSource()}
+	o := newTemplateOpts(t, state, "cs101-templates/hw1-starter", true /*force*/, false)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "cs101-templates/hw1-starter")
+	if err == nil || !strings.Contains(err.Error(), "same repository") {
+		t.Fatalf("destination == source should be rejected, got %v", err)
+	}
+	if len(state.deleted) != 0 {
+		t.Errorf("the source must never be deleted, deleted = %v", state.deleted)
+	}
+	if len(state.generated) != 0 {
+		t.Errorf("nothing should be generated when destination == source: %v", state.generated)
+	}
+}
+
+func TestTemplateRejectsDestinationSameAsSourceDifferentCase(t *testing.T) {
+	// GitHub owner and repo names are case-insensitive, so a case variation of the
+	// same repository must be rejected too.
+	state := &fakeTemplateState{role: "admin", repos: withSource()}
+	o := newTemplateOpts(t, state, "CS101-Templates/HW1-Starter", true /*force*/, false)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "cs101-templates/hw1-starter")
+	if err == nil || !strings.Contains(err.Error(), "same repository") {
+		t.Fatalf("a case-variant destination == source should be rejected, got %v", err)
+	}
+	if len(state.deleted) != 0 {
+		t.Errorf("the source must never be deleted, deleted = %v", state.deleted)
+	}
+}
+
+func TestTemplateRejectsBareDestinationSameAsSource(t *testing.T) {
+	// A bare <repo> argument is qualified with the configured org before the
+	// comparison, so it must also be caught when --source names the same repo in
+	// that org.
+	state := &fakeTemplateState{role: "admin", repos: withSource()}
+	o := newTemplateOpts(t, state, "cs101-spring26/hw1", true /*force*/, false)
+	state.repos["cs101-spring26/hw1"] = &gh.Repo{Name: "hw1", DefaultBranch: "main", IsTemplate: true}
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "same repository") {
+		t.Fatalf("a bare destination resolving to the source should be rejected, got %v", err)
+	}
+	if len(state.deleted) != 0 {
+		t.Errorf("the source must never be deleted, deleted = %v", state.deleted)
+	}
+}
+
+func TestTemplateDryRunRejectsDestinationSameAsSource(t *testing.T) {
+	state := &fakeTemplateState{role: "admin", repos: withSource()}
+	o := newTemplateOpts(t, state, "cs101-templates/hw1-starter", false, true /*dryRun*/)
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "cs101-templates/hw1-starter")
+	if err == nil || !strings.Contains(err.Error(), "same repository") {
+		t.Fatalf("dry-run with destination == source should still be rejected, got %v", err)
+	}
+}
+
 func TestTemplateSourceRequiresOwner(t *testing.T) {
 	// --source must be a full owner/name; a bare name is rejected so the source org
 	// is always explicit.

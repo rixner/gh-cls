@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/rixner/gh-cls/gh"
@@ -77,6 +78,13 @@ func (o *templateOpts) run(ctx context.Context, out io.Writer, repoArg string) e
 		return fmt.Errorf("--source: %w", err)
 	}
 	source := srcOwner + "/" + srcName
+
+	// The --force delete below must never be able to destroy the source: if dst
+	// and source name the same repository, deleting dst first would destroy the
+	// very thing generation reads from.
+	if strings.EqualFold(dstOwner, srcOwner) && strings.EqualFold(dstName, srcName) {
+		return fmt.Errorf("destination %s is the same repository as --source %s; template would delete the source before rebuilding from it; pass a different repo name (the template is a separate repository generated from the source)", dst, source)
+	}
 
 	if o.dryRun {
 		fmt.Fprintf(out, "DRY RUN: no changes will be made\n\n")
