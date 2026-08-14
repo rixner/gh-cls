@@ -72,6 +72,18 @@ func idempotent(method string) bool {
 	return method != http.MethodPost
 }
 
+// ambiguousFailure reports whether a failure leaves the request's server-side
+// effect unknown. A transport-level error or a 5xx may have been applied before
+// the answer was lost; a rate-limit rejection (429, secondary-limit 403) never
+// reached the resource, and neither did any other definite client error.
+func ambiguousFailure(err error) bool {
+	var he *api.HTTPError
+	if errors.As(err, &he) {
+		return he.StatusCode >= 500
+	}
+	return err != nil
+}
+
 // limitDelay derives a wait from rate-limit headers, preferring an explicit
 // Retry-After, then the X-RateLimit-Reset timestamp, then plain backoff.
 func (p retryPolicy) limitDelay(h http.Header, attempt int) time.Duration {

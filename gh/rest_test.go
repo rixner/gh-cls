@@ -151,6 +151,63 @@ func TestDoDoesNotRetryClientError(t *testing.T) {
 	}
 }
 
+func TestDoTreatsRetriedDeleteNotFoundAsDone(t *testing.T) {
+	// The first DELETE reached the server and committed; its answer was lost. The
+	// retry then finds nothing to delete. Reporting that 404 as a failure aborts a
+	// freeze over an invitation the tool itself removed.
+	f := &fakeRequester{steps: []step{
+		{err: errors.New("connection reset by peer")},
+		{err: httpErr(404, nil)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	if _, err := c.do(context.Background(), "DELETE", "repos/o/hw1-ada/invitations/5", nil, nil); err != nil {
+		t.Fatalf("a retried DELETE that already took effect should succeed, got %v", err)
+	}
+	if f.calls != 2 {
+		t.Errorf("attempts = %d, want 2", f.calls)
+	}
+}
+
+func TestDoKeepsDefiniteDeleteNotFound(t *testing.T) {
+	t.Run("first attempt", func(t *testing.T) {
+		// Nothing preceded this 404, so the resource genuinely was not there.
+		f := &fakeRequester{steps: []step{{err: httpErr(404, nil)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		if _, err := c.do(context.Background(), "DELETE", "repos/o/hw1-ada", nil, nil); err == nil || !notFound(err) {
+			t.Fatalf("want a 404 error, got %v", err)
+		}
+	})
+	t.Run("after a rate-limit rejection", func(t *testing.T) {
+		// A 429 is the server refusing the request outright, so it never reached the
+		// resource: the following 404 is still the definite answer.
+		f := &fakeRequester{steps: []step{
+			{err: httpErr(429, http.Header{"Retry-After": {"0"}})},
+			{err: httpErr(404, nil)},
+		}}
+		var waits int
+		c := newTestClient(f, &waits)
+		if _, err := c.do(context.Background(), "DELETE", "repos/o/hw1-ada", nil, nil); err == nil || !notFound(err) {
+			t.Fatalf("want a 404 error, got %v", err)
+		}
+	})
+	t.Run("other methods", func(t *testing.T) {
+		// Only DELETE has "gone" as its intended end state; a GET's 404 after a
+		// retry is a real answer.
+		f := &fakeRequester{steps: []step{
+			{err: errors.New("connection reset by peer")},
+			{err: httpErr(404, nil)},
+		}}
+		var waits int
+		c := newTestClient(f, &waits)
+		if _, err := c.do(context.Background(), "GET", "repos/o/hw1-ada", nil, nil); err == nil || !notFound(err) {
+			t.Fatalf("want a 404 error, got %v", err)
+		}
+	})
+}
+
 func TestDoSendsJSONBody(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
 	var waits int

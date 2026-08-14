@@ -50,6 +50,9 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 	}
 
 	var lastErr error
+	// retriedAfterAmbiguous records that an earlier attempt failed in a way that
+	// leaves its server-side effect unknown, which changes how a 404 reads.
+	var retriedAfterAmbiguous bool
 	for attempt := 1; attempt <= c.policy.maxAttempts; attempt++ {
 		var r io.Reader
 		if payload != nil {
@@ -57,6 +60,15 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 		}
 		resp, err := c.request(ctx, method, path, r)
 		if err != nil {
+			// A DELETE whose earlier attempt may already have committed answers 404
+			// on the retry because the resource is now gone: that is the operation
+			// having succeeded, not a failure. Reporting it as a hard 404 aborts a
+			// freeze over an invitation the tool itself deleted. A 404 on the first
+			// attempt, or after a rate-limit rejection (which never reached the
+			// resource), still means the resource was genuinely absent.
+			if retriedAfterAmbiguous && method == http.MethodDelete && notFound(err) {
+				return http.Header{}, nil
+			}
 			lastErr = err
 			delay, retry := c.policy.retryDelay(method, err, attempt)
 			if !retry || attempt == c.policy.maxAttempts {
@@ -65,6 +77,7 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 			if werr := c.policy.wait(ctx, delay); werr != nil {
 				return nil, werr
 			}
+			retriedAfterAmbiguous = retriedAfterAmbiguous || ambiguousFailure(err)
 			continue
 		}
 		return resp.Header, decode(resp, out, method, path)
