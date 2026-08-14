@@ -764,7 +764,7 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 				// acting on that inference destroys the work if it is ever wrong.
 				return fmt.Errorf("feedback branch missing on existing repo %s/%s, and building it force-updates the default branch, so it is refused on a repo that already exists. "+
 					"If this repo is left over from an interrupted assign run it holds no student work, since the branch is built before anyone is granted access: confirm no student is a collaborator on it, then `gh repo delete %s/%s` and re-run assign. "+
-					"If it does hold student work, do not delete it: restore the feedback branch from its pull request if the repo once had one, which is the only repair that leaves the rest of the assignment alone. Do not switch the assignment to feedback: issue to work around this, which would put a second artifact on every repo that already has a feedback pull request.",
+					"If it does hold student work, do not delete it: restore the feedback branch from its pull request if the repo once had one, or, if it never had one, give this repo an issue instead by re-running with -f issue and a roster naming only its student.",
 					org, repo, org, repo)
 			}
 			root, err := client.RebaseOntoEmptyRoot(ctx, org, repo, info.DefaultBranch)

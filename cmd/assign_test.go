@@ -894,6 +894,31 @@ func TestAssignKeepsTheArtifactARepoAlreadyHas(t *testing.T) {
 	}
 }
 
+func TestAssignOverrideGivesOneRepoTheOtherArtifact(t *testing.T) {
+	// The recovery the missing-branch message points at. hw1 configures a pull
+	// request, but this repo can never have one: it holds student work and has no
+	// feedback branch, and building one would rewrite its history. -f issue with a
+	// roster naming only that student gives it an issue without touching the
+	// config, which would otherwise have to be edited to say something untrue of
+	// every other repo in the assignment, and edited back afterwards.
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-ada"] = true
+	fake.refs = []string{"hw1-ada:refs/heads/main"} // student work, no feedback branch
+	o := newAssignOpts(t, fake, "identifier,username\nstudent-001,ada\n", "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackIssue)}); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !contains(fake.issues, "hw1-ada") {
+		t.Errorf("the repo should get the issue: %v", fake.issues)
+	}
+	// Nobody else was in the roster, so nobody else was touched.
+	if len(fake.issues) != 1 || len(fake.generated) != 0 {
+		t.Errorf("only the named student's repo should be touched: issues=%v generated=%v", fake.issues, fake.generated)
+	}
+}
+
 func TestAssignExplainsAFeedbackBranchItCannotAdd(t *testing.T) {
 	// The state an assign run leaves if it dies between generating the repo and
 	// creating the feedback branch: the repo exists, its default branch is there,
@@ -914,18 +939,17 @@ func TestAssignExplainsAFeedbackBranchItCannotAdd(t *testing.T) {
 	if !strings.Contains(msg, "FAILED hw1-ada") {
 		t.Fatalf("the repo should be reported as failed:\n%s", msg)
 	}
-	// Both ways out, since the tool cannot tell which repo this is: delete and
-	// re-run when it came from an interrupted run, restore the branch when it
-	// holds student work. Switching the assignment to issues is called out as a
-	// non-answer: it would leave every other repo carrying two artifacts, and the
-	// config describing something other than what exists.
+	// Every way out, since the tool cannot tell which repo this is: delete and
+	// re-run when it came from an interrupted run; restore the branch when it
+	// holds work and once had a pull request; a per-run -f issue for the one
+	// student when it never did.
 	for _, want := range []string{
 		"gh repo delete cs101-spring26/hw1-ada",
 		"before anyone is granted access",
 		"no student is a collaborator on it",
 		"do not delete it",
 		"restore the feedback branch from its pull request",
-		"Do not switch the assignment to feedback: issue",
+		"re-running with -f issue and a roster naming only its student",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the message should contain %q:\n%s", want, msg)
