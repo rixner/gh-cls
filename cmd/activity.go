@@ -318,10 +318,14 @@ func short(sha string) string {
 func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client activityClient, name string, results []repoActivity) error {
 	type pinned struct{ key, repo, sha string }
 	var pins []pinned
-	var noActivity, orphaned []string
+	var noActivity, orphaned, unreadable []string
 
 	for _, r := range results {
 		if r.err != nil {
+			// Kept with its reason rather than merely skipped: a repo whose record is
+			// behind, or that could not be read at all, is the case -p exists to
+			// catch, and it decides below whether a pin file is written at all.
+			unreadable = append(unreadable, fmt.Sprintf("%s: %v", r.key, r.err))
 			continue
 		}
 		var sha string
@@ -364,6 +368,10 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 		sort.Strings(orphaned)
 		fmt.Fprintf(out, "NOT pinned, the commit is no longer retrievable (%d): %s\n", len(orphaned), strings.Join(orphaned, ", "))
 	}
+	if len(unreadable) > 0 {
+		sort.Strings(unreadable)
+		fmt.Fprintf(out, "NOT pinned, the repository could not be read (%d):\n  %s\n", len(unreadable), strings.Join(unreadable, "\n  "))
+	}
 
 	// Force pushes are reported whether or not -f was given, split by side of the
 	// pinned instant because they mean different things. Before it: history was
@@ -382,6 +390,25 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 	}
 
 	if o.out != "" {
+		// The freshness and orphan checks exist to keep a broken pin file away from
+		// collection day, so one repo failing either blocks the whole file. Writing
+		// the rest would hand back an artifact that looks complete: collect takes it
+		// at face value and the missing students show up only as "skipped (no pinned
+		// SHA)", which is indistinguishable from a student who never pushed.
+		if blocked := len(unreadable) + len(orphaned); blocked > 0 {
+			// The way forward differs by what blocked it: a lagging record clears on
+			// its own, an orphaned commit does not.
+			var next []string
+			if len(unreadable) > 0 {
+				next = append(next, "re-run once GitHub's record has caught up")
+			}
+			if len(orphaned) > 0 {
+				next = append(next, "use -f to see the force pushes that removed a commit")
+			}
+			next = append(next, "or write the missing entries by hand")
+			return fmt.Errorf("refusing to write %s: %s could not be pinned (listed above); collect would take no commit at all for them, so %s",
+				o.out, plural(blocked, "repo"), strings.Join(next, ", "))
+		}
 		if len(pins) == 0 {
 			return fmt.Errorf("nothing to pin, so %s was not written", o.out)
 		}
@@ -403,7 +430,8 @@ func (o *activityOpts) reportPin(ctx context.Context, out io.Writer, client acti
 			os.Remove(o.out)
 			return fmt.Errorf("closing %s: %w", o.out, err)
 		}
-		fmt.Fprintf(out, "wrote %s (%s)\n", o.out, plural(len(pins), "entry"))
+		// "pin", not "entry": plural appends a bare "s", which would render "entrys".
+		fmt.Fprintf(out, "wrote %s (%s)\n", o.out, plural(len(pins), "pin"))
 	}
 	if len(orphaned) > 0 {
 		return fmt.Errorf("%d repo(s) could not be pinned because their commit is gone; re-run with -f to see the force pushes that removed it", len(orphaned))

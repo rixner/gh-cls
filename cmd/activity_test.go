@@ -174,6 +174,101 @@ func TestActivityPinRefusesAnOrphanedCommit(t *testing.T) {
 	}
 }
 
+// twoRepos is oneRepo plus a second student whose main branch was pushed once
+// before the deadline. Both are pinnable.
+func twoRepos() *fakeActivityState {
+	s := oneRepo()
+	s.repos = append(s.repos, gh.Repo{Name: "hw1-alan", DefaultBranch: "main"})
+	s.events["hw1-alan"] = []gh.Activity{
+		act(gh.ActivityPush, "main", "111", "222", "alan", at("2026-03-01T12:00:00Z")),
+	}
+	s.tips["hw1-alan"] = "222"
+	return s
+}
+
+func TestActivityPinWritesTheFileWhenEveryRepoPasses(t *testing.T) {
+	fake := twoRepos()
+	o := newActivityOpts(fake)
+	o.pin = true
+	o.until = "2026-03-01T23:59:59Z"
+	o.out = filepath.Join(t.TempDir(), "deadline.yml")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	body, err := os.ReadFile(o.out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ada: ccc", "alan: 222"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("pin file should contain %q:\n%s", want, body)
+		}
+	}
+}
+
+func TestActivityPinRefusesAPartialFile(t *testing.T) {
+	// COLLECT.md promises the freshness and orphan checks "fail the run rather
+	// than handing back an artifact". A file holding only the repos that passed
+	// looks complete: collect takes it at face value, and the students left out
+	// appear only as "skipped (no pinned SHA)", which is what a student who never
+	// pushed looks like too. So one failure blocks the file.
+	cases := map[string]struct {
+		setup func(*fakeActivityState)
+		want  string // the reason the blocked repo is reported with
+		next  string // the way forward, which differs by what blocked it
+	}{
+		"the record is behind on one repo": {
+			func(s *fakeActivityState) { s.tips["hw1-alan"] = "999" },
+			"is behind",
+			"re-run once GitHub's record has caught up",
+		},
+		"one repo's commit was orphaned": {
+			// A lagging record clears on its own; an orphaned commit never does, so
+			// telling the user to retry would send them in a circle.
+			func(s *fakeActivityState) { s.gone["222"] = true },
+			"no longer retrievable",
+			"use -f to see the force pushes",
+		},
+	}
+	for name, tc := range cases {
+		fake := twoRepos()
+		tc.setup(fake)
+		o := newActivityOpts(fake)
+		o.pin = true
+		o.until = "2026-03-01T23:59:59Z"
+		o.out = filepath.Join(t.TempDir(), "deadline.yml")
+
+		var buf bytes.Buffer
+		err := o.run(context.Background(), &buf, "hw1")
+		if err == nil {
+			t.Errorf("%s: the run should fail:\n%s", name, buf.String())
+			continue
+		}
+		if !strings.Contains(err.Error(), "refusing to write "+o.out) {
+			t.Errorf("%s: the error should name the file it refused to write, got %v", name, err)
+		}
+		if !strings.Contains(err.Error(), tc.next) {
+			t.Errorf("%s: the error should offer %q, got %v", name, tc.next, err)
+		}
+		if _, statErr := os.Stat(o.out); statErr == nil {
+			t.Errorf("%s: no pin file should be written when a repo could not be pinned", name)
+		}
+		out := buf.String()
+		// The blocked repo is named with its reason, since the error itself points
+		// back to the report rather than repeating it.
+		if !strings.Contains(out, "alan") || !strings.Contains(out, tc.want) {
+			t.Errorf("%s: the blocking repo and reason should be reported:\n%s", name, out)
+		}
+		// The repos that did pin are still shown, so the run is not a dead end: their
+		// lines can be copied into a hand-written pin file.
+		if !strings.Contains(out, "ada: ccc") {
+			t.Errorf("%s: the repos that did pin should still be printed:\n%s", name, out)
+		}
+	}
+}
+
 func TestActivityPinReportsAnUnpinnableRepo(t *testing.T) {
 	// A student who never pushed before the deadline is named, not silently
 	// omitted, matching how collect reports a student with no repo.

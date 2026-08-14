@@ -144,7 +144,13 @@ for which GitHub documents no retention, completeness or latency guarantee. So
 record has not yet caught up with a branch's current tip, which is how a lagging
 record is caught instead of silently yielding an earlier commit, and it refuses
 to pin any commit that is no longer retrievable. Both fail the run rather than
-handing back an artifact that would break on collection day.
+handing back an artifact that would break on collection day, and one repository
+failing either check blocks the whole file: a pin file missing a student looks
+complete, and `collect` would take no commit at all for them.
+
+A student with no activity in the window is different, and does not block the
+file. There is simply no commit to pin, so they are named in the report, left
+out of the file, and reported by `collect` as `skipped (no pinned SHA)`.
 
 Do not build such a record on the [events
 API](https://docs.github.com/en/rest/activity/events) (`/repos/{owner}/{repo}/events`)
