@@ -134,6 +134,26 @@ func TestLoad(t *testing.T) {
 		}
 	})
 
+	t.Run("an assignment name that is not repo-name-safe is rejected", func(t *testing.T) {
+		// The name is the prefix of every repository the assignment creates. GitHub
+		// rewrites a name it cannot use, so the repositories that appear are not the
+		// ones assign then waits for and grants access to.
+		for _, name := range []string{"hw 1", "hw/1", "hwé"} {
+			_, err := Load(write(t, "org: x\nstaff_team: staff\nassignments:\n  \""+name+"\":\n    type: individual\n"))
+			if err == nil {
+				t.Errorf("assignment %q should be rejected", name)
+				continue
+			}
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("the error should name the assignment, got %v", err)
+			}
+		}
+		// The characters GitHub keeps verbatim are accepted.
+		if _, err := Load(write(t, "org: x\nstaff_team: staff\nassignments:\n  hw1.2_a-b:\n    type: individual\n")); err != nil {
+			t.Errorf("a repo-name-safe assignment name should be accepted, got %v", err)
+		}
+	})
+
 	t.Run("a variant separated by something other than a dash is accepted", func(t *testing.T) {
 		// The documented workaround for paired assignments (an in-class exercise and
 		// its makeup): only "-" starts a repo prefix, so "_" keeps them distinct.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/rixner/gh-cls/gh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,6 +53,12 @@ func Parse(in io.Reader) (*Groups, error) {
 		}
 		if _, dup := g.members[name]; dup {
 			return nil, fmt.Errorf("duplicate group %q", name)
+		}
+		// The group name is the second half of its repository's name
+		// (<assignment>-<group>), so it has to survive into the created repository
+		// unchanged.
+		if !gh.ValidRepoNameChars(name) {
+			return nil, fmt.Errorf("line %d: group %q: the name becomes part of the group's repository name, so it may use only letters, digits, \".\", \"_\", and \"-\"; GitHub rewrites anything else into a repository name the tool cannot find again", root.Content[i].Line, name)
 		}
 		if list.Kind != yaml.SequenceNode {
 			return nil, fmt.Errorf("group %q: value must be a list of identifiers", name)

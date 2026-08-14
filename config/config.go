@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+
+	"github.com/rixner/gh-cls/gh"
 )
 
 // AssignmentType distinguishes the two unit sources: one repo per student, or
@@ -61,6 +63,12 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("missing required \"staff_team\" key; name the staff team's slug:\n\n  staff_team: your-staff-team-slug\n\nThe team may have no members yet; setup creates it and assign grants it access to every repo, so a TA added later inherits access to all existing assignments.")
 	}
 	for name, a := range c.Assignments {
+		// The name is the first half of every repository name the assignment
+		// creates (<name>-<key>), so it has to survive into the created repository
+		// unchanged.
+		if !gh.ValidRepoNameChars(name) {
+			return fmt.Errorf("assignment %q: the name becomes the prefix of every repository it creates, so it may use only letters, digits, \".\", \"_\", and \"-\"; GitHub rewrites anything else into a repository name the tool cannot find again", name)
+		}
 		switch a.Type {
 		case TypeIndividual, TypeGroup:
 		case "":

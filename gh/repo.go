@@ -6,6 +6,27 @@ import (
 	"net/url"
 )
 
+// ValidRepoNameChars reports whether every character of s is one GitHub keeps
+// verbatim in a repository name: letters, digits, ".", "_", and "-". GitHub
+// accepts a create request carrying anything else and silently rewrites it (a
+// space becomes "-", most other punctuation is dropped), so the repository that
+// appears is not the one that was asked for: the tool then polls a name that will
+// never exist, times out, and leaves the rewritten repository behind with no
+// grants and no command able to find it again. Names the tool builds a repository
+// name from are checked against this where they are read, before anything is
+// created. An empty string is not a usable name either.
+func ValidRepoNameChars(s string) bool {
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
+		case r == '.', r == '_', r == '-':
+		default:
+			return false
+		}
+	}
+	return s != ""
+}
+
 // GetRepo fetches a repository, reporting existence via the bool so callers can
 // branch on it without inspecting error strings.
 func (c *restClient) GetRepo(ctx context.Context, owner, name string) (*Repo, bool, error) {

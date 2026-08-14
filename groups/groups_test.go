@@ -52,3 +52,32 @@ func TestParseErrors(t *testing.T) {
 		}
 	}
 }
+
+func TestParseRejectsUnsafeGroupNames(t *testing.T) {
+	// A group name is half of its repository's name. GitHub rewrites a name it
+	// cannot use ("Team Alpha" becomes "proj-Team-Alpha"), so assign waits for a
+	// repository that never appears and the rewritten one is left behind with no
+	// grants, invisible to freeze, feedback, and status.
+	cases := map[string]string{
+		"space":          "Team Alpha",
+		"slash":          "team/alpha",
+		"unicode letter": "équipe",
+		"colon":          "team:alpha",
+	}
+	for what, name := range cases {
+		in := "good-group: [student-001]\n" + name + ": [student-002]\n"
+		_, err := Parse(strings.NewReader(in))
+		if err == nil {
+			t.Errorf("%s: group %q should be rejected", what, name)
+			continue
+		}
+		if !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "line 2") {
+			t.Errorf("%s: the error should name the group and its line, got %v", what, err)
+		}
+	}
+
+	// The characters GitHub keeps verbatim are accepted.
+	if _, err := Parse(strings.NewReader("Team.Alpha_1-2: [student-001]\n")); err != nil {
+		t.Errorf("a repo-name-safe group should be accepted, got %v", err)
+	}
+}
