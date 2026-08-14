@@ -34,8 +34,14 @@ func fakeCollectClient(repos []gh.Repo) *ghtest.Fake {
 type fakeClone struct {
 	sha       string
 	fetchHead string
+	origin    string
 	clean     bool
 	tags      map[string]bool
+}
+
+// originURL is the remote a clone of org/repo carries, as gh writes it.
+func originURL(org, repo string) string {
+	return "https://github.com/" + org + "/" + repo + ".git"
 }
 
 // fakeGit is a concurrency-safe stand-in for the git/gh operations.
@@ -57,9 +63,9 @@ func newFakeGit() *fakeGit {
 	}
 }
 
-// seed registers an existing clone at dir.
-func (f *fakeGit) seed(dir, sha string, clean bool, tags ...string) {
-	c := &fakeClone{sha: sha, clean: clean, tags: map[string]bool{}}
+// seed registers an existing clone at dir, cloned from origin.
+func (f *fakeGit) seed(dir, origin, sha string, clean bool, tags ...string) {
+	c := &fakeClone{sha: sha, origin: origin, clean: clean, tags: map[string]bool{}}
 	for _, t := range tags {
 		c.tags[t] = true
 	}
@@ -72,15 +78,21 @@ func (f *fakeGit) CloneExists(dir string) bool {
 	return f.clones[dir] != nil
 }
 
-func (f *fakeGit) Clone(_ context.Context, _, repo, dir string) error {
+func (f *fakeGit) Clone(_ context.Context, org, repo, dir string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e := f.cloneErr[repo]; e != nil {
 		return e
 	}
-	f.clones[dir] = &fakeClone{sha: "sha-" + repo, clean: true, tags: map[string]bool{}}
+	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), clean: true, tags: map[string]bool{}}
 	f.cloned = append(f.cloned, dir)
 	return nil
+}
+
+func (f *fakeGit) RemoteURL(_ context.Context, dir string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clones[dir].origin, nil
 }
 
 func (f *fakeGit) WorktreeClean(_ context.Context, dir string) (bool, error) {
@@ -228,7 +240,7 @@ func TestCollectDirtySkipped(t *testing.T) {
 	git := newFakeGit()
 	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
 	// ada is an existing clone with local changes and no tag yet.
-	git.seed(filepath.Join(o.out, "ada"), "sha-old", false)
+	git.seed(filepath.Join(o.out, "ada"), originURL("cs101-spring26", "hw1-ada"), "sha-old", false)
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
 		t.Fatal(err)
@@ -246,7 +258,7 @@ func TestCollectNonFFWarns(t *testing.T) {
 	git := newFakeGit()
 	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
 	adaDir := filepath.Join(o.out, "ada")
-	git.seed(adaDir, "sha-old", true) // clean, untagged
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true) // clean, untagged
 	git.forced[adaDir] = true
 	git.remoteTip[adaDir] = "sha-new"
 	var buf bytes.Buffer
@@ -345,6 +357,58 @@ func TestCollectDryRun(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(o.out, "collected.csv")); !errors.Is(err, os.ErrNotExist) {
 		t.Error("dry-run must not write a manifest")
+	}
+}
+
+func TestCollectRejectsClonesOfAnotherRepo(t *testing.T) {
+	// Reusing one --out directory across assignments (COLLECT.md's own example uses
+	// a generic ./submissions) leaves hw0's clones where hw1's belong. Fetching
+	// into them would grade hw0's code and record it in the manifest under hw1's
+	// repo name, with nothing in the output to show it.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	adaDir := filepath.Join(o.out, "ada")
+	git.seed(adaDir, originURL("cs101-spring26", "hw0-ada"), "sha-hw0", true)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "1 repo(s) failed") {
+		t.Fatalf("a clone of the wrong repo should fail that repo, got %v", err)
+	}
+	out := buf.String()
+	for _, want := range []string{"FAILED hw1-ada", "hw0-ada", "cs101-spring26/hw1-ada", "different --out", adaDir} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the failure should mention %q:\n%s", want, out)
+		}
+	}
+	// Never fetched, never tagged: the wrong clone is left exactly as it was.
+	if c := git.clones[adaDir]; c.sha != "sha-hw0" || len(c.tags) != 0 {
+		t.Errorf("the mismatched clone must be left untouched, got %+v", c)
+	}
+	if manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada") != nil {
+		t.Error("a repo that was never collected must not appear in the manifest")
+	}
+}
+
+func TestOriginNames(t *testing.T) {
+	// Every form a git remote takes for the same repository, and the near misses
+	// that must not pass.
+	cases := map[string]bool{
+		"https://github.com/cs101-spring26/hw1-ada.git": true,
+		"https://github.com/cs101-spring26/hw1-ada":     true,
+		"https://github.com/cs101-spring26/hw1-ada/":    true,
+		"git@github.com:cs101-spring26/hw1-ada.git":     true,
+		"ssh://git@github.com/cs101-spring26/hw1-ada":   true,
+		"https://github.com/CS101-Spring26/HW1-Ada.git": true, // GitHub names are case-insensitive
+		"https://github.com/cs101-spring26/hw1-adam":    false,
+		"https://github.com/cs101-spring26/hw0-ada.git": false,
+		"https://github.com/other-org/hw1-ada.git":      false,
+		"": false,
+	}
+	for origin, want := range cases {
+		if got := originNames(origin, "cs101-spring26", "hw1-ada"); got != want {
+			t.Errorf("originNames(%q) = %v, want %v", origin, got, want)
+		}
 	}
 }
 

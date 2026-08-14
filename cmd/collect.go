@@ -37,6 +37,8 @@ type collectClient interface {
 type gitRunner interface {
 	CloneExists(dir string) bool
 	Clone(ctx context.Context, org, repo, dir string) error
+	// RemoteURL returns the URL of the clone's origin remote.
+	RemoteURL(ctx context.Context, dir string) (string, error)
 	WorktreeClean(ctx context.Context, dir string) (bool, error)
 	Head(ctx context.Context, dir string) (string, error)
 	TagExists(ctx context.Context, dir, tag string) (bool, error)
@@ -288,7 +290,21 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string,
 		return o.tagHead(ctx, dir, tag, collectStatusCollected, res)
 	}
 
-	// Existing clone.
+	// Existing clone. It is only this repository's clone if its origin says so:
+	// an --out directory reused across assignments (or renamed by hand) holds a
+	// clone of some other repo, and fetching into it would grade the wrong code
+	// under this repo's name in the manifest.
+	origin, err := o.git.RemoteURL(ctx, dir)
+	if err != nil {
+		res.err = fmt.Errorf("reading the origin of the existing clone %s: %w", dir, err)
+		return res
+	}
+	if !originNames(origin, orgName, it.repo) {
+		res.err = fmt.Errorf("existing clone %s has origin %s, which is not %s/%s; collect into a different --out directory, or remove %s and re-run",
+			dir, origin, orgName, it.repo, dir)
+		return res
+	}
+
 	if has, err := o.git.TagExists(ctx, dir, tag); err != nil {
 		res.err = fmt.Errorf("checking tag on %s: %w", it.repo, err)
 		return res
@@ -320,6 +336,20 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string,
 		return res
 	}
 	return o.tagHead(ctx, dir, tag, collectStatusUpdated, res)
+}
+
+// originNames reports whether a clone's origin URL names org/repo. Remotes are
+// written in several forms for the same repository (https://host/org/repo,
+// git@host:org/repo, ssh://git@host/org/repo, each with or without a trailing
+// ".git" or "/"), and GitHub owner and repository names are case-insensitive, so
+// the comparison is on the normalized owner/name tail rather than the whole URL.
+func originNames(origin, org, repo string) bool {
+	u := strings.TrimSuffix(strings.TrimSpace(origin), "/")
+	u = strings.TrimSuffix(u, ".git")
+	want := org + "/" + repo
+	return strings.EqualFold(u, want) ||
+		strings.HasSuffix(strings.ToLower(u), strings.ToLower("/"+want)) ||
+		strings.HasSuffix(strings.ToLower(u), strings.ToLower(":"+want))
 }
 
 // tagHead reads HEAD, tags it with the collection tag, and records the status.
@@ -482,6 +512,14 @@ func (execGit) run(ctx context.Context, dir string, args ...string) (string, str
 	cmd.Stderr = &errb
 	err := cmd.Run()
 	return out.String(), errb.String(), err
+}
+
+func (g execGit) RemoteURL(ctx context.Context, dir string) (string, error) {
+	out, errb, err := g.run(ctx, dir, "remote", "get-url", "origin")
+	if err != nil {
+		return "", fmt.Errorf("git remote get-url origin: %w: %s", err, strings.TrimSpace(errb))
+	}
+	return strings.TrimSpace(out), nil
 }
 
 func (g execGit) WorktreeClean(ctx context.Context, dir string) (bool, error) {
