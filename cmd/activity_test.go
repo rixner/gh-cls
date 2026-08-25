@@ -700,3 +700,30 @@ func TestActivityAllSummarizesTerminalButWritesEveryChange(t *testing.T) {
 		t.Fatalf("the CSV should hold every change, got %d records", len(recs))
 	}
 }
+
+func TestActivitySkipsATemplateRepository(t *testing.T) {
+	// A template repository in the org can still match the <name>-* prefix (a
+	// leftover, or one an assignment does not name), so activity excludes every
+	// template rather than trusting the config. Its history is the instructor's,
+	// not student work, and a force push there is not a finding.
+	fake := oneRepo()
+	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-template", DefaultBranch: "main", IsTemplate: true})
+	fake.tips["hw1-template"] = "zzz"
+	fake.events["hw1-template"] = []gh.Activity{
+		act(gh.ActivityForcePush, "main", "yyy", "zzz", "rixner", at("2026-03-01T12:00:00Z")),
+	}
+	o := newActivityOpts(fake)
+	o.rewrites = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if strings.Contains(out, "template") {
+		t.Errorf("the template repository must not be reported on:\n%s", out)
+	}
+	if !strings.Contains(out, "0 in 0 of 1 repo examined") {
+		t.Errorf("only the student repo should be examined:\n%s", out)
+	}
+}

@@ -523,3 +523,24 @@ func TestCollectCloneFailureReported(t *testing.T) {
 		t.Errorf("other repos should still be collected:\n%s", buf.String())
 	}
 }
+
+func TestCollectSkipsAConfiguredTemplateWhoseFlagWasCleared(t *testing.T) {
+	// With the template flag cleared, hw1-template would otherwise be cloned as a
+	// submission under the key "template". It is the template hw1's config names,
+	// so collect excludes it without consulting the flag.
+	repos := hw1Repos()
+	repos[3] = gh.Repo{Name: "hw1-template", DefaultBranch: "main"} // IsTemplate cleared
+	git := newFakeGit()
+	o := newCollectOpts(t, git, repos, assignRoster, "", "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if strings.Contains(buf.String(), "template") {
+		t.Errorf("the template repo must not be collected or reported:\n%s", buf.String())
+	}
+	if _, cloned := git.clones[filepath.Join(o.out, "template")]; cloned {
+		t.Error("the template repo must not be cloned as a submission")
+	}
+}

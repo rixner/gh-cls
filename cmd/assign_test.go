@@ -1393,3 +1393,67 @@ func TestAssignDryRun(t *testing.T) {
 		t.Errorf("dry-run plan missing: %s", out)
 	}
 }
+
+func TestAssignRefusesAUnitNamedLikeItsOwnTemplate(t *testing.T) {
+	// A student whose username completes the template's name (hw1 + "-template")
+	// would be "provisioned" the template itself: assign skips a repo that already
+	// exists and still grants access, handing them push on the starter code.
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster+"student-004,template\n", "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{})
+	if err == nil {
+		t.Fatal("a unit that maps to the template repository must abort the run")
+	}
+	t.Log(err)
+	for _, want := range []string{"cs101-spring26/hw1-template", "own template repository"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should name %q:\n%v", want, err)
+		}
+	}
+	if len(fake.collabs) != 0 || len(fake.generated) != 0 {
+		t.Errorf("nothing should be created or granted: created %v, granted %v", fake.generated, fake.collabs)
+	}
+}
+
+func TestAssignRefusesAUnitNamedLikeAnotherAssignmentsTemplate(t *testing.T) {
+	// A template's name is arbitrary, so it can sit in another assignment's
+	// <name>-* namespace: hw1's template here is "project-starter", which collides
+	// with project's group "starter".
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignRoster+"student-004,eve\n", assignGroups+"starter: [student-004]\n")
+	o.g.cfg.Assignments["hw1"] = config.Assignment{Type: config.TypeIndividual, Template: "project-starter"}
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "project", config.Overrides{})
+	if err == nil {
+		t.Fatal("a unit that maps to another assignment's template must abort the run")
+	}
+	t.Log(err)
+	for _, want := range []string{"cs101-spring26/project-starter", `assignment "hw1"'s template`, "rename the group"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the error should name %q:\n%v", want, err)
+		}
+	}
+	if len(fake.collabs) != 0 || len(fake.generated) != 0 {
+		t.Errorf("nothing should be created or granted: created %v, granted %v", fake.generated, fake.collabs)
+	}
+}
+
+func TestAssignAllowsAUnitNamedLikeAnOutOfOrgTemplate(t *testing.T) {
+	// Units are created in the configured org, so a same-named template in another
+	// org is a different repository and cannot be collided with.
+	fake := newFakeAssign("admin")
+	delete(fake.exists, "cs101-spring26/hw1-template")
+	delete(fake.isTemplate, "cs101-spring26/hw1-template")
+	fake.exists["other-org/hw1-template"] = true
+	fake.isTemplate["other-org/hw1-template"] = true
+	o := newAssignOpts(t, fake, assignRoster+"student-004,template\n", "")
+	o.g.cfg.Assignments["hw1"] = config.Assignment{Type: config.TypeIndividual, Template: "other-org/hw1-template"}
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{}); err != nil {
+		t.Fatalf("an out-of-org template cannot collide: %v", err)
+	}
+	if !contains(fake.generated, "hw1-template") {
+		t.Errorf("the student's repo should be created in the org (generated %v)", fake.generated)
+	}
+}

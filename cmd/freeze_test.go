@@ -722,3 +722,23 @@ func (s *fakeFreezeState) dropInvite(repo string, id int64) {
 	}
 	s.invites[repo] = rest
 }
+
+func TestFreezeSkipsAConfiguredTemplateWhoseFlagWasCleared(t *testing.T) {
+	// GitHub's template flag is remote and mutable: cleared in the web UI, the
+	// template is student-repo-shaped to a <name>-* listing, and freeze would
+	// downgrade the instructor's own access to the starter code. hw1-template is
+	// the template hw1's config names, so it is excluded on that alone.
+	fake := freezeFake("admin")
+	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-template"}) // IsTemplate cleared
+	fake.collabs["hw1-template"] = []gh.Collaborator{collab("ada", "push")}
+	o := newFreezeOpts(t, fake, false, false)
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, ch := range fake.changes {
+		if strings.HasPrefix(ch, "hw1-template:") {
+			t.Errorf("freeze must not touch the configured template repo: %v", fake.changes)
+		}
+	}
+}

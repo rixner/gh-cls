@@ -132,6 +132,37 @@ assignments:
     template: lab3-template
 ```
 
+### Templates in the namespace
+
+Naming `hw1`'s template `hw1-template` is natural and supported, even though it
+matches `hw1`'s own `<name>-*` prefix. Every command that lists the namespace
+(`freeze`, `status`, `collect`, `activity`) excludes templates two ways, and
+either alone is enough:
+
+- **By GitHub's *template repository* flag.** This covers any template in the
+  namespace, including a leftover or one no assignment names.
+- **By name, against the templates the config names.** The flag is remote and
+  mutable: cleared in the web UI, a template is student-repo-shaped to a listing,
+  and `freeze` would downgrade its collaborators while `collect` cloned it as a
+  submission. Matching the configured `template` values keeps the exclusion from
+  depending on remote state. A template in another org is in no namespace here and
+  needs neither check.
+
+`audit` consults neither, since it works from the repos the roster and groups say
+should exist. `assign` refuses outright to clone a repo that is not a template
+repository, so a cleared flag stops it with a message rather than silently, and
+`--mark-template` sets the flag again.
+
+One collision the exclusions cannot fix: **a student or group key can complete a
+template's name.** A group named `template` under `hw1` wants the repo
+`hw1-template`, which is the template itself, and `assign` adopts a repo that
+already exists rather than creating one, so that group would be handed push on the
+starter code. `assign` checks this before it creates or grants anything and
+refuses the run, naming the unit and the template. A template's name is arbitrary,
+so the check covers every assignment's template, not just the one being run:
+`assignments.hw1.template: hw2-starter` is a legal thing to write, and it collides
+with a `starter` key under `hw2`.
+
 The **roster** is a local CSV mapping student identifier → GitHub username:
 
 ```csv
@@ -234,8 +265,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `<repo>` is created in the org; `--source` is always `owner/name`.
 - **assign** runs preflight checks (type/inputs; the assignment's template repo
   exists and is a template repository; all-branches single-commit; roster/groups
-  consistency; every roster username is a real GitHub account), then generates
-  each repo from that template concurrently. The
+  consistency; every roster username is a real GitHub account; no student or
+  group would be given a repo that is really a template, see **Templates in the
+  namespace** below), then generates each repo from that template concurrently. The
   template must be a template repository. `--mark-template` opts into marking it.
   Repos are private unless `-p/--public` is given, and only the template's default
   branch is generated unless `-a/--all-branches` copies them all. The template

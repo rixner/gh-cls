@@ -174,6 +174,13 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return fmt.Errorf("assignment %q template: %w", name, err)
 	}
 	tmpl := tmplOwner + "/" + tmplName
+
+	// Preflight 1b: no unit's repository name is a configured template repository.
+	// Purely local, so it aborts before the first remote call, let alone the first
+	// mutation.
+	if err := checkTemplateCollision(o.g.cfg, name, policy.Type, units); err != nil {
+		return err
+	}
 	staffTeam := o.g.staffTeam
 
 	if o.dryRun {
