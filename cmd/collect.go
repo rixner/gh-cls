@@ -139,6 +139,22 @@ const (
 	collectStatusNoSHA     = "skipped (not in the snapshot)"
 )
 
+// collectLine renders one repo's outcome for the progress stream. These are the
+// lines the summary used to print once every clone had finished, which on a full
+// class meant several silent minutes; the wording is unchanged, only when they
+// appear. The statuses carry their own parenthetical reasons and so are too
+// uneven to align, which is why collect asks for no outcome column.
+func collectLine(r collectResult) (outcome, target string) {
+	switch {
+	case r.err != nil:
+		return "FAILED", fmt.Sprintf("%s: %v", r.repo, r.err)
+	case r.status == collectStatusUpdated && r.forced:
+		return r.status, r.repo + " (warning: upstream history was rewritten since the last collect; the prior state keeps its tag)"
+	default:
+		return r.status, r.repo
+	}
+}
+
 func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error {
 	policy, err := o.g.cfg.Resolve(name, config.Overrides{})
 	if err != nil {
@@ -213,9 +229,10 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		return fmt.Errorf("creating %s: %w", o.out, err)
 	}
 
-	results := runConcurrent(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
+	prog := newProgress(out, len(items), 0) // statuses carry their own reasons; see collectLine
+	results := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
 		return o.collectOne(ctx, o.g.org, name, tag, pinned, it)
-	})
+	}, func(r collectResult) { prog.item(collectLine(r)) })
 
 	if err := o.writeManifest(label, results); err != nil {
 		return err
@@ -496,31 +513,23 @@ func reportReconcile(out io.Writer, items []repoItem, missing []string) {
 	}
 }
 
-// reportCollect prints per-repo outcomes and a summary, returning an error if any
-// repository failed.
+// reportCollect summarizes the run, returning an error if any repository failed.
+// Each repo's own line is streamed as it finishes (see collectLine), so this
+// counts rather than re-lists them.
 func reportCollect(out io.Writer, results []collectResult, missing []string) error {
 	var collected, updated, upToDate, skipped, failed int
-	fmt.Fprintln(out)
 	for _, r := range results {
 		switch {
 		case r.err != nil:
 			failed++
-			fmt.Fprintf(out, "  FAILED %s: %v\n", r.repo, r.err)
 		case r.status == collectStatusCollected:
 			collected++
-			fmt.Fprintf(out, "  collected %s\n", r.repo)
 		case r.status == collectStatusUpdated:
 			updated++
-			line := fmt.Sprintf("  updated %s", r.repo)
-			if r.forced {
-				line += " (warning: upstream history was rewritten since the last collect; the prior state keeps its tag)"
-			}
-			fmt.Fprintln(out, line)
 		case r.status == collectStatusUpToDate:
 			upToDate++
 		default: // dirty / no-sha
 			skipped++
-			fmt.Fprintf(out, "  %s %s\n", r.status, r.repo)
 		}
 	}
 	fmt.Fprintf(out, "\n%d collected, %d updated, %d up-to-date, %d skipped, %d failed\n",

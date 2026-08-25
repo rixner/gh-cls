@@ -544,3 +544,34 @@ func TestCollectSkipsAConfiguredTemplateWhoseFlagWasCleared(t *testing.T) {
 		t.Error("the template repo must not be cloned as a submission")
 	}
 }
+
+func TestCollectStreamsEachRepoBeforeTheSummary(t *testing.T) {
+	// Cloning a full class takes minutes. The per-repo lines used to print only
+	// once every clone had finished, so the run looked stuck the whole time; they
+	// are now streamed, numbered, as each repo lands.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+
+	for _, key := range []string{"ada", "alan", "grace"} {
+		if !strings.Contains(out, "collected hw1-"+key) {
+			t.Errorf("missing a line for %s:\n%s", key, out)
+		}
+	}
+	if !strings.Contains(out, "[3/3]") {
+		t.Errorf("lines should be numbered against the total:\n%s", out)
+	}
+	if strings.Index(out, "[1/3]") > strings.Index(out, "3 collected") {
+		t.Errorf("the per-repo lines must precede the summary:\n%s", out)
+	}
+	// The summary counts rather than re-listing, so no repo appears twice.
+	if n := strings.Count(out, "hw1-ada"); n != 1 {
+		t.Errorf("hw1-ada should appear once, got %d:\n%s", n, out)
+	}
+}

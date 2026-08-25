@@ -3,6 +3,7 @@ package cmd
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"text/tabwriter"
 )
 
@@ -65,4 +66,50 @@ func printManualSteps(w io.Writer, steps []string) {
 // (they exist only in the web UI) and that are the instructor's to apply or not.
 func printOptionalHardening(w io.Writer, steps []string) {
 	printSteps(w, "Optional hardening (instructor's discretion; Settings → Member privileges, web UI only):", steps)
+}
+
+// progress prints one numbered line per item as a bulk run finishes it. A full
+// class at -j 1 runs for minutes, and silence that long is indistinguishable
+// from a run that is stuck; it also leaves no record of how far a run got if it
+// has to be interrupted.
+//
+// The number counts items finished, not position in the roster: results arrive
+// in completion order, which at any concurrency above 1 is not input order.
+// outcome may be empty for a command whose per-item result has no one-word
+// summary, leaving a line that just names what finished.
+type progress struct {
+	out     io.Writer
+	total   int
+	width   int
+	outcome int
+	n       int
+}
+
+// newProgress prepares the printer. outcomeWidth is the length of the longest
+// outcome the caller will report, which keeps the target column straight; pass 0
+// for a caller that reports no outcomes.
+func newProgress(out io.Writer, total, outcomeWidth int) *progress {
+	return &progress{out: out, total: total, width: len(strconv.Itoa(total)), outcome: outcomeWidth}
+}
+
+// item reports one finished item. runConcurrentProgress serializes the calls, so
+// this needs no locking. Outcomes are kept to one short word: the detail behind a
+// failure or a qualified status belongs in the end-of-run report, where every one
+// of them is listed together.
+func (p *progress) item(outcome, target string) {
+	p.n++
+	if outcome == "" {
+		fmt.Fprintf(p.out, "  [%*d/%d] %s\n", p.width, p.n, p.total, target)
+		return
+	}
+	fmt.Fprintf(p.out, "  [%*d/%d] %-*s %s\n", p.width, p.n, p.total, p.outcome, outcome, target)
+}
+
+// failedOr returns "FAILED" when err is set, so every command's progress line
+// agrees on how a failure looks.
+func failedOr(err error, outcome string) string {
+	if err != nil {
+		return "FAILED"
+	}
+	return outcome
 }

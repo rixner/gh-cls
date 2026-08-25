@@ -459,3 +459,34 @@ func TestFeedbackRequiresOwner(t *testing.T) {
 		t.Error("nothing should be posted when the owner check fails")
 	}
 }
+
+func TestFeedbackStreamsEachPostBeforeTheSummary(t *testing.T) {
+	// Posting to a full class is one API round trip per student, so the run used
+	// to sit silent and then print every repo at once. Each post now reports as it
+	// lands, and the summary counts rather than re-listing them.
+	fake := newFakeFeedback("admin", "hw1-ada", "hw1-alan", "hw1-grace")
+	files := map[string]string{"ada.md": "nice work ada", "alan.md": "see me", "grace.txt": "well done"}
+	o, _ := newFeedbackOpts(t, fake, files, assignRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+
+	if !strings.Contains(out, "[3/3]") {
+		t.Errorf("posts should be numbered against the total:\n%s", out)
+	}
+	if !strings.Contains(out, "posted     hw1-ada -> ") {
+		t.Errorf("each post should name its repo and comment URL:\n%s", out)
+	}
+	if strings.Index(out, "[1/3]") > strings.Index(out, "3 posted") {
+		t.Errorf("the per-repo lines must precede the summary:\n%s", out)
+	}
+	// The summary counts rather than re-listing, so the repo is named once (the
+	// second occurrence here is inside its own comment URL).
+	if n := strings.Count(out, "hw1-ada"); n != 2 {
+		t.Errorf("hw1-ada should be listed once, got %d occurrences:\n%s", n, out)
+	}
+}

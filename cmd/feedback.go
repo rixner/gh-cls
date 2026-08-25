@@ -168,8 +168,19 @@ func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) erro
 		return err
 	}
 
-	results := runConcurrent(ctx, o.g.concurrency, matched, func(ctx context.Context, m matchedUnit) feedbackResult {
+	fmt.Fprintf(out, "Commenting on the feedback %s of %d repo(s) in %s\n", artifactNoun(policy.Feedback), len(matched), org)
+	prog := newProgress(out, len(matched), 10) // "up-to-date"
+	results := runConcurrentProgress(ctx, o.g.concurrency, matched, func(ctx context.Context, m matchedUnit) feedbackResult {
 		return o.post(ctx, client, org, name, policy.Feedback, m)
+	}, func(r feedbackResult) {
+		switch {
+		case r.err != nil:
+			prog.item("FAILED", fmt.Sprintf("%s: %v", r.repo, r.err))
+		case r.status == feedbackPosted:
+			prog.item(r.status, r.repo+" -> "+r.url)
+		default:
+			prog.item(r.status, r.repo)
+		}
 	})
 	return reportFeedback(out, results, missing, unmatched)
 }
@@ -344,21 +355,18 @@ func reportArtifactMismatch(out io.Writer, results []feedbackResult) {
 }
 
 // reportFeedback prints per-repo outcomes and a summary, and returns an error if
-// any post failed. Posted and failed repos are listed individually; up-to-date
-// repos (the common case on a re-run) are summarized, not enumerated.
+// any post failed. Each repo's own line is streamed as it finishes, so this
+// counts rather than re-lists them.
 func reportFeedback(out io.Writer, results []feedbackResult, missing, unmatched []string) error {
 	var posted, upToDate, failed int
-	fmt.Fprintln(out)
 	for _, r := range results {
 		switch {
 		case r.err != nil:
 			failed++
-			fmt.Fprintf(out, "  FAILED %s: %v\n", r.repo, r.err)
 		case r.status == feedbackUpToDate:
 			upToDate++
 		default:
 			posted++
-			fmt.Fprintf(out, "  posted %s -> %s\n", r.repo, r.url)
 		}
 	}
 	fmt.Fprintf(out, "\n%d posted, %d up-to-date, %d failed\n", posted, upToDate, failed)

@@ -680,3 +680,38 @@ func lineContaining(t *testing.T, s, sub string) string {
 	t.Fatalf("no line containing %q in:\n%s", sub, s)
 	return ""
 }
+
+func TestStatusDetailStreamsEachRepoBeforeTheSummary(t *testing.T) {
+	// --detail is one round trip per repo, so a whole-course run is a long silence
+	// before the summary and the CSV appear.
+	fake := &fakeStatusClient{
+		members: []string{"ta1"},
+		repos: []gh.Repo{
+			{Name: "hw1-ada", Private: true},
+			{Name: "hw1-bob", Private: true},
+		},
+		collaborators: map[string][]gh.Collaborator{
+			"hw1-ada": {collab("ada", "push")},
+			"hw1-bob": {collab("bob", "pull")},
+		},
+		issueState: map[string]string{"hw1-ada": "open", "hw1-bob": "closed"},
+	}
+	o := newStatusOptsG(feedbackGlobals(), fake)
+	o.out = filepath.Join(t.TempDir(), "detail.csv")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+
+	for _, want := range []string{"Reading 2 repo(s) in cs101-spring26", "[1/2]", "[2/2]", "hw1-ada", "hw1-bob"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "[1/2]") > strings.Index(out, "hw1 (individual)") {
+		t.Errorf("progress must precede the summary:\n%s", out)
+	}
+}

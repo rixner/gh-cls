@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1455,5 +1456,48 @@ func TestAssignAllowsAUnitNamedLikeAnOutOfOrgTemplate(t *testing.T) {
 	}
 	if !contains(fake.generated, "hw1-template") {
 		t.Errorf("the student's repo should be created in the org (generated %v)", fake.generated)
+	}
+}
+
+func TestAssignReportsEachRepoAsItFinishes(t *testing.T) {
+	// A full class at -j 1 runs for minutes. Without a line per repo the run is
+	// silent throughout, which is indistinguishable from being stuck and leaves no
+	// record of how far it got if the instructor interrupts it.
+	var roster strings.Builder
+	roster.WriteString("identifier,username\n")
+	for i := 1; i <= 12; i++ {
+		fmt.Fprintf(&roster, "student-%03d,student%03d\n", i, i)
+	}
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-student003"] = true   // reused, so reported skipped
+	fake.dropGrants = map[string]bool{"student007": true} // its grant evaporates, so it fails
+	o := newAssignOpts(t, fake, roster.String(), "")
+	o.g.concurrency = 1
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{}); err == nil {
+		t.Fatal("the run should report the failed repo")
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+
+	// Numbered against the total, so a run in flight shows how far along it is.
+	for _, want := range []string{
+		"  [ 1/12] created hw1-student001\n",
+		"  [ 3/12] skipped hw1-student003\n",
+		"  [ 7/12] FAILED  hw1-student007\n",
+		"  [12/12] created hw1-student012\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing progress line %q:\n%s", want, out)
+		}
+	}
+	// Progress is only useful if it precedes the summary it is progress toward.
+	if strings.Index(out, "[ 1/12]") > strings.Index(out, "10 created, 1 skipped, 1 failed") {
+		t.Errorf("progress must print before the summary:\n%s", out)
+	}
+	// The summary still carries the detail the per-repo line leaves out.
+	if !strings.Contains(out, "FAILED hw1-student007: push grant to student007") {
+		t.Errorf("the summary should still explain each failure:\n%s", out)
 	}
 }

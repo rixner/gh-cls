@@ -184,8 +184,26 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys [
 	}
 	fmt.Fprintf(out, "%s%s %d repo(s) in %s\n", prefix, verb, len(repos), org)
 
-	results := runConcurrent(ctx, o.g.concurrency, repos, func(ctx context.Context, r gh.Repo) freezeResult {
+	// The per-repo word tracks the run's own mode, so a dry run never reports a
+	// repo as frozen when nothing was touched.
+	acted := "frozen"
+	switch {
+	case o.dryRun && o.undo:
+		acted = "would thaw"
+	case o.dryRun:
+		acted = "would freeze"
+	case o.undo:
+		acted = "thawed"
+	}
+	prog := newProgress(out, len(repos), 12) // "would freeze"
+	results := runConcurrentProgress(ctx, o.g.concurrency, repos, func(ctx context.Context, r gh.Repo) freezeResult {
 		return o.processRepo(ctx, client, org, r.Name)
+	}, func(r freezeResult) {
+		outcome := acted
+		if r.changed+r.invites == 0 {
+			outcome = "no change"
+		}
+		prog.item(failedOr(r.err, outcome), r.repo)
 	})
 	return reportFreeze(out, o.dryRun, o.undo, results)
 }

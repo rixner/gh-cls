@@ -742,3 +742,43 @@ func TestFreezeSkipsAConfiguredTemplateWhoseFlagWasCleared(t *testing.T) {
 		}
 	}
 }
+
+func TestFreezeStreamsEachRepoAsItIsProcessed(t *testing.T) {
+	// freeze runs at a deadline, when the instructor is watching. A repo that had
+	// nothing to downgrade is called out as such rather than reported as frozen.
+	fake := freezeFake("admin")
+	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-kath"}) // no collaborators
+	o := newFreezeOpts(t, fake, false, false)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+	for _, want := range []string{"[1/3]", "frozen       hw1-ada", "no change    hw1-kath"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestFreezeDryRunNeverClaimsARepoWasFrozen(t *testing.T) {
+	// The whole point of --dry-run is that nothing changed, so the per-repo word
+	// has to stay conditional even though the run does the same per-repo reads.
+	fake := freezeFake("admin")
+	o := newFreezeOpts(t, fake, false, true /*dryRun*/)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+	if !strings.Contains(out, "would freeze hw1-ada") {
+		t.Errorf("a dry run should say what it would do:\n%s", out)
+	}
+	if strings.Contains(out, "frozen       hw1-ada") {
+		t.Errorf("a dry run must not report a repo as frozen:\n%s", out)
+	}
+}

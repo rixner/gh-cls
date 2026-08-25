@@ -385,11 +385,13 @@ func (o *statusOpts) runDetail(ctx context.Context, out io.Writer, org string, n
 		recorded = states
 	}
 
-	details := runConcurrent(ctx, o.g.concurrency, items, func(ctx context.Context, w work) repoDetail {
+	fmt.Fprintf(out, "Reading %d repo(s) in %s\n", len(items), org)
+	prog := newProgress(out, len(items), 6) // "FAILED"
+	details := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, w work) repoDetail {
 		d := o.scanRepo(ctx, client, org, w.assignment, w.policy, w.repo)
 		d.recorded = recorded[w.repo.Name]
 		return d
-	})
+	}, func(d repoDetail) { prog.item(failedOr(d.err, ""), d.repo) })
 
 	// Write the per-repo CSV first (it is what the run produces); a failure to
 	// write aborts before printing a summary that promises a file that is not there.
