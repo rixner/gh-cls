@@ -86,12 +86,12 @@ func printOptionalHardening(w io.Writer, steps []string) {
 }
 
 // progress prints one numbered line per item as a bulk run finishes it. A full
-// class at -j 1 runs for minutes, and silence that long is indistinguishable
-// from a run that is stuck; it also leaves no record of how far a run got if it
-// has to be interrupted.
+// class runs for minutes at the rates GitHub allows, and silence that long is
+// indistinguishable from a run that is stuck; it also leaves no record of how
+// far a run got if it has to be interrupted.
 //
 // The number counts items finished, not position in the roster: results arrive
-// in completion order, which at any concurrency above 1 is not input order.
+// in completion order, which with more than one worker is not input order.
 // outcome may be empty for a command whose per-item result has no one-word
 // summary, leaving a line that just names what finished.
 type progress struct {

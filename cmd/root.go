@@ -15,11 +15,19 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultConcurrency bounds how many items a bulk command works on at once
-// unless -j overrides it. It does not set how fast a run writes: the client
-// paces mutating requests run-wide, so this bounds the reads and the waiting,
-// which is most of what a worker spends its time on.
-const defaultConcurrency = 8
+// workers bounds how many items a bulk command has in progress at once.
+//
+// It is not a rate and not a flag. Every operation GitHub limits is paced where
+// it is performed: reads and writes in the client, clones in collect. So this
+// decides only how much work queues behind those rates, and no value of it can
+// make a run go faster than they allow or slower than they require. A knob that
+// looks like a rate control but is not is worse than no knob, which is why there
+// is no longer one.
+//
+// What it does bound is requests in flight, since a worker has at most one
+// outstanding at a time. Eight is far under the hundred concurrent requests
+// GitHub allows, and more than enough to keep every pacer saturated.
+const workers = 8
 
 // version may be stamped at build time with
 //
@@ -68,14 +76,16 @@ func resolveVersion() string {
 }
 
 // globalOpts holds the course config, loaded once by the root before any
-// subcommand runs, plus the shared --concurrency flag. The org and staff team
-// are read from the config (never overridden on the command line), so every
-// subcommand sees the same configured semester. configPath is the -c flag.
+// subcommand runs. The org and staff team are read from the config (never
+// overridden on the command line), so every subcommand sees the same configured
+// semester. configPath is the -c flag.
 type globalOpts struct {
-	configPath  string
-	cfg         *config.Config
-	org         string
-	staffTeam   string
+	configPath string
+	cfg        *config.Config
+	org        string
+	staffTeam  string
+	// concurrency is how many items a bulk command runs at once, from the workers
+	// constant. Tests set it to one where they assert on ordering.
 	concurrency int
 	// notices is the command's output, safe to write from any goroutine. The
 	// client reports rate-limit pauses to it while workers are printing progress.
@@ -165,7 +175,7 @@ func textOnly(cmd *cobra.Command) bool {
 
 // NewRootCmd builds the root `gh cls` command with all subcommands attached.
 func NewRootCmd() *cobra.Command {
-	g := &globalOpts{}
+	g := &globalOpts{concurrency: workers}
 
 	root := &cobra.Command{
 		Use:   "cls",
@@ -205,7 +215,6 @@ The org and staff team come from a user-authored config file, located with
 
 	pf := root.PersistentFlags()
 	pf.StringVarP(&g.configPath, "config", "c", "", "path to the course config file (or set $GH_CLS_CONFIG)")
-	pf.IntVarP(&g.concurrency, "concurrency", "j", defaultConcurrency, "max items worked on at once (writes are paced run-wide regardless)")
 	pf.StringVar(&g.logPath, "log-requests", "", "append a JSON line per GitHub API request to this file, for diagnosing rate limits")
 
 	root.AddCommand(

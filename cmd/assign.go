@@ -262,8 +262,8 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return reportPlan(out, plans)
 	}
 
-	// A full class at -j 1 takes minutes, and each repo is several round trips, so
-	// report every one as it lands. Silence for that long is indistinguishable
+	// A full class takes minutes at the rate the writes are paced, and each repo
+	// is several round trips, so report every one as it lands. Silence for that long is indistinguishable
 	// from a hung run, and the instructor cannot tell how far a run got if they
 	// have to interrupt it.
 	prog := newProgress(out, len(units), 7) // "created", "skipped", "FAILED"

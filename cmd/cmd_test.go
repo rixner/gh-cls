@@ -52,7 +52,7 @@ func subcommand(t *testing.T, name string) *cobra.Command {
 // they come from the config file (see TestOrgIsConfigOnly).
 func TestPersistentFlagMatrix(t *testing.T) {
 	pf := NewRootCmd().PersistentFlags()
-	for short, long := range map[string]string{"c": "config", "j": "concurrency"} {
+	for short, long := range map[string]string{"c": "config"} {
 		f := pf.ShorthandLookup(short)
 		if f == nil {
 			t.Fatalf("persistent shorthand -%s not defined", short)
@@ -238,13 +238,16 @@ func TestResolveVersionPrefersStamp(t *testing.T) {
 	}
 }
 
-func TestConcurrencyDefault(t *testing.T) {
-	j, err := NewRootCmd().PersistentFlags().GetInt("concurrency")
-	if err != nil {
-		t.Fatal(err)
+func TestConcurrencyIsNotAFlag(t *testing.T) {
+	// How much runs at once is not the instructor's to set. Every limit GitHub
+	// enforces is paced where the operation happens, so a knob here would change
+	// no rate while looking like it did, and a run that hits a limit is not one
+	// to be fixed by turning it down.
+	if f := NewRootCmd().PersistentFlags().Lookup("concurrency"); f != nil {
+		t.Error("--concurrency is back; the rates are paced where the operations are performed")
 	}
-	if j != defaultConcurrency {
-		t.Errorf("default concurrency = %d, want %d", j, defaultConcurrency)
+	if _, err := execute("assign", "hw1", "-j", "2"); err == nil {
+		t.Error("-j should no longer be accepted")
 	}
 }
 

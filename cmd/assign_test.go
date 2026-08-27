@@ -1460,7 +1460,7 @@ func TestAssignAllowsAUnitNamedLikeAnOutOfOrgTemplate(t *testing.T) {
 }
 
 func TestAssignReportsEachRepoAsItFinishes(t *testing.T) {
-	// A full class at -j 1 runs for minutes. Without a line per repo the run is
+	// A full class runs for minutes. Without a line per repo the run is
 	// silent throughout, which is indistinguishable from being stuck and leaves no
 	// record of how far it got if the instructor interrupts it.
 	var roster strings.Builder

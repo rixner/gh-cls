@@ -186,7 +186,7 @@ format as the roster, listing the staff team's GitHub usernames.
 Every command reads the org and staff team from the config (`-c/--config` or
 `$GH_CLS_CONFIG`); neither is a command-line flag. Every mutating command
 requires you to be an organization **owner** and accepts `-n/--dry-run`.
-Persistent flags: `-c/--config`, `-j/--concurrency`, `--log-requests`. The examples below assume
+Persistent flags: `-c/--config`, `--log-requests`. The examples below assume
 `export GH_CLS_CONFIG=gh-cls.yml` (otherwise add `-c gh-cls.yml` to each).
 
 ```sh
