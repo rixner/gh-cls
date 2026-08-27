@@ -487,6 +487,13 @@ endpoint) and on content creation (80 requests per minute). The rate is enforced
 where the request is made, so it holds however much of the run is happening at
 once.
 
+`collect`'s clones are paced separately, because git operations are not governed
+by the API's limits and nothing GitHub publishes covers cloning a class of
+repositories back to back. They run one at a time, three seconds apart, which is
+a spacing a full class has been observed to complete reliably at rather than a
+measured threshold, so it is deliberately conservative: a 70-repository
+collection takes around three and a half minutes.
+
 When GitHub does refuse a request, the whole run pauses and then continues,
 rather than failing the repository that was refused. That covers the primary
 limit, the secondary one ("You have exceeded a secondary rate limit"), and the

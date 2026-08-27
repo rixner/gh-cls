@@ -119,8 +119,8 @@ a late push succeeds, they watch it land, and they learn only when grades come
 back that it was not the commit you graded.
 
 **3. Unpinned collect, no freeze: neither.** Each repo's target is its
-default-branch tip as of the moment collect reaches that repo, and collect works
-through repos concurrently (`-j`), so the cut is smeared across the run. The
+default-branch tip as of the moment collect reaches that repo, and collect paces
+itself through the class, so the cut is smeared across the run. The
 student gets no signal either: their push succeeds whether or not it was
 collected, and whether it counted comes down to the order collect walked the
 class. That is the smear of (1) with the silence of (2).

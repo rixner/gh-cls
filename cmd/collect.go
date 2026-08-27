@@ -73,7 +73,7 @@ func newCollectCmd(g *globalOpts) *cobra.Command {
 		g:         g,
 		now:       time.Now,
 		newClient: func(context.Context) (collectClient, error) { return g.client() },
-		git:       execGit{},
+		git:       newPacedGit(execGit{}, cloneSpacing),
 	}
 	cmd := &cobra.Command{
 		Use:   "collect <name>",
