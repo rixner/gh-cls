@@ -56,7 +56,7 @@ type feedbackOpts struct {
 func newFeedbackCmd(g *globalOpts) *cobra.Command {
 	o := &feedbackOpts{
 		g:         g,
-		newClient: func(context.Context) (feedbackClient, error) { return gh.New() },
+		newClient: func(context.Context) (feedbackClient, error) { return g.client() },
 	}
 	cmd := &cobra.Command{
 		Use:   "feedback <name>",

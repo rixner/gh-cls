@@ -4,8 +4,25 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"sync"
 	"text/tabwriter"
 )
+
+// syncWriter serializes writes to a command's output. A bulk run has more than
+// one goroutine that prints: the worker reporting a finished repository, and the
+// client reporting a rate-limit pause from whichever request ran into it. Their
+// lines would otherwise interleave, and on an output that is not a file the
+// concurrent writes are a race outright.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
 
 // actionStatus classifies the outcome of one idempotent action.
 type actionStatus int

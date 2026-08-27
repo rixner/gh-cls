@@ -6,9 +6,11 @@ package cmd
 import (
 	"context"
 	"fmt"
+	"io"
 	"runtime/debug"
 
 	"github.com/rixner/gh-cls/config"
+	"github.com/rixner/gh-cls/gh"
 	"github.com/spf13/cobra"
 )
 
@@ -74,6 +76,16 @@ type globalOpts struct {
 	org         string
 	staffTeam   string
 	concurrency int
+	// notices is the command's output, safe to write from any goroutine. The
+	// client reports rate-limit pauses to it while workers are printing progress.
+	notices io.Writer
+}
+
+// client builds the GitHub client a subcommand runs on. Every command goes
+// through here so that what the client is told about the run (where to report a
+// pause, whether to log its requests) is decided in one place.
+func (g *globalOpts) client() (gh.Client, error) {
+	return gh.New(gh.WithPauseNotice(g.notices))
 }
 
 // load resolves the config path (-c flag or $GH_CLS_CONFIG), reads the config
@@ -136,6 +148,11 @@ The org and staff team come from a user-authored config file, located with
 			if textOnly(cmd) {
 				return nil
 			}
+			// Everything a command prints goes through one lock from here on, so
+			// progress lines and the client's rate-limit notices cannot collide.
+			out := &syncWriter{w: cmd.OutOrStdout()}
+			cmd.SetOut(out)
+			g.notices = out
 			return g.load()
 		},
 	}

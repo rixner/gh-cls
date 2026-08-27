@@ -72,7 +72,7 @@ func newCollectCmd(g *globalOpts) *cobra.Command {
 	o := &collectOpts{
 		g:         g,
 		now:       time.Now,
-		newClient: func(context.Context) (collectClient, error) { return gh.New() },
+		newClient: func(context.Context) (collectClient, error) { return g.client() },
 		git:       execGit{},
 	}
 	cmd := &cobra.Command{

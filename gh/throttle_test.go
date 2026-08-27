@@ -187,3 +187,24 @@ func TestMutatingClassifiesMethods(t *testing.T) {
 		}
 	}
 }
+
+func TestGateReportsAFreshPauseOnce(t *testing.T) {
+	// Several workers refused at once are one pause, not several: the run says it
+	// is waiting a single time, then says so again only if it is refused after
+	// resuming.
+	now := time.Unix(1_000_000, 0)
+	var reported []time.Duration
+	g := gate{notify: func(d time.Duration) { reported = append(reported, d) }}
+
+	g.block(now, time.Minute)
+	g.block(now.Add(time.Second), time.Minute)
+	g.block(now.Add(2*time.Second), time.Minute)
+	if len(reported) != 1 || reported[0] != time.Minute {
+		t.Errorf("reported %v, want one 1m pause", reported)
+	}
+
+	g.block(now.Add(5*time.Minute), 2*time.Minute)
+	if len(reported) != 2 || reported[1] != 2*time.Minute {
+		t.Errorf("reported %v, want a second pause once the first had ended", reported)
+	}
+}

@@ -77,7 +77,7 @@ type auditOpts struct {
 func newAuditCmd(g *globalOpts) *cobra.Command {
 	o := &auditOpts{
 		g:         g,
-		newClient: func(context.Context) (auditClient, error) { return gh.New() },
+		newClient: func(context.Context) (auditClient, error) { return g.client() },
 	}
 	cmd := &cobra.Command{
 		Use:   "audit <name>",

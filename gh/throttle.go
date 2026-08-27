@@ -34,18 +34,28 @@ const writeSpacing = 750 * time.Millisecond
 //
 // The zero value is an open gate.
 type gate struct {
-	mu    sync.Mutex
-	until time.Time
+	mu     sync.Mutex
+	until  time.Time
+	notify func(time.Duration)
 }
 
 // block records that GitHub is refusing requests for at least d from now. An
 // existing, later pause is kept: two workers refused at once must not let the
 // second one's shorter estimate cut the first one's wait short.
+//
+// Only a pause that starts one reports itself, so a run that is refused several
+// times over while already waiting says so once rather than once per refused
+// request. The report happens under the lock, which keeps concurrent pauses from
+// interleaving mid-line with each other.
 func (g *gate) block(now time.Time, d time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	fresh := !g.until.After(now)
 	if u := now.Add(d); u.After(g.until) {
 		g.until = u
+	}
+	if fresh && g.notify != nil {
+		g.notify(g.until.Sub(now))
 	}
 }
 

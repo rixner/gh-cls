@@ -34,7 +34,7 @@ type freezeOpts struct {
 func newFreezeCmd(g *globalOpts) *cobra.Command {
 	o := &freezeOpts{
 		g:         g,
-		newClient: func(context.Context) (freezeClient, error) { return gh.New() },
+		newClient: func(context.Context) (freezeClient, error) { return g.client() },
 	}
 	cmd := &cobra.Command{
 		Use:   "freeze <name> [key...]",

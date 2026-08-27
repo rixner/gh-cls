@@ -42,7 +42,7 @@ func newActivityCmd(g *globalOpts) *cobra.Command {
 	o := &activityOpts{
 		g:         g,
 		now:       time.Now,
-		newClient: func(context.Context) (activityClient, error) { return gh.New() },
+		newClient: func(context.Context) (activityClient, error) { return g.client() },
 	}
 	cmd := &cobra.Command{
 		Use:   "activity <name>",

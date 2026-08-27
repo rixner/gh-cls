@@ -418,3 +418,34 @@ func TestDoPacesWritesButNotReads(t *testing.T) {
 		t.Errorf("three writes took %v, want 1.5s", got)
 	}
 }
+
+func TestPauseNoticeReadsAsAWait(t *testing.T) {
+	f := &fakeRequester{steps: []step{
+		{err: httpErr(429, http.Header{"Retry-After": {"60"}})},
+		{resp: okResp(`{"name":"hw1-s01"}`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	var out strings.Builder
+	WithPauseNotice(&out)(c)
+
+	if _, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("line as the instructor sees it:\n%s", out.String())
+	if out.String() != "  GitHub is rate limiting this run; waiting 1m0s before continuing\n" {
+		t.Errorf("got %q", out.String())
+	}
+}
+
+func TestPauseNoticeIsOptional(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	WithPauseNotice(nil)(c)
+	c.limits.block(c.policy.now(), time.Second)
+
+	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
+		t.Fatalf("a client with nowhere to report a pause must still pause: %v", err)
+	}
+}

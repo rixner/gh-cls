@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
@@ -30,15 +31,36 @@ type restClient struct {
 	pace    pacer
 }
 
+// Option configures a Client at construction.
+type Option func(*restClient)
+
+// WithPauseNotice reports each rate-limit pause to w as it begins. A run that
+// goes silent for a minute while it waits out a limit is indistinguishable from
+// a hung one, and the pauses are long enough to matter. A nil writer reports
+// nothing.
+func WithPauseNotice(w io.Writer) Option {
+	return func(c *restClient) {
+		if w == nil {
+			return
+		}
+		c.limits.notify = func(d time.Duration) {
+			fmt.Fprintf(w, "  GitHub is rate limiting this run; waiting %s before continuing\n", d.Round(time.Second))
+		}
+	}
+}
+
 // New builds a Client over the user's existing gh authentication and host
 // configuration (GH_TOKEN / GH_HOST are honored by go-gh).
-func New() (Client, error) {
+func New(opts ...Option) (Client, error) {
 	rc, err := api.DefaultRESTClient()
 	if err != nil {
 		return nil, fmt.Errorf("creating GitHub client: %w", err)
 	}
 	c := &restClient{request: rc.RequestWithContext, policy: defaultPolicy()}
 	c.pace.spacing = writeSpacing
+	for _, opt := range opts {
+		opt(c)
+	}
 	return c, nil
 }
 

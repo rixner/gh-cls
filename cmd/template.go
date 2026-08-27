@@ -35,7 +35,7 @@ type templateOpts struct {
 func newTemplateCmd(g *globalOpts) *cobra.Command {
 	o := &templateOpts{
 		g:         g,
-		newClient: func(context.Context) (templateClient, error) { return gh.New() },
+		newClient: func(context.Context) (templateClient, error) { return g.client() },
 		sleep:     time.Sleep,
 	}
 	cmd := &cobra.Command{

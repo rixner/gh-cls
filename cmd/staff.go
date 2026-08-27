@@ -33,7 +33,7 @@ type staffOpts struct {
 func newStaffCmd(g *globalOpts) *cobra.Command {
 	o := &staffOpts{
 		g:         g,
-		newClient: func(context.Context) (staffClient, error) { return gh.New() },
+		newClient: func(context.Context) (staffClient, error) { return g.client() },
 	}
 	cmd := &cobra.Command{
 		Use:   "staff",

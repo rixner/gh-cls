@@ -33,7 +33,7 @@ type setupOpts struct {
 func newSetupCmd(g *globalOpts) *cobra.Command {
 	o := &setupOpts{
 		g:         g,
-		newClient: func(context.Context) (setupClient, error) { return gh.New() },
+		newClient: func(context.Context) (setupClient, error) { return g.client() },
 	}
 	cmd := &cobra.Command{
 		Use:   "setup",

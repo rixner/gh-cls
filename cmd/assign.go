@@ -67,7 +67,7 @@ type assignOpts struct {
 func newAssignCmd(g *globalOpts) *cobra.Command {
 	o := &assignOpts{
 		g:         g,
-		newClient: func(context.Context) (assignClient, error) { return gh.New() },
+		newClient: func(context.Context) (assignClient, error) { return g.client() },
 		sleep:     time.Sleep,
 	}
 	cmd := &cobra.Command{

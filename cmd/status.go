@@ -46,7 +46,7 @@ func newStatusCmd(g *globalOpts) *cobra.Command {
 	o := &statusOpts{
 		g:         g,
 		now:       time.Now,
-		newClient: func(context.Context) (statusClient, error) { return gh.New() },
+		newClient: func(context.Context) (statusClient, error) { return g.client() },
 	}
 	cmd := &cobra.Command{
 		Use:   "status [name]",
