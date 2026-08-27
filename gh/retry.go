@@ -44,9 +44,7 @@ func (p retryPolicy) retryDelay(method string, err error, attempt int) (time.Dur
 	var he *api.HTTPError
 	if errors.As(err, &he) {
 		switch {
-		case he.StatusCode == http.StatusTooManyRequests:
-			return p.limitDelay(he.Headers, attempt), true
-		case he.StatusCode == http.StatusForbidden && rateLimited(he.Headers):
+		case rateLimitRejection(err):
 			return p.limitDelay(he.Headers, attempt), true
 		case he.StatusCode >= 500:
 			return backoff(attempt), idempotent(method)
@@ -60,6 +58,27 @@ func (p retryPolicy) retryDelay(method string, err error, attempt int) (time.Dur
 		return backoff(attempt), idempotent(method)
 	}
 	return 0, false
+}
+
+// rateLimitRejection reports whether err is GitHub refusing a request because a
+// limit is in force, rather than anything wrong with the request itself. Two
+// things follow from that, and the retry loop needs both. The request never
+// reached the resource, so retrying it cannot duplicate work even for a POST.
+// And the limit belongs to the run rather than to this one request, so every
+// other request in flight is about to be refused too and must wait as well
+// (see gate).
+func rateLimitRejection(err error) bool {
+	var he *api.HTTPError
+	if !errors.As(err, &he) {
+		return false
+	}
+	switch {
+	case he.StatusCode == http.StatusTooManyRequests:
+		return true
+	case he.StatusCode == http.StatusForbidden && rateLimited(he.Headers):
+		return true
+	}
+	return false
 }
 
 // idempotent reports whether a method is safe to retry after an ambiguous failure

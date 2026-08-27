@@ -50,14 +50,18 @@ func okResp(body string) *http.Response {
 }
 
 // newTestClient builds a restClient whose retries never actually sleep and
-// records how many waits occurred.
+// records how many waits occurred. Waiting still advances the clock, exactly as
+// sleeping would: the rate-limit gate re-reads the time after each wait to see
+// whether the pause is over, so a clock frozen at the moment the limit was
+// recorded would hold every request forever.
 func newTestClient(f *fakeRequester, waits *int) *restClient {
+	now := time.Unix(0, 0)
 	return &restClient{
 		request: f.fn,
 		policy: retryPolicy{
 			maxAttempts: defaultMaxAttempts,
-			wait:        func(context.Context, time.Duration) error { *waits++; return nil },
-			now:         func() time.Time { return time.Unix(0, 0) },
+			wait:        func(_ context.Context, d time.Duration) error { *waits++; now = now.Add(d); return nil },
+			now:         func() time.Time { return now },
 		},
 	}
 }
@@ -85,7 +89,9 @@ func TestDoDecodesAndReturnsHeaders(t *testing.T) {
 
 func TestDoRetriesThenSucceeds(t *testing.T) {
 	f := &fakeRequester{steps: []step{
-		{err: httpErr(429, http.Header{"Retry-After": {"0"}})},
+		// A non-zero Retry-After, so there is a wait to count: a zero-length pause
+		// is skipped outright rather than slept through.
+		{err: httpErr(429, http.Header{"Retry-After": {"1"}})},
 		{resp: okResp(`{"name":"hw1"}`)},
 	}}
 	var waits int
@@ -257,5 +263,86 @@ func TestDoStopsOnContextCancelDuringWait(t *testing.T) {
 	}
 	if f.calls != 1 {
 		t.Errorf("should stop after the first attempt's wait is cancelled, calls=%d", f.calls)
+	}
+}
+
+func TestDoWaitsOutALimitAnotherRequestHit(t *testing.T) {
+	// The request itself is fine and would succeed immediately. It waits anyway,
+	// because the run is rate-limited: this is the whole point of holding the
+	// limit on the shared client instead of inside one request's retry loop.
+	f := &fakeRequester{steps: []step{{resp: okResp(`{"name":"hw1"}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	start := c.policy.now()
+	c.limits.block(start, 30*time.Second)
+
+	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if waits != 1 {
+		t.Errorf("waits = %d, want the request to wait out the run's pause once", waits)
+	}
+	if f.calls != 1 {
+		t.Errorf("calls = %d, want the request issued once, after the pause", f.calls)
+	}
+	if got := c.policy.now().Sub(start); got != 30*time.Second {
+		t.Errorf("issued %v after the limit, want 30s", got)
+	}
+}
+
+func TestDoPublishesARateLimitToTheWholeRun(t *testing.T) {
+	// A rate-limited request must record the pause where every other request will
+	// see it, not just sleep on its own.
+	f := &fakeRequester{steps: []step{
+		{err: httpErr(429, http.Header{"Retry-After": {"60"}})},
+		{resp: okResp(`{"name":"hw1"}`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	start := c.policy.now()
+
+	if _, err := c.do(context.Background(), "POST", "repos/o/t/generate", map[string]any{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if d := c.limits.hold(start); d != 60*time.Second {
+		t.Errorf("gate hold at the moment of the limit = %v, want the 60s Retry-After", d)
+	}
+}
+
+func TestDoDoesNotPublishAnOrdinaryFailure(t *testing.T) {
+	// A 5xx or a dropped connection is this request's problem. Pausing the whole
+	// run for it would stall every other repo over one flaky call.
+	f := &fakeRequester{steps: []step{{err: httpErr(503, nil)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	start := c.policy.now()
+
+	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err == nil {
+		t.Fatal("want the 503 to be returned after its retries")
+	}
+	if d := c.limits.hold(start); d > 0 {
+		t.Errorf("a 5xx must not pause the run, got a %v hold", d)
+	}
+}
+
+func TestGateWaitCostsNoAttempt(t *testing.T) {
+	// Waiting for someone else's limit is not an attempt. A request held at the
+	// gate must still get its full retry budget once the run resumes, or a run
+	// that pauses would fail requests that never got to try.
+	steps := make([]step, defaultMaxAttempts)
+	for i := range steps[:defaultMaxAttempts-1] {
+		steps[i] = step{err: httpErr(503, nil)}
+	}
+	steps[defaultMaxAttempts-1] = step{resp: okResp(`{"name":"hw1"}`)}
+	f := &fakeRequester{steps: steps}
+	var waits int
+	c := newTestClient(f, &waits)
+	c.limits.block(c.policy.now(), time.Minute)
+
+	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
+		t.Fatalf("the request should still have all %d attempts after the pause: %v", defaultMaxAttempts, err)
+	}
+	if f.calls != defaultMaxAttempts {
+		t.Errorf("calls = %d, want %d", f.calls, defaultMaxAttempts)
 	}
 }

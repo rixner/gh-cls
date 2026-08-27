@@ -20,10 +20,13 @@ import (
 // surface and makes it injectable in tests.
 type requestFunc func(ctx context.Context, method, path string, body io.Reader) (*http.Response, error)
 
-// restClient is the go-gh-backed implementation of Client.
+// restClient is the go-gh-backed implementation of Client. One is built per
+// command run and shared by every worker, which is what lets the rate-limit gate
+// pause the whole run rather than one request at a time.
 type restClient struct {
 	request requestFunc
 	policy  retryPolicy
+	limits  gate
 }
 
 // New builds a Client over the user's existing gh authentication and host
@@ -54,6 +57,13 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 	// leaves its server-side effect unknown, which changes how a 404 reads.
 	var retriedAfterAmbiguous bool
 	for attempt := 1; attempt <= c.policy.maxAttempts; attempt++ {
+		// Wait out a limit another request has already run into. Waiting here
+		// costs no attempt: only a request that was issued and refused consumes
+		// one, so a request held at the gate while its siblings back off still has
+		// its full budget when the run resumes.
+		if err := c.limits.await(ctx, c.policy.wait, c.policy.now); err != nil {
+			return nil, err
+		}
 		var r io.Reader
 		if payload != nil {
 			r = bytes.NewReader(payload)
@@ -74,7 +84,13 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 			if !retry || attempt == c.policy.maxAttempts {
 				return nil, err
 			}
-			if werr := c.policy.wait(ctx, delay); werr != nil {
+			// A rate limit is the run's problem, not this request's: publish it so
+			// every worker waits, and let the gate at the top of the loop do the
+			// waiting. Anything else (a 5xx, a dropped connection) is local to this
+			// request, so only it backs off.
+			if rateLimitRejection(err) {
+				c.limits.block(c.policy.now(), delay)
+			} else if werr := c.policy.wait(ctx, delay); werr != nil {
 				return nil, werr
 			}
 			retriedAfterAmbiguous = retriedAfterAmbiguous || ambiguousFailure(err)
