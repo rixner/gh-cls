@@ -186,7 +186,7 @@ format as the roster, listing the staff team's GitHub usernames.
 Every command reads the org and staff team from the config (`-c/--config` or
 `$GH_CLS_CONFIG`); neither is a command-line flag. Every mutating command
 requires you to be an organization **owner** and accepts `-n/--dry-run`.
-Persistent flags: `-c/--config`, `-j/--concurrency`. The examples below assume
+Persistent flags: `-c/--config`, `-j/--concurrency`, `--log-requests`. The examples below assume
 `export GH_CLS_CONFIG=gh-cls.yml` (otherwise add `-c gh-cls.yml` to each).
 
 ```sh
@@ -497,6 +497,14 @@ that was refused.
 
 If a run stays limited through every retry it fails naming the request that was
 refused; re-running is safe, since every command skips what already exists.
+
+`--log-requests <file>` appends one JSON line per API call: the time, the method
+and path, the attempt, the status, how long the request took, how long the run
+held it back, and any rate-limit headers the response carried. GitHub does not
+document what the 422 counts or where its threshold is, so a log of a real run
+is how to find out; it also shows whether a slow run was waiting on GitHub or on
+the run's own pacing. The file is appended to, never truncated, and it records
+nothing that a repository name does not already say.
 
 ## Before a real run
 

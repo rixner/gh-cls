@@ -427,7 +427,7 @@ func TestPauseNoticeReadsAsAWait(t *testing.T) {
 	var waits int
 	c := newTestClient(f, &waits)
 	var out strings.Builder
-	WithPauseNotice(&out)(c)
+	WithNotices(&out)(c)
 
 	if _, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil); err != nil {
 		t.Fatal(err)
@@ -442,7 +442,7 @@ func TestPauseNoticeIsOptional(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
 	var waits int
 	c := newTestClient(f, &waits)
-	WithPauseNotice(nil)(c)
+	WithNotices(nil)(c)
 	c.limits.block(c.policy.now(), time.Second)
 
 	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {

@@ -247,3 +247,62 @@ func TestConcurrencyDefault(t *testing.T) {
 		t.Errorf("default concurrency = %d, want %d", j, defaultConcurrency)
 	}
 }
+
+func TestRequestLogAppendsAcrossRuns(t *testing.T) {
+	// Two runs pointed at one path must accumulate. Truncating would destroy the
+	// log of the run the instructor is comparing against, which on a diagnostic
+	// run is the whole artifact.
+	path := filepath.Join(t.TempDir(), "requests.jsonl")
+	g := &globalOpts{logPath: path}
+
+	for _, line := range []string{"first run\n", "second run\n"} {
+		if err := g.openRequestLog(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.logFile.WriteString(line); err != nil {
+			t.Fatal(err)
+		}
+		if err := g.closeRequestLog(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "first run\nsecond run\n" {
+		t.Errorf("log holds %q, want both runs", b)
+	}
+}
+
+func TestRequestLogUnwritablePathFailsBeforeTheRun(t *testing.T) {
+	// The log opens in the root's pre-run, before the command touches GitHub, so
+	// a path that cannot be written costs nothing but the message.
+	g := &globalOpts{logPath: filepath.Join(t.TempDir(), "no-such-dir", "requests.jsonl")}
+
+	err := g.openRequestLog()
+	if err == nil {
+		t.Fatal("want an error for a path that cannot be opened")
+	}
+	t.Logf("message as the instructor sees it:\n  error: %v", err)
+	if !strings.Contains(err.Error(), "--log-requests") {
+		t.Errorf("the message should name the flag to fix, got: %v", err)
+	}
+	if g.logFile != nil {
+		t.Error("a failed open must leave no file behind")
+	}
+}
+
+func TestNoRequestLogUnlessAsked(t *testing.T) {
+	g := &globalOpts{}
+	if err := g.openRequestLog(); err != nil {
+		t.Fatal(err)
+	}
+	if g.logFile != nil {
+		t.Error("no log should be opened without --log-requests")
+	}
+	if err := g.closeRequestLog(); err != nil {
+		t.Errorf("closing a log that was never opened: %v", err)
+	}
+}

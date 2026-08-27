@@ -29,23 +29,36 @@ type restClient struct {
 	policy  retryPolicy
 	limits  gate
 	pace    pacer
+	notices io.Writer
+	log     *requestLog
 }
 
 // Option configures a Client at construction.
 type Option func(*restClient)
 
-// WithPauseNotice reports each rate-limit pause to w as it begins. A run that
-// goes silent for a minute while it waits out a limit is indistinguishable from
-// a hung one, and the pauses are long enough to matter. A nil writer reports
-// nothing.
-func WithPauseNotice(w io.Writer) Option {
+// WithNotices gives the client somewhere to report what the instructor needs to
+// see while a run is in progress: a rate-limit pause as it begins, since a run
+// that goes silent for a minute is otherwise indistinguishable from a hung one,
+// and a request log that had to be abandoned. A nil writer reports nothing.
+func WithNotices(w io.Writer) Option {
 	return func(c *restClient) {
 		if w == nil {
 			return
 		}
+		c.notices = w
 		c.limits.notify = func(d time.Duration) {
 			fmt.Fprintf(w, "  GitHub is rate limiting this run; waiting %s before continuing\n", d.Round(time.Second))
 		}
+	}
+}
+
+// WithRequestLog records every API request as a JSON line on w.
+func WithRequestLog(w io.Writer) Option {
+	return func(c *restClient) {
+		if w == nil {
+			return
+		}
+		c.log = &requestLog{w: w}
 	}
 }
 
@@ -82,6 +95,7 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 	// leaves its server-side effect unknown, which changes how a 404 reads.
 	var retriedAfterAmbiguous bool
 	for attempt := 1; attempt <= c.policy.maxAttempts; attempt++ {
+		held := c.policy.now()
 		if err := c.throttle(ctx, method); err != nil {
 			return nil, err
 		}
@@ -89,7 +103,9 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 		if payload != nil {
 			r = bytes.NewReader(payload)
 		}
+		start := c.policy.now()
 		resp, err := c.request(ctx, method, path, r)
+		c.record(method, path, attempt, held, start, resp, err)
 		if err != nil {
 			// A DELETE whose earlier attempt may already have committed answers 404
 			// on the retry because the resource is now gone: that is the operation
@@ -123,6 +139,64 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 		return resp.Header, decode(resp, out, method, path)
 	}
 	return nil, lastErr
+}
+
+// record writes one line of the request log, if one is being kept: one attempt,
+// what it was answered with, how long it took, and how long the run's own limits
+// held it back before it went. A log that cannot be written is reported once,
+// where a rate-limit pause is reported, and then abandoned: it is a diagnostic,
+// and failing an assign run partway through a class because its log file broke
+// would cost far more than the log is worth.
+func (c *restClient) record(method, path string, attempt int, held, start time.Time, resp *http.Response, err error) {
+	if c.log == nil {
+		return
+	}
+	e := logEntry{
+		Time:    start.UTC().Format("2006-01-02T15:04:05.000Z07:00"),
+		Method:  method,
+		Path:    path,
+		Attempt: attempt,
+		Millis:  c.policy.now().Sub(start).Milliseconds(),
+		HeldMs:  start.Sub(held).Milliseconds(),
+		Status:  status(resp, err),
+		Limits:  limitSnapshot(headers(resp, err)),
+		Error:   message(err),
+	}
+	if logErr := c.log.record(e); logErr != nil && c.notices != nil {
+		fmt.Fprintf(c.notices, "  request log abandoned: %v\n", logErr)
+	}
+}
+
+// status, headers and message read what a request returned, from the response
+// on success and from the error on failure: go-gh hands back one or the other,
+// never both.
+func status(resp *http.Response, err error) int {
+	if resp != nil {
+		return resp.StatusCode
+	}
+	var he *api.HTTPError
+	if errors.As(err, &he) {
+		return he.StatusCode
+	}
+	return 0
+}
+
+func headers(resp *http.Response, err error) http.Header {
+	if resp != nil {
+		return resp.Header
+	}
+	var he *api.HTTPError
+	if errors.As(err, &he) {
+		return he.Headers
+	}
+	return nil
+}
+
+func message(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // throttle holds a request until the run's limits allow it to go: first any
