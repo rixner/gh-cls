@@ -387,3 +387,34 @@ func TestDoExplainsAnExhaustedContentLimit(t *testing.T) {
 		t.Errorf("the message should point at the hourly limit, got: %v", err)
 	}
 }
+
+func TestDoPacesWritesButNotReads(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	c.pace.spacing = 750 * time.Millisecond
+	start := c.policy.now()
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if waits != 0 {
+		t.Errorf("reads waited %d times; only writes are paced", waits)
+	}
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// The first write goes at once and the next two wait their turn, so the run
+	// has advanced by two spacings, not three.
+	if waits != 2 {
+		t.Errorf("writes waited %d times, want 2", waits)
+	}
+	if got := c.policy.now().Sub(start); got != 1500*time.Millisecond {
+		t.Errorf("three writes took %v, want 1.5s", got)
+	}
+}

@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// defaultConcurrency bounds parallel GitHub operations unless -j overrides it.
+// defaultConcurrency bounds how many items a bulk command works on at once
+// unless -j overrides it. It does not set how fast a run writes: the client
+// paces mutating requests run-wide, so this bounds the reads and the waiting,
+// which is most of what a worker spends its time on.
 const defaultConcurrency = 8
 
 // version may be stamped at build time with
@@ -139,7 +142,7 @@ The org and staff team come from a user-authored config file, located with
 
 	pf := root.PersistentFlags()
 	pf.StringVarP(&g.configPath, "config", "c", "", "path to the course config file (or set $GH_CLS_CONFIG)")
-	pf.IntVarP(&g.concurrency, "concurrency", "j", defaultConcurrency, "max concurrent GitHub operations")
+	pf.IntVarP(&g.concurrency, "concurrency", "j", defaultConcurrency, "max items worked on at once (writes are paced run-wide regardless)")
 
 	root.AddCommand(
 		newSetupCmd(g),

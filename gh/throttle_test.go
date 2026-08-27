@@ -135,3 +135,55 @@ func TestGateAwaitStopsOnContextCancel(t *testing.T) {
 		t.Errorf("await = %v, want context.Canceled", err)
 	}
 }
+
+func TestPacerSpacesWritesInOrderOfArrival(t *testing.T) {
+	// Three workers reaching the pacer at the same instant must be spread out,
+	// each behind the last, rather than all waiting the same interval and then
+	// writing together, which is the burst the spacing exists to prevent.
+	now := time.Unix(1_000_000, 0)
+	p := pacer{spacing: 750 * time.Millisecond}
+
+	want := []time.Duration{0, 750 * time.Millisecond, 1500 * time.Millisecond}
+	for i, w := range want {
+		if got := p.reserve(now); got != w {
+			t.Errorf("reservation %d = %v, want %v", i+1, got, w)
+		}
+	}
+}
+
+func TestPacerDoesNotDelayAnIdleRun(t *testing.T) {
+	// A run whose writes are already further apart than the spacing pays nothing:
+	// the pacer is a ceiling on the rate, not a delay on every write.
+	now := time.Unix(1_000_000, 0)
+	p := pacer{spacing: 750 * time.Millisecond}
+
+	if d := p.reserve(now); d != 0 {
+		t.Errorf("first write waited %v, want none", d)
+	}
+	if d := p.reserve(now.Add(2 * time.Second)); d != 0 {
+		t.Errorf("a write two seconds later waited %v, want none", d)
+	}
+}
+
+func TestPacerZeroValuePacesNothing(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	var p pacer
+	for i := 0; i < 3; i++ {
+		if d := p.reserve(now); d != 0 {
+			t.Errorf("reservation %d = %v, want no pacing from the zero value", i+1, d)
+		}
+	}
+}
+
+func TestMutatingClassifiesMethods(t *testing.T) {
+	for _, m := range []string{"GET", "HEAD"} {
+		if mutating(m) {
+			t.Errorf("%s is a read and must not be paced", m)
+		}
+	}
+	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		if !mutating(m) {
+			t.Errorf("%s is a write and must be paced", m)
+		}
+	}
+}

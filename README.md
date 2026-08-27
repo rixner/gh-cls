@@ -478,13 +478,25 @@ Student activity is not a hazard for these commands, with one exception:
 
 ## Rate limits
 
-A bulk command issues many API calls, so GitHub may rate-limit a run. Every
-request waits and retries on both the primary limit and the secondary one
-("You have exceeded a secondary rate limit"), honoring GitHub's own
-`Retry-After` and reset headers, so most limiting never surfaces. If a run does
-exhaust its retries it fails naming the request that was refused; re-running is
-safe, since every command skips what already exists, and lowering
-`-j/--concurrency` makes a repeat less likely.
+A bulk command issues many API calls, so GitHub may rate-limit a run. Two things
+keep that from ending the run early.
+
+Mutating requests are paced run-wide, holding a run under GitHub's documented
+ceilings on writes (900 points per minute to one endpoint) and on content
+creation (80 requests per minute). This is separate from `-j/--concurrency`,
+which bounds how many repositories are worked on at once: how fast the run
+writes is not the instructor's knob to get right.
+
+When GitHub does refuse a request, the whole run pauses and then continues,
+rather than failing the repository that was refused. That covers the primary
+limit, the secondary one ("You have exceeded a secondary rate limit"), and the
+422 that answers a burst of repository generation ("was submitted too quickly"),
+honoring GitHub's own `Retry-After` and reset headers wherever they are sent.
+Since a limit applies to the whole run, every request waits, not just the one
+that was refused.
+
+If a run stays limited through every retry it fails naming the request that was
+refused; re-running is safe, since every command skips what already exists.
 
 ## Before a real run
 

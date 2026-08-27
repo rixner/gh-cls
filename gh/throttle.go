@@ -2,9 +2,26 @@ package gh
 
 import (
 	"context"
+	"net/http"
 	"sync"
 	"time"
 )
+
+// writeSpacing is the minimum interval between mutating requests, run-wide.
+// GitHub's guidance is to write serially and leave a second between mutating
+// requests; the limits behind that advice are no more than 900 points per
+// minute to one endpoint (a write costs five, so 180 of them) and no more than
+// 80 content-creating requests per minute. Provisioning one repository costs
+// about nine writes, six of which create content, so pacing at three writes
+// every two seconds holds a run near 50 content-creating requests per minute:
+// under the documented ceiling with room to spare, and still roughly nine
+// repositories a minute.
+//
+// Pacing here rather than through -j is what makes the two independent. -j
+// bounds how many repositories are worked on at once, which is mostly reads and
+// waiting; this bounds how fast the run writes, which is what the limits are
+// actually about.
+const writeSpacing = 750 * time.Millisecond
 
 // gate is the run-wide pause every request observes. GitHub's rate limits are
 // per token, not per request, so a limit one request runs into is already in
@@ -53,4 +70,42 @@ func (g *gate) await(ctx context.Context, wait func(context.Context, time.Durati
 			return err
 		}
 	}
+}
+
+// pacer spaces mutating requests across the whole run. Its zero value paces
+// nothing, which is what a client built without a spacing wants.
+type pacer struct {
+	mu      sync.Mutex
+	spacing time.Duration
+	next    time.Time
+}
+
+// reserve claims this request's turn and reports how long the caller must wait
+// to take it. Turns are handed out in order of arrival, so concurrent workers
+// queue behind one another instead of all waiting the same interval and then
+// firing together.
+func (p *pacer) reserve(now time.Time) time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.spacing <= 0 {
+		return 0
+	}
+	if p.next.After(now) {
+		d := p.next.Sub(now)
+		p.next = p.next.Add(p.spacing)
+		return d
+	}
+	p.next = now.Add(p.spacing)
+	return 0
+}
+
+// mutating reports whether a method changes state. Reads are governed by limits
+// far looser than the ones writes run into (5,000 requests an hour, one point
+// each), so pacing them would slow the read-heavy commands for nothing.
+func mutating(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return false
+	}
+	return true
 }

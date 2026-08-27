@@ -27,6 +27,7 @@ type restClient struct {
 	request requestFunc
 	policy  retryPolicy
 	limits  gate
+	pace    pacer
 }
 
 // New builds a Client over the user's existing gh authentication and host
@@ -36,7 +37,9 @@ func New() (Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("creating GitHub client: %w", err)
 	}
-	return &restClient{request: rc.RequestWithContext, policy: defaultPolicy()}, nil
+	c := &restClient{request: rc.RequestWithContext, policy: defaultPolicy()}
+	c.pace.spacing = writeSpacing
+	return c, nil
 }
 
 // do issues a request with rate-limit-aware retry. A non-nil body is sent as
@@ -57,11 +60,7 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 	// leaves its server-side effect unknown, which changes how a 404 reads.
 	var retriedAfterAmbiguous bool
 	for attempt := 1; attempt <= c.policy.maxAttempts; attempt++ {
-		// Wait out a limit another request has already run into. Waiting here
-		// costs no attempt: only a request that was issued and refused consumes
-		// one, so a request held at the gate while its siblings back off still has
-		// its full budget when the run resumes.
-		if err := c.limits.await(ctx, c.policy.wait, c.policy.now); err != nil {
+		if err := c.throttle(ctx, method); err != nil {
 			return nil, err
 		}
 		var r io.Reader
@@ -102,6 +101,24 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 		return resp.Header, decode(resp, out, method, path)
 	}
 	return nil, lastErr
+}
+
+// throttle holds a request until the run's limits allow it to go: first any
+// pause GitHub has already put the run in, then, for a mutating request, its
+// turn in the run-wide write spacing. Waiting here costs no attempt, since only
+// a request that was issued and refused consumes one, so a request held while
+// its siblings back off still has its full budget when the run resumes.
+func (c *restClient) throttle(ctx context.Context, method string) error {
+	if err := c.limits.await(ctx, c.policy.wait, c.policy.now); err != nil {
+		return err
+	}
+	if !mutating(method) {
+		return ctx.Err()
+	}
+	if d := c.pace.reserve(c.policy.now()); d > 0 {
+		return c.policy.wait(ctx, d)
+	}
+	return ctx.Err()
 }
 
 // decode reads (and always closes) a successful response body, unmarshaling into
