@@ -487,6 +487,10 @@ who can reach something against the 180 writes a minute an endpoint allows, and
 reads well under their own far looser ceiling. The rate is enforced where the
 request is made, so it holds however much of the run is happening at once.
 
+The client also caps how many requests it has outstanding at once, well under
+the 100 concurrent requests GitHub allows. The rates make that unreachable in
+normal running, so it engages only if responses hang.
+
 The separation matters most for `freeze`, which is made entirely of access
 changes and is a deadline: it runs at the faster rate, rather than being held to
 the rate that governs creating repositories.

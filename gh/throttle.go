@@ -40,6 +40,18 @@ const accessSpacing = 333 * time.Millisecond
 // doing, and costs a hundred-repository audit about twenty seconds.
 const readSpacing = 100 * time.Millisecond
 
+// maxInFlight caps how many requests the run has outstanding at once. GitHub
+// allows no more than 100 concurrent requests across its REST and GraphQL APIs;
+// half of that leaves room for the tool's own accounting being off and still sits
+// far above anything the rates can produce, since requests in flight is only rate
+// times latency (ten reads a second answered in a quarter second is three).
+//
+// So this engages only when responses hang, which is exactly the case the rates
+// cannot cover. It is here rather than in the size of the worker pool because a
+// documented limit should be enforced where the requests are made, not inferred
+// from how much work happens to be running.
+const maxInFlight = 50
+
 // gate is the run-wide pause every request observes. GitHub's rate limits are
 // per token, not per request, so a limit one request runs into is already in
 // force for every other request the run is making: the sibling worker about to

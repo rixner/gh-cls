@@ -17,16 +17,20 @@ import (
 
 // workers bounds how many items a bulk command has in progress at once.
 //
-// It is not a rate and not a flag. Every operation GitHub limits is paced where
-// it is performed: reads and writes in the client, clones in collect. So this
-// decides only how much work queues behind those rates, and no value of it can
-// make a run go faster than they allow or slower than they require. A knob that
-// looks like a rate control but is not is worse than no knob, which is why there
-// is no longer one.
+// It is not a rate and not a flag. Every limit GitHub publishes is enforced where
+// the operation is performed: the client paces reads, content creation and access
+// changes, and caps its own requests in flight; collect paces its clones. So no
+// value here can breach a limit, and a knob that looks like a safety control but
+// is not is worse than no knob.
 //
-// What it does bound is requests in flight, since a worker has at most one
-// outstanding at a time. Eight is far under the hundred concurrent requests
-// GitHub allows, and more than enough to keep every pacer saturated.
+// What the number does decide is bracketed from both sides, which is what makes
+// it a choice rather than an inheritance. The floor is saturation: a worker
+// alternates between its turn at a rate and ungoverned work, mostly the two
+// seconds it waits for a generated repository to become ready, so keeping the
+// content rate busy takes roughly four of them. The ceiling is exposure: an
+// interrupted run leaves at most this many repositories half-provisioned, every
+// one of them repaired by re-running, but a list short enough to read through is
+// worth keeping. Eight clears the floor with margin and keeps that list short.
 const workers = 8
 
 // version may be stamped at build time with

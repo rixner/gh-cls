@@ -5,7 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -524,5 +526,100 @@ func TestEveryWriteIsContentUnlessItSaysOtherwise(t *testing.T) {
 		if got := c.pacerFor(m, contentWrite); got != &c.reads {
 			t.Errorf("%s is a read and must use the read rate", m)
 		}
+	}
+}
+
+// blockingRequester holds every request open until it is released, so a test can
+// see how many the client will run at once.
+type blockingRequester struct {
+	release chan struct{}
+
+	mu       sync.Mutex
+	inFlight int
+	most     int
+}
+
+func (b *blockingRequester) fn(context.Context, string, string, io.Reader) (*http.Response, error) {
+	b.mu.Lock()
+	b.inFlight++
+	if b.inFlight > b.most {
+		b.most = b.inFlight
+	}
+	b.mu.Unlock()
+
+	<-b.release
+
+	b.mu.Lock()
+	b.inFlight--
+	b.mu.Unlock()
+	return okResp(`{}`), nil
+}
+
+func TestInFlightRequestsAreCapped(t *testing.T) {
+	// The cap engages only when responses hang, which is the case the rates cannot
+	// cover: at a fixed rate, requests in flight is rate times latency, so a
+	// latency spike is the one way to pile them up.
+	b := &blockingRequester{release: make(chan struct{})}
+	c := &restClient{
+		request:  b.fn,
+		policy:   retryPolicy{maxAttempts: 1, wait: func(context.Context, time.Duration) error { return nil }, now: func() time.Time { return time.Unix(0, 0) }},
+		inFlight: make(chan struct{}, 3),
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 12; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+
+	// Let them pile up against the cap before releasing any.
+	for {
+		b.mu.Lock()
+		stalled := b.inFlight
+		b.mu.Unlock()
+		if stalled == 3 {
+			break
+		}
+		runtime.Gosched()
+	}
+	close(b.release)
+	wg.Wait()
+
+	if b.most > 3 {
+		t.Errorf("%d requests were in flight at once, want at most 3", b.most)
+	}
+}
+
+func TestInFlightCapReleasesOnContextCancel(t *testing.T) {
+	// A cancelled run must not sit waiting for a slot held by a request that is
+	// itself going nowhere.
+	b := &blockingRequester{release: make(chan struct{})}
+	defer close(b.release)
+	c := &restClient{
+		request:  b.fn,
+		policy:   retryPolicy{maxAttempts: 1, wait: func(context.Context, time.Duration) error { return nil }, now: func() time.Time { return time.Unix(0, 0) }},
+		inFlight: make(chan struct{}, 1),
+	}
+
+	go func() { _, _ = c.do(context.Background(), "GET", "repos/o/hw1", nil, nil) }()
+	for {
+		b.mu.Lock()
+		held := b.inFlight
+		b.mu.Unlock()
+		if held == 1 {
+			break
+		}
+		runtime.Gosched()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := c.do(ctx, "GET", "repos/o/hw1", nil, nil); err != context.Canceled {
+		t.Errorf("got %v, want context.Canceled rather than a wait for a slot", err)
 	}
 }

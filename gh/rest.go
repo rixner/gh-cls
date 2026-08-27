@@ -31,8 +31,11 @@ type restClient struct {
 	reads   pacer
 	content pacer
 	access  pacer
-	notices io.Writer
-	log     *requestLog
+	// inFlight hands out the run's concurrent-request slots. A nil channel caps
+	// nothing, which is what a client built for a test wants.
+	inFlight chan struct{}
+	notices  io.Writer
+	log      *requestLog
 }
 
 // Option configures a Client at construction.
@@ -75,6 +78,7 @@ func New(opts ...Option) (Client, error) {
 	c.reads.spacing = readSpacing
 	c.content.spacing = contentSpacing
 	c.access.spacing = accessSpacing
+	c.inFlight = make(chan struct{}, maxInFlight)
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -132,7 +136,7 @@ func (c *restClient) send(ctx context.Context, kind writeKind, method, path stri
 			r = bytes.NewReader(payload)
 		}
 		start := c.policy.now()
-		resp, err := c.request(ctx, method, path, r)
+		resp, err := c.issue(ctx, method, path, r)
 		c.record(method, path, attempt, held, start, resp, err)
 		if err != nil {
 			// A DELETE whose earlier attempt may already have committed answers 404
@@ -167,6 +171,22 @@ func (c *restClient) send(ctx context.Context, kind writeKind, method, path stri
 		return resp.Header, decode(resp, out, method, path)
 	}
 	return nil, lastErr
+}
+
+// issue sends one request, holding one of the run's in-flight slots for as long
+// as it is outstanding. The slot is taken after the request has waited out the
+// gate and its rate, so a request waiting its turn is not occupying one.
+func (c *restClient) issue(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+	if c.inFlight == nil {
+		return c.request(ctx, method, path, body)
+	}
+	select {
+	case c.inFlight <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	defer func() { <-c.inFlight }()
+	return c.request(ctx, method, path, body)
 }
 
 // pacerFor reports which rate a request queues behind. The three budgets are
