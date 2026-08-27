@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
@@ -18,7 +19,18 @@ const (
 	// hang the tool for minutes; if the limit persists, retries are exhausted
 	// and the caller reports the failure rather than blocking.
 	maxSingleWait = 60 * time.Second
+	// A content-creation rejection carries no Retry-After, so these are the
+	// documented fallback: wait at least a minute, then exponentially longer.
+	// The cap bounds one pause; exhausting the attempts around it takes the run
+	// past twelve minutes of waiting, which is long enough to conclude the limit
+	// is not the per-minute one and stop.
+	contentBackoffBase = 1 * time.Minute
+	maxContentWait     = 5 * time.Minute
 )
+
+// tooQuickly is the message GitHub returns when content is being created faster
+// than it allows.
+const tooQuickly = "was submitted too quickly"
 
 // retryPolicy decides whether and how long to wait before retrying a failed
 // request. The wait and now functions are injectable so tests run without real
@@ -38,12 +50,15 @@ func defaultPolicy() retryPolicy {
 // rate-limit 403) is always retryable: the server rejected the request outright,
 // so retrying cannot duplicate work. A 5xx or transport-level error is ambiguous
 // (the request may already have been applied), so it is retried only for
-// idempotent methods. A definite client error (404, 422, an ordinary 403, ...)
+// idempotent methods. A definite client error (404, an ordinary 403 or 422, ...)
 // is never retried.
 func (p retryPolicy) retryDelay(method string, err error, attempt int) (time.Duration, bool) {
 	var he *api.HTTPError
 	if errors.As(err, &he) {
 		switch {
+		case submittedTooQuickly(he):
+			// No headers to honor on this one, so the delay is ours to choose.
+			return contentBackoff(attempt), true
 		case rateLimitRejection(err):
 			return p.limitDelay(he.Headers, attempt), true
 		case he.StatusCode >= 500:
@@ -77,8 +92,48 @@ func rateLimitRejection(err error) bool {
 		return true
 	case he.StatusCode == http.StatusForbidden && rateLimited(he.Headers):
 		return true
+	case submittedTooQuickly(he):
+		return true
 	}
 	return false
+}
+
+// submittedTooQuickly reports whether err is the 422 GitHub answers when content
+// is being created faster than it allows. It is a rate limit wearing a
+// validation error's clothes: it carries none of the rate-limit headers a 429
+// does, but nothing about the request is wrong either, and re-sending exactly
+// the same request once the limit clears succeeds. The message is what separates
+// it from an ordinary 422 (a bad parameter), which must keep failing fast, so
+// the message is what is matched.
+func submittedTooQuickly(he *api.HTTPError) bool {
+	if he.StatusCode != http.StatusUnprocessableEntity {
+		return false
+	}
+	if strings.Contains(he.Message, tooQuickly) {
+		return true
+	}
+	// go-gh folds every error item into Message, except an item carrying a code
+	// it renders as a canned phrase instead; there, the original text survives
+	// only on the item.
+	for _, e := range he.Errors {
+		if strings.Contains(e.Message, tooQuickly) {
+			return true
+		}
+	}
+	return false
+}
+
+// contentBackoff is the wait after a content-creation rejection, doubling per
+// attempt from one minute.
+func contentBackoff(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	d := contentBackoffBase << (attempt - 1)
+	if d <= 0 || d > maxContentWait {
+		d = maxContentWait
+	}
+	return d
 }
 
 // idempotent reports whether a method is safe to retry after an ambiguous failure

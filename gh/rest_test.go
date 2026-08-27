@@ -346,3 +346,44 @@ func TestGateWaitCostsNoAttempt(t *testing.T) {
 		t.Errorf("calls = %d, want %d", f.calls, defaultMaxAttempts)
 	}
 }
+
+func TestDoRecoversFromAContentLimit(t *testing.T) {
+	// The failure a class-sized assign run hits: generation refused because repos
+	// are being created too fast. The run should pause and finish, not fail the
+	// repo and leave the instructor to re-run.
+	f := &fakeRequester{steps: []step{
+		{err: tooQuicklyErr("Could not clone: was submitted too quickly")},
+		{resp: okResp(`{"name":"hw1-s01"}`)},
+	}}
+	var waits int
+	c := newTestClient(f, &waits)
+	start := c.policy.now()
+
+	if _, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil); err != nil {
+		t.Fatalf("the run should have waited out the limit and continued: %v", err)
+	}
+	if f.calls != 2 {
+		t.Errorf("calls = %d, want the create re-sent once the pause ended", f.calls)
+	}
+	if d := c.limits.hold(start); d != time.Minute {
+		t.Errorf("gate hold = %v, want the whole run paused for 1m", d)
+	}
+}
+
+func TestDoExplainsAnExhaustedContentLimit(t *testing.T) {
+	f := &fakeRequester{steps: []step{{err: tooQuicklyErr("Could not clone: was submitted too quickly")}}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	_, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil)
+	if err == nil {
+		t.Fatal("want an error once every attempt is refused")
+	}
+	t.Logf("message as the instructor sees it:\n  generating hw1-s01: %v", err)
+	if f.calls != defaultMaxAttempts {
+		t.Errorf("calls = %d, want %d", f.calls, defaultMaxAttempts)
+	}
+	if !strings.Contains(err.Error(), "hourly") {
+		t.Errorf("the message should point at the hourly limit, got: %v", err)
+	}
+}

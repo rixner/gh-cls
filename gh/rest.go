@@ -81,8 +81,11 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 			}
 			lastErr = err
 			delay, retry := c.policy.retryDelay(method, err, attempt)
-			if !retry || attempt == c.policy.maxAttempts {
+			if !retry {
 				return nil, err
+			}
+			if attempt == c.policy.maxAttempts {
+				return nil, exhausted(err, c.policy.maxAttempts)
 			}
 			// A rate limit is the run's problem, not this request's: publish it so
 			// every worker waits, and let the gate at the top of the loop do the
@@ -114,6 +117,18 @@ func decode(resp *http.Response, out any, method, path string) error {
 		return fmt.Errorf("decoding %s %s response: %w", method, path, err)
 	}
 	return nil
+}
+
+// exhausted annotates a failure that survived every retry. Only a
+// content-creation rejection is worth explaining: the run waited out GitHub's
+// per-minute limit repeatedly and was still refused, which points at the hourly
+// cap instead, and no further waiting inside this run will clear that.
+func exhausted(err error, attempts int) error {
+	var he *api.HTTPError
+	if errors.As(err, &he) && submittedTooQuickly(he) {
+		return fmt.Errorf("%w; GitHub still refused to create content after %d attempts spread over more than ten minutes, which points at its hourly content-creation limit rather than the per-minute one. Nothing was created; wait for the hour to turn over and re-run, which skips everything that already exists", err, attempts)
+	}
+	return err
 }
 
 // notFound reports whether err is a 404 from the API.

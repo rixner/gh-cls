@@ -116,3 +116,70 @@ func TestWaitCtxCancels(t *testing.T) {
 		t.Error("waitCtx should return the context error when cancelled")
 	}
 }
+
+// tooQuicklyErr builds the 422 GitHub answers when repositories are being
+// generated faster than it allows, in the shape go-gh delivers it.
+func tooQuicklyErr(message string, items ...api.HTTPErrorItem) *api.HTTPError {
+	return &api.HTTPError{StatusCode: 422, Headers: http.Header{}, Message: message, Errors: items}
+}
+
+func TestContentLimit422IsARateLimit(t *testing.T) {
+	now := time.Unix(1_000_000, 0)
+	p := testPolicy(now)
+
+	t.Run("retried on POST, the method that hits it", func(t *testing.T) {
+		// Repository generation is a POST, so the ordinary rule (never retry a
+		// create, it may already have been applied) would refuse this. A rejection
+		// is not ambiguous: nothing was created, so re-sending is safe.
+		err := tooQuicklyErr("Could not clone: was submitted too quickly")
+		d, ok := p.retryDelay(http.MethodPost, err, 1)
+		if !ok {
+			t.Fatal("a content-creation rejection must be retried")
+		}
+		if d != time.Minute {
+			t.Errorf("first delay = %v, want 1m", d)
+		}
+	})
+
+	t.Run("found on an error item when the message omits it", func(t *testing.T) {
+		// go-gh rewrites an item carrying a recognized code into a canned phrase,
+		// which drops the original text from Message; the item still has it.
+		err := tooQuicklyErr("Repository creation failed.", api.HTTPErrorItem{
+			Resource: "Repository",
+			Field:    "repository",
+			Code:     "unprocessable",
+			Message:  "Could not clone: was submitted too quickly",
+		})
+		if _, ok := p.retryDelay(http.MethodPost, err, 1); !ok {
+			t.Error("the rejection must be recognized from the error item too")
+		}
+	})
+
+	t.Run("an ordinary 422 still fails fast", func(t *testing.T) {
+		// The empty-tree 422 the feedback base once hit. A real validation error
+		// is not a rate limit, and retrying it just fails five times slower.
+		if _, ok := p.retryDelay(http.MethodPost, tooQuicklyErr("Invalid tree info"), 1); ok {
+			t.Error("a validation 422 must not be retried")
+		}
+	})
+
+	t.Run("the run waits longer each time it is refused", func(t *testing.T) {
+		// No Retry-After comes with this one, so the documented fallback applies:
+		// at least a minute, then exponentially longer, capped.
+		want := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, maxContentWait, maxContentWait}
+		for i, w := range want {
+			if got := contentBackoff(i + 1); got != w {
+				t.Errorf("attempt %d delay = %v, want %v", i+1, got, w)
+			}
+		}
+	})
+
+	t.Run("pauses the whole run, not just this request", func(t *testing.T) {
+		if !rateLimitRejection(tooQuicklyErr("Could not clone: was submitted too quickly")) {
+			t.Error("a content-creation rejection must pause every request")
+		}
+		if rateLimitRejection(tooQuicklyErr("Invalid tree info")) {
+			t.Error("a validation 422 must not pause the run")
+		}
+	})
+}
