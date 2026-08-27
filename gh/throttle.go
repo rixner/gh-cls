@@ -148,3 +148,38 @@ func mutating(method string) bool {
 	}
 	return true
 }
+
+// ContentPerHour is GitHub's documented hourly ceiling on content-creating
+// requests. Nothing paces to it, because whether it governs repository
+// generation is unproven and obeying it would turn a class provision that
+// completes in twenty minutes into a two-hour one on a guess. A caller that
+// expects to exceed it can say so instead.
+const ContentPerHour = 500
+
+// Cost counts the requests an operation will make, by the budget each draws on.
+// A caller that can say what it is about to do can ask how long the pacing will
+// take before it starts, which is what lets a command state its own duration up
+// front rather than leaving the instructor to discover it mid-run.
+type Cost struct {
+	Reads   int
+	Content int
+	Access  int
+}
+
+// Duration reports how long issuing c takes at the client's rates. The three
+// budgets are independent and drain in parallel, so a run is no faster than the
+// slowest of them.
+//
+// It is a floor. It counts the waiting the rates impose and not the time GitHub
+// takes to answer, nor the poll for a generated repository to become ready, nor
+// any pause a rate limit causes.
+func (c Cost) Duration() time.Duration {
+	d := time.Duration(c.Reads) * readSpacing
+	if w := time.Duration(c.Content) * contentSpacing; w > d {
+		d = w
+	}
+	if w := time.Duration(c.Access) * accessSpacing; w > d {
+		d = w
+	}
+	return d
+}

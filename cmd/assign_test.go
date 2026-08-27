@@ -14,6 +14,7 @@ import (
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 	"github.com/rixner/gh-cls/internal/ghtest"
+	"github.com/rixner/gh-cls/unit"
 )
 
 // assignGlobals is the loaded-config state assign and audit tests run against:
@@ -80,6 +81,20 @@ type fakeAssignClient struct {
 func (f *fakeAssignClient) fake() *ghtest.Fake {
 	fk := &ghtest.Fake{}
 	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return f.role, nil }
+	// The listing behind the run estimate, over the same repos GetRepo reports.
+	fk.ListOrgReposByPrefixFunc = func(_ context.Context, org, prefix string) ([]gh.Repo, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		var repos []gh.Repo
+		for key := range f.exists {
+			owner, name, ok := strings.Cut(key, "/")
+			if !ok || owner != org || !strings.HasPrefix(name, prefix) {
+				continue
+			}
+			repos = append(repos, gh.Repo{Name: name})
+		}
+		return repos, nil
+	}
 	fk.UserExistsFunc = func(_ context.Context, username string) (bool, error) {
 		if f.userErr != nil {
 			return false, f.userErr
@@ -1499,5 +1514,93 @@ func TestAssignReportsEachRepoAsItFinishes(t *testing.T) {
 	// The summary still carries the detail the per-repo line leaves out.
 	if !strings.Contains(out, "FAILED hw1-student007: push grant to student007") {
 		t.Errorf("the summary should still explain each failure:\n%s", out)
+	}
+}
+
+// classUnits builds n individual units, as a roster of n students resolves to.
+func classUnits(n int) []unit.Unit {
+	units := make([]unit.Unit, n)
+	for i := range units {
+		units[i] = unit.Unit{Key: fmt.Sprintf("s%03d", i), Members: []string{fmt.Sprintf("s%03d", i)}}
+	}
+	return units
+}
+
+func TestRunCostSeparatesCreationFromReassertion(t *testing.T) {
+	// The two differ by an order of magnitude in time, which is the whole point of
+	// estimating: a re-run over an existing class creates nothing and is quick,
+	// while provisioning it is bounded by the content rate.
+	units := classUnits(100)
+	policy := config.Policy{Feedback: config.FeedbackPR, BranchProtection: true}
+
+	fresh := runCost(units, map[string]bool{}, "hw1", policy)
+	if fresh.Content != 100*(newRepoContent+prFeedbackContent+rulesetContent) {
+		t.Errorf("a fresh class costs %d content requests, want %d", fresh.Content, 100*7)
+	}
+	if fresh.Access != 100*(unitAccess+1) {
+		t.Errorf("a fresh class costs %d access writes, want %d", fresh.Access, 200)
+	}
+
+	all := map[string]bool{}
+	for _, u := range units {
+		all["hw1-"+u.Key] = true
+	}
+	again := runCost(units, all, "hw1", policy)
+	if again.Content != 0 {
+		t.Errorf("re-asserting an existing class costs %d content requests, want none", again.Content)
+	}
+	if again.Access != fresh.Access {
+		t.Errorf("re-asserting costs %d access writes, want the same %d", again.Access, fresh.Access)
+	}
+	if again.Duration() >= fresh.Duration() {
+		t.Errorf("re-asserting (%v) should be quicker than provisioning (%v)", again.Duration(), fresh.Duration())
+	}
+}
+
+func TestRunCostCountsEveryMemberOfAGroup(t *testing.T) {
+	// A group repo grants each member separately, so a class of groups costs more
+	// access writes than its repo count suggests.
+	units := []unit.Unit{{Key: "g1", Members: []string{"a", "b", "c"}}}
+	c := runCost(units, map[string]bool{}, "proj", config.Policy{})
+	if c.Access != unitAccess+3 {
+		t.Errorf("a three-person group costs %d access writes, want %d", c.Access, unitAccess+3)
+	}
+}
+
+func TestPlanStatesWhatTheRunWillCost(t *testing.T) {
+	var buf bytes.Buffer
+	units := classUnits(183)
+	existing := map[string]bool{}
+	for _, u := range units[:141] {
+		existing["hw1-"+u.Key] = true
+	}
+	policy := config.Policy{Feedback: config.FeedbackPR, BranchProtection: true}
+
+	printPlan(&buf, units, existing, "hw1", "RICE-COMP318-FALL26", "RICE-COMP318-FALL26/hw1-template", policy, false, runCost(units, existing, "hw1", policy))
+	t.Logf("plan as the instructor sees it:\n%s", buf.String())
+
+	for _, want := range []string{"42 repos to create", "141 already there", "at least"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("plan should say %q:\n%s", want, buf.String())
+		}
+	}
+}
+
+func TestPlanWarnsWhenARunMayMeetTheHourlyLimit(t *testing.T) {
+	var buf bytes.Buffer
+	units := classUnits(183)
+	policy := config.Policy{Feedback: config.FeedbackPR, BranchProtection: true}
+	printPlan(&buf, units, map[string]bool{}, "hw1", "org", "org/hw1-template", policy, false, runCost(units, map[string]bool{}, "hw1", policy))
+	t.Logf("plan as the instructor sees it:\n%s", buf.String())
+
+	if !strings.Contains(buf.String(), "may pause") {
+		t.Errorf("a class-sized creation should warn about the hourly limit:\n%s", buf.String())
+	}
+
+	var small bytes.Buffer
+	few := classUnits(10)
+	printPlan(&small, few, map[string]bool{}, "hw1", "org", "org/hw1-template", policy, false, runCost(few, map[string]bool{}, "hw1", policy))
+	if strings.Contains(small.String(), "may pause") {
+		t.Errorf("a ten-repo run is nowhere near the hourly limit:\n%s", small.String())
 	}
 }

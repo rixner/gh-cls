@@ -208,3 +208,20 @@ func TestGateReportsAFreshPauseOnce(t *testing.T) {
 		t.Errorf("reported %v, want a second pause once the first had ended", reported)
 	}
 }
+
+func TestCostTakesTheSlowestBudget(t *testing.T) {
+	// The three rates drain in parallel, so a run is as long as its slowest
+	// budget, not the sum of them. Reporting the sum would tell an instructor a
+	// twenty-minute run takes half an hour.
+	content := Cost{Content: 400, Access: 100, Reads: 100}
+	if got, want := content.Duration(), 300*time.Second; got != want {
+		t.Errorf("content-bound run = %v, want %v", got, want)
+	}
+	access := Cost{Content: 10, Access: 900, Reads: 100}
+	if got, want := access.Duration(), 299700*time.Millisecond; got != want {
+		t.Errorf("access-bound run = %v, want %v", got, want)
+	}
+	if got := (Cost{}).Duration(); got != 0 {
+		t.Errorf("an empty run = %v, want 0", got)
+	}
+}

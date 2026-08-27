@@ -521,6 +521,13 @@ is how to find out; it also shows whether a slow run was waiting on GitHub or on
 the run's own pacing. The file is appended to, never truncated, and it records
 nothing that a repository name does not already say.
 
+Because the rates are known, `assign` says what a run will cost before it
+changes anything: how many repositories it will create against how many it will
+only re-assert, and how long that takes at those rates. A run that would make
+more content-creating requests than GitHub allows in an hour says so too. The
+figure is a floor (it counts the pacing, not GitHub's own response time), and it
+is there so a long run is a decision rather than a surprise.
+
 ## Before a real run
 
 Preview any command with `--dry-run` first. A dry run changes nothing, but it

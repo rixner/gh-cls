@@ -22,6 +22,7 @@ type assignClient interface {
 	UserExists(ctx context.Context, username string) (bool, error)
 	GetTeam(ctx context.Context, org, slug string) (*gh.Team, bool, error)
 	GetRepo(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
+	ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]gh.Repo, error)
 	SetRepoTemplate(ctx context.Context, owner, name string) error
 	ListBranchesWithCommitCount(ctx context.Context, owner, repo string) ([]gh.BranchCount, error)
 	GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRepo, owner, name string, private, includeAllBranches bool) error
@@ -250,7 +251,18 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 		return err
 	}
 
-	printPlan(out, len(units), org, tmpl, policy, markTemplate)
+	// Preflight 7: what this run is about to cost. One listing tells us which
+	// repos already exist, which is the difference between a run that creates a
+	// class and one that only re-asserts its grants, and those differ by an order
+	// of magnitude in time. Stating it before the first mutation is what keeps a
+	// long run from being a surprise partway through a class.
+	existing, err := existingRepos(ctx, client, org, name)
+	if err != nil {
+		return err
+	}
+	cost := runCost(units, existing, name, policy)
+
+	printPlan(out, units, existing, name, org, tmpl, policy, markTemplate, cost)
 
 	if o.dryRun {
 		// Every preflight above has run against the real org, so what remains is the
@@ -336,18 +348,122 @@ func checkGroupConsistency(out io.Writer, report unit.Report, force bool) error 
 // org and template it targeted never appeared in the output: with a config per
 // semester and $GH_CLS_CONFIG able to point at either, this line is the last
 // chance to notice the wrong one.
-func printPlan(out io.Writer, units int, org, tmpl string, policy config.Policy, markTemplate bool) {
+func printPlan(out io.Writer, units []unit.Unit, existing map[string]bool, name, org, tmpl string, policy config.Policy, markTemplate bool, cost gh.Cost) {
 	visibility := "private"
 	if policy.Public {
 		visibility = "public"
 	}
-	fmt.Fprintf(out, "Provisioning %d %s repo(s) in %s from %s\n", units, visibility, org, tmpl)
+	fmt.Fprintf(out, "Provisioning %d %s repo(s) in %s from %s\n", len(units), visibility, org, tmpl)
 	if extras := planExtras(policy); extras != "" {
 		fmt.Fprintf(out, "  with %s\n", extras)
 	}
 	if markTemplate {
 		fmt.Fprintf(out, "  marking %s a template repository first (--mark-template)\n", tmpl)
 	}
+
+	have := countExisting(units, existing, name)
+	switch create := len(units) - have; {
+	case create == 0:
+		fmt.Fprintf(out, "  nothing to create; %s already there, so this re-asserts their access\n", plural(have, "repo"))
+	case have == 0:
+		fmt.Fprintf(out, "  %s to create\n", plural(create, "repo"))
+	default:
+		fmt.Fprintf(out, "  %s to create, %d already there\n", plural(create, "repo"), have)
+	}
+	fmt.Fprintf(out, "  at least %s at the rates GitHub's limits allow\n", roundDuration(cost.Duration()))
+	if cost.Content > gh.ContentPerHour {
+		// Whether this ceiling governs repository generation is unproven, and
+		// nothing paces to it: a run that met it would pause and carry on rather
+		// than fail. An instructor watching a class provision should know it may.
+		fmt.Fprintf(out, "  note: about %d content-creating requests, and GitHub allows %d an hour, so this run may pause\n", cost.Content, gh.ContentPerHour)
+	}
+}
+
+// existingRepos reports which of the assignment's repositories are already in
+// the org, by name. One listing covers the whole assignment.
+func existingRepos(ctx context.Context, client assignClient, org, name string) (map[string]bool, error) {
+	repos, err := client.ListOrgReposByPrefix(ctx, org, name+"-")
+	if err != nil {
+		return nil, fmt.Errorf("listing existing %s-* repositories in %s: %w", name, org, err)
+	}
+	out := make(map[string]bool, len(repos))
+	for _, r := range repos {
+		out[strings.ToLower(r.Name)] = true
+	}
+	return out, nil
+}
+
+func countExisting(units []unit.Unit, existing map[string]bool, name string) int {
+	n := 0
+	for _, u := range units {
+		if existing[strings.ToLower(name+"-"+u.Key)] {
+			n++
+		}
+	}
+	return n
+}
+
+// Per-unit request counts on the common path, from what provision issues when
+// nothing has to be retried. They drive the run estimate only, so they are
+// deliberately a floor: a repo that needs a second poll or a retry costs more.
+const (
+	unitReads  = 3 // the repo check, then the two reads that verify the grants
+	unitAccess = 1 // the staff team grant; every member adds another
+	// A repo being created also waits to become ready and generates itself.
+	newRepoReads   = 2
+	newRepoContent = 1
+	// The feedback artifact, which is most of what creating a repo costs: for a
+	// pull request, two commits, the ref move, the feedback branch and the PR.
+	prFeedbackContent    = 5
+	prFeedbackReads      = 4
+	issueFeedbackContent = 2
+	issueFeedbackReads   = 1
+	// An existing repo is asked which artifact it already carries instead.
+	existingFeedbackReads = 2
+	rulesetContent        = 1
+)
+
+// runCost estimates the requests provisioning these units will make, so the plan
+// can state how long the run takes before it changes anything. It is an estimate
+// by construction (see the counts above); it exists to tell an instructor whether
+// this is a five-minute or a two-hour operation.
+func runCost(units []unit.Unit, existing map[string]bool, name string, policy config.Policy) gh.Cost {
+	var c gh.Cost
+	for _, u := range units {
+		c.Reads += unitReads
+		c.Access += unitAccess + len(u.Members)
+
+		if existing[strings.ToLower(name+"-"+u.Key)] {
+			if policy.Feedback != config.FeedbackNone {
+				c.Reads += existingFeedbackReads
+			}
+			continue
+		}
+		c.Reads += newRepoReads
+		c.Content += newRepoContent
+		switch policy.Feedback {
+		case config.FeedbackPR:
+			c.Content += prFeedbackContent
+			c.Reads += prFeedbackReads
+		case config.FeedbackIssue:
+			c.Content += issueFeedbackContent
+			c.Reads += issueFeedbackReads
+		}
+		if policy.BranchProtection {
+			c.Content += rulesetContent
+		}
+	}
+	return c
+}
+
+// roundDuration renders an estimate at the precision it deserves: whole seconds
+// under a minute, whole minutes above, since the counts behind it are a floor
+// and a figure like "4m37s" would claim an accuracy it does not have.
+func roundDuration(d time.Duration) string {
+	if d < time.Minute {
+		return d.Round(time.Second).String()
+	}
+	return d.Round(time.Minute).String()
 }
 
 // planResult is one unit's dry-run outcome: what a real run would do to its
