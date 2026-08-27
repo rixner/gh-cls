@@ -395,7 +395,7 @@ func TestDoPacesReadsAndWritesSeparately(t *testing.T) {
 	var waits int
 	c := newTestClient(f, &waits)
 	c.reads.spacing = 100 * time.Millisecond
-	c.writes.spacing = 750 * time.Millisecond
+	c.content.spacing = 750 * time.Millisecond
 	start := c.policy.now()
 
 	for i := 0; i < 3; i++ {
@@ -430,7 +430,7 @@ func TestReadsAndWritesDoNotQueueBehindEachOther(t *testing.T) {
 	var waits int
 	c := newTestClient(f, &waits)
 	c.reads.spacing = 100 * time.Millisecond
-	c.writes.spacing = 750 * time.Millisecond
+	c.content.spacing = 750 * time.Millisecond
 	start := c.policy.now()
 
 	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
@@ -472,5 +472,57 @@ func TestPauseNoticeIsOptional(t *testing.T) {
 
 	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
 		t.Fatalf("a client with nowhere to report a pause must still pause: %v", err)
+	}
+}
+
+func TestAccessWritesAreNotPacedAsContent(t *testing.T) {
+	// freeze is made entirely of access writes and is a deadline: pacing it at the
+	// content rate would leave the class writable minutes past the cutoff.
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	c.content.spacing = 750 * time.Millisecond
+	c.access.spacing = 333 * time.Millisecond
+	start := c.policy.now()
+
+	for i := 0; i < 4; i++ {
+		if _, err := c.doAccess(context.Background(), "PUT", "repos/o/hw1/collaborators/s01", map[string]any{}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := c.policy.now().Sub(start); got != 999*time.Millisecond {
+		t.Errorf("four grants took %v, want 999ms at the access rate", got)
+	}
+
+	// And they draw on a separate budget, so a content write behind them does not
+	// inherit their turn, nor they its.
+	start = c.policy.now()
+	if _, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.policy.now().Sub(start); got != 0 {
+		t.Errorf("a create behind four grants waited %v, want none", got)
+	}
+}
+
+func TestEveryWriteIsContentUnlessItSaysOtherwise(t *testing.T) {
+	// The default has to be the tight budget: pacing a create as though it were a
+	// grant is what refuses repositories, while the reverse only costs time.
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	for _, m := range []string{"POST", "PUT", "PATCH", "DELETE"} {
+		if got := c.pacerFor(m, contentWrite); got != &c.content {
+			t.Errorf("%s defaulted off the content rate", m)
+		}
+		if got := c.pacerFor(m, accessWrite); got != &c.access {
+			t.Errorf("%s access write did not use the access rate", m)
+		}
+	}
+	for _, m := range []string{"GET", "HEAD"} {
+		if got := c.pacerFor(m, contentWrite); got != &c.reads {
+			t.Errorf("%s is a read and must use the read rate", m)
+		}
 	}
 }

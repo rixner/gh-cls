@@ -7,20 +7,30 @@ import (
 	"time"
 )
 
-// writeSpacing is the minimum interval between mutating requests, run-wide.
-// GitHub's guidance is to write serially and leave a second between mutating
-// requests; the limits behind that advice are no more than 900 points per
-// minute to one endpoint (a write costs five, so 180 of them) and no more than
-// 80 content-creating requests per minute. Provisioning one repository costs
-// about nine writes, six of which create content, so pacing at three writes
-// every two seconds holds a run near 50 content-creating requests per minute:
+// contentSpacing is the minimum interval between requests that create content:
+// a repository, a commit, a ref, a pull request, an issue. This is the tight
+// budget, and the one that refused a class-sized assign run. GitHub allows 80
+// content-creating requests a minute, and provisioning one repository costs
+// about six of them, so three every two seconds holds a run near 50 a minute:
 // under the documented ceiling with room to spare, and still roughly nine
 // repositories a minute.
 //
 // Pacing the operation, rather than bounding how many repositories are worked on
 // at once, is what makes the guarantee hold: the rate is enforced where the
 // request is made, so no amount of parallelism above it can raise it.
-const writeSpacing = 750 * time.Millisecond
+const contentSpacing = 750 * time.Millisecond
+
+// accessSpacing is the minimum interval between requests that only change who
+// can reach something: a collaborator grant, an invitation, a team's repositories
+// or members. These create no content, so the only limit they run into is the
+// 900 points a minute an endpoint allows, and a write costs five of those: 180 a
+// minute, or one every 333ms.
+//
+// They get their own rate because freeze is made entirely of them and is a
+// deadline. Pacing a freeze as though it were creating content would leave a
+// class of 183 writable for four minutes past the moment it was supposed to
+// close, which is a correctness cost, not a speed one.
+const accessSpacing = 333 * time.Millisecond
 
 // readSpacing is the minimum interval between reads, run-wide. Reads are limited
 // far more loosely than writes (5,000 an hour, and one point each against the

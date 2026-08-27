@@ -29,7 +29,8 @@ type restClient struct {
 	policy  retryPolicy
 	limits  gate
 	reads   pacer
-	writes  pacer
+	content pacer
+	access  pacer
 	notices io.Writer
 	log     *requestLog
 }
@@ -72,17 +73,42 @@ func New(opts ...Option) (Client, error) {
 	}
 	c := &restClient{request: rc.RequestWithContext, policy: defaultPolicy()}
 	c.reads.spacing = readSpacing
-	c.writes.spacing = writeSpacing
+	c.content.spacing = contentSpacing
+	c.access.spacing = accessSpacing
 	for _, opt := range opts {
 		opt(c)
 	}
 	return c, nil
 }
 
-// do issues a request with rate-limit-aware retry. A non-nil body is sent as
-// JSON; a non-nil out receives the decoded successful response. The response
-// headers are returned so callers can read values such as Link.
+// writeKind says which of GitHub's budgets a mutating request draws on, and so
+// which rate it is paced at. Every caller gets the tight one unless it says
+// otherwise, because guessing wrong in that direction only costs time, while
+// guessing wrong the other way is what refuses repositories.
+type writeKind int
+
+const (
+	contentWrite writeKind = iota // creates a repository, commit, ref, PR or issue
+	accessWrite                   // only changes who can reach something
+)
+
+// do issues a request with rate-limit-aware retry, paced as content creation.
+// A non-nil body is sent as JSON; a non-nil out receives the decoded successful
+// response. The response headers are returned so callers can read values such
+// as Link.
 func (c *restClient) do(ctx context.Context, method, path string, body, out any) (http.Header, error) {
+	return c.send(ctx, contentWrite, method, path, body, out)
+}
+
+// doAccess is do for a request that grants, changes or revokes access and
+// creates nothing, so it is paced at the looser rate those endpoints allow.
+// Declaring it at the call site rather than inferring it from the URL keeps the
+// classification where the operation's meaning is known.
+func (c *restClient) doAccess(ctx context.Context, method, path string, body, out any) (http.Header, error) {
+	return c.send(ctx, accessWrite, method, path, body, out)
+}
+
+func (c *restClient) send(ctx context.Context, kind writeKind, method, path string, body, out any) (http.Header, error) {
 	var payload []byte
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -98,7 +124,7 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 	var retriedAfterAmbiguous bool
 	for attempt := 1; attempt <= c.policy.maxAttempts; attempt++ {
 		held := c.policy.now()
-		if err := c.throttle(ctx, method); err != nil {
+		if err := c.throttle(ctx, method, kind); err != nil {
 			return nil, err
 		}
 		var r io.Reader
@@ -141,6 +167,21 @@ func (c *restClient) do(ctx context.Context, method, path string, body, out any)
 		return resp.Header, decode(resp, out, method, path)
 	}
 	return nil, lastErr
+}
+
+// pacerFor reports which rate a request queues behind. The three budgets are
+// separate because GitHub's limits on them differ by more than an order of
+// magnitude, and sharing one rate would mean pacing content far too fast or
+// everything else far too slowly.
+func (c *restClient) pacerFor(method string, kind writeKind) *pacer {
+	switch {
+	case !mutating(method):
+		return &c.reads
+	case kind == accessWrite:
+		return &c.access
+	default:
+		return &c.content
+	}
 }
 
 // record writes one line of the request log, if one is being kept: one attempt,
@@ -210,14 +251,11 @@ func message(err error) string {
 // Waiting here costs no attempt, since only a request that was issued and
 // refused consumes one, so a request held while its siblings back off still has
 // its full budget when the run resumes.
-func (c *restClient) throttle(ctx context.Context, method string) error {
+func (c *restClient) throttle(ctx context.Context, method string, kind writeKind) error {
 	if err := c.limits.await(ctx, c.policy.wait, c.policy.now); err != nil {
 		return err
 	}
-	p := &c.reads
-	if mutating(method) {
-		p = &c.writes
-	}
+	p := c.pacerFor(method, kind)
 	if d := p.reserve(c.policy.now()); d > 0 {
 		return c.policy.wait(ctx, d)
 	}

@@ -481,11 +481,15 @@ Student activity is not a hazard for these commands, with one exception:
 A bulk command issues many API calls, so GitHub may rate-limit a run. Two things
 keep that from ending the run early.
 
-Requests are paced run-wide, reads and writes each at their own rate, holding a
-run under GitHub's documented ceilings on writes (900 points per minute to one
-endpoint) and on content creation (80 requests per minute). The rate is enforced
-where the request is made, so it holds however much of the run is happening at
-once.
+Requests are paced run-wide, each kind at its own rate: creating content (a
+repository, a commit, a pull request) against GitHub's 80 per minute, changing
+who can reach something against the 180 writes a minute an endpoint allows, and
+reads well under their own far looser ceiling. The rate is enforced where the
+request is made, so it holds however much of the run is happening at once.
+
+The separation matters most for `freeze`, which is made entirely of access
+changes and is a deadline: it runs at the faster rate, rather than being held to
+the rate that governs creating repositories.
 
 `collect`'s clones are paced separately, because git operations are not governed
 by the API's limits and nothing GitHub publishes covers cloning a class of

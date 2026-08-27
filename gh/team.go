@@ -40,7 +40,7 @@ func (c *restClient) CreateTeam(ctx context.Context, org, name string) (*Team, e
 func (c *restClient) AddTeamRepo(ctx context.Context, org, teamSlug, owner, repo, permission string) error {
 	path := fmt.Sprintf("orgs/%s/teams/%s/repos/%s/%s",
 		url.PathEscape(org), url.PathEscape(teamSlug), url.PathEscape(owner), url.PathEscape(repo))
-	_, err := c.do(ctx, "PUT", path, map[string]any{"permission": permission}, nil)
+	_, err := c.doAccess(ctx, "PUT", path, map[string]any{"permission": permission}, nil)
 	return err
 }
 
@@ -76,7 +76,7 @@ func (c *restClient) AddTeamMembership(ctx context.Context, org, slug, username 
 	}
 	path := fmt.Sprintf("orgs/%s/teams/%s/memberships/%s",
 		url.PathEscape(org), url.PathEscape(slug), url.PathEscape(username))
-	if _, err := c.do(ctx, "PUT", path, map[string]any{"role": "member"}, &out); err != nil {
+	if _, err := c.doAccess(ctx, "PUT", path, map[string]any{"role": "member"}, &out); err != nil {
 		return "", err
 	}
 	return out.State, nil
@@ -87,6 +87,6 @@ func (c *restClient) AddTeamMembership(ctx context.Context, org, slug, username 
 func (c *restClient) RemoveTeamMembership(ctx context.Context, org, slug, username string) error {
 	path := fmt.Sprintf("orgs/%s/teams/%s/memberships/%s",
 		url.PathEscape(org), url.PathEscape(slug), url.PathEscape(username))
-	_, err := c.do(ctx, "DELETE", path, nil, nil)
+	_, err := c.doAccess(ctx, "DELETE", path, nil, nil)
 	return err
 }

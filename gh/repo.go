@@ -73,6 +73,6 @@ func (c *restClient) GenerateFromTemplate(ctx context.Context, tmplOwner, tmplRe
 // AddCollaborator grants a user the given permission on a repository.
 func (c *restClient) AddCollaborator(ctx context.Context, owner, repo, username, permission string) error {
 	path := fmt.Sprintf("repos/%s/%s/collaborators/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
-	_, err := c.do(ctx, "PUT", path, map[string]any{"permission": permission}, nil)
+	_, err := c.doAccess(ctx, "PUT", path, map[string]any{"permission": permission}, nil)
 	return err
 }

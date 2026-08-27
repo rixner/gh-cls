@@ -118,7 +118,7 @@ func (c *restClient) ListDirectCollaborators(ctx context.Context, owner, repo st
 // which issues a fresh one.
 func (c *restClient) DeleteRepoInvitation(ctx context.Context, owner, repo string, id int64) error {
 	path := fmt.Sprintf("repos/%s/%s/invitations/%d", url.PathEscape(owner), url.PathEscape(repo), id)
-	_, err := c.do(ctx, "DELETE", path, nil, nil)
+	_, err := c.doAccess(ctx, "DELETE", path, nil, nil)
 	return err
 }
 
@@ -132,7 +132,7 @@ func (c *restClient) DeleteRepoInvitation(ctx context.Context, owner, repo strin
 // is governed by the collaborator API instead.
 func (c *restClient) UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) (bool, error) {
 	path := fmt.Sprintf("repos/%s/%s/invitations/%d", url.PathEscape(owner), url.PathEscape(repo), id)
-	if _, err := c.do(ctx, "PATCH", path, map[string]any{"permissions": permission}, nil); err != nil {
+	if _, err := c.doAccess(ctx, "PATCH", path, map[string]any{"permissions": permission}, nil); err != nil {
 		if notFound(err) {
 			return false, nil
 		}
