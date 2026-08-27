@@ -481,11 +481,11 @@ Student activity is not a hazard for these commands, with one exception:
 A bulk command issues many API calls, so GitHub may rate-limit a run. Two things
 keep that from ending the run early.
 
-Mutating requests are paced run-wide, holding a run under GitHub's documented
-ceilings on writes (900 points per minute to one endpoint) and on content
-creation (80 requests per minute). This is separate from `-j/--concurrency`,
-which bounds how many repositories are worked on at once: how fast the run
-writes is not the instructor's knob to get right.
+Requests are paced run-wide, reads and writes each at their own rate, holding a
+run under GitHub's documented ceilings on writes (900 points per minute to one
+endpoint) and on content creation (80 requests per minute). The rate is enforced
+where the request is made, so it holds however much of the run is happening at
+once.
 
 When GitHub does refuse a request, the whole run pauses and then continues,
 rather than failing the repository that was refused. That covers the primary

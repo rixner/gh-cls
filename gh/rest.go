@@ -28,7 +28,8 @@ type restClient struct {
 	request requestFunc
 	policy  retryPolicy
 	limits  gate
-	pace    pacer
+	reads   pacer
+	writes  pacer
 	notices io.Writer
 	log     *requestLog
 }
@@ -70,7 +71,8 @@ func New(opts ...Option) (Client, error) {
 		return nil, fmt.Errorf("creating GitHub client: %w", err)
 	}
 	c := &restClient{request: rc.RequestWithContext, policy: defaultPolicy()}
-	c.pace.spacing = writeSpacing
+	c.reads.spacing = readSpacing
+	c.writes.spacing = writeSpacing
 	for _, opt := range opts {
 		opt(c)
 	}
@@ -200,18 +202,23 @@ func message(err error) string {
 }
 
 // throttle holds a request until the run's limits allow it to go: first any
-// pause GitHub has already put the run in, then, for a mutating request, its
-// turn in the run-wide write spacing. Waiting here costs no attempt, since only
-// a request that was issued and refused consumes one, so a request held while
-// its siblings back off still has its full budget when the run resumes.
+// pause GitHub has already put the run in, then its turn in the run-wide spacing
+// for its kind. Reads and writes are paced separately because the limits on them
+// differ by more than an order of magnitude, and sharing one rate would mean
+// either pacing writes far too fast or reads far too slowly.
+//
+// Waiting here costs no attempt, since only a request that was issued and
+// refused consumes one, so a request held while its siblings back off still has
+// its full budget when the run resumes.
 func (c *restClient) throttle(ctx context.Context, method string) error {
 	if err := c.limits.await(ctx, c.policy.wait, c.policy.now); err != nil {
 		return err
 	}
-	if !mutating(method) {
-		return ctx.Err()
+	p := &c.reads
+	if mutating(method) {
+		p = &c.writes
 	}
-	if d := c.pace.reserve(c.policy.now()); d > 0 {
+	if d := p.reserve(c.policy.now()); d > 0 {
 		return c.policy.wait(ctx, d)
 	}
 	return ctx.Err()

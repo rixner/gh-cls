@@ -17,11 +17,18 @@ import (
 // under the documented ceiling with room to spare, and still roughly nine
 // repositories a minute.
 //
-// Pacing here rather than through -j is what makes the two independent. -j
-// bounds how many repositories are worked on at once, which is mostly reads and
-// waiting; this bounds how fast the run writes, which is what the limits are
-// actually about.
+// Pacing the operation, rather than bounding how many repositories are worked on
+// at once, is what makes the guarantee hold: the rate is enforced where the
+// request is made, so no amount of parallelism above it can raise it.
 const writeSpacing = 750 * time.Millisecond
+
+// readSpacing is the minimum interval between reads, run-wide. Reads are limited
+// far more loosely than writes (5,000 an hour, and one point each against the
+// 900 per minute an endpoint allows, so fifteen a second), and a course-sized
+// org has few enough repositories that no command comes near the per-minute
+// ceiling on its own. Ten a second keeps a margin under it whatever the run is
+// doing, and costs a hundred-repository audit about twenty seconds.
+const readSpacing = 100 * time.Millisecond
 
 // gate is the run-wide pause every request observes. GitHub's rate limits are
 // per token, not per request, so a limit one request runs into is already in

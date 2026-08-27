@@ -388,11 +388,14 @@ func TestDoExplainsAnExhaustedContentLimit(t *testing.T) {
 	}
 }
 
-func TestDoPacesWritesButNotReads(t *testing.T) {
+func TestDoPacesReadsAndWritesSeparately(t *testing.T) {
+	// Each kind queues behind its own rate. A run doing both must not have its
+	// reads slowed to the write rate, nor its writes let through at the read one.
 	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
 	var waits int
 	c := newTestClient(f, &waits)
-	c.pace.spacing = 750 * time.Millisecond
+	c.reads.spacing = 100 * time.Millisecond
+	c.writes.spacing = 750 * time.Millisecond
 	start := c.policy.now()
 
 	for i := 0; i < 3; i++ {
@@ -400,22 +403,44 @@ func TestDoPacesWritesButNotReads(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if waits != 0 {
-		t.Errorf("reads waited %d times; only writes are paced", waits)
+	// The first request of each kind goes at once and the next two wait their
+	// turn, so three of them advance the run by two spacings, not three.
+	if got := c.policy.now().Sub(start); got != 200*time.Millisecond {
+		t.Errorf("three reads took %v, want 200ms", got)
 	}
 
+	start = c.policy.now()
 	for i := 0; i < 3; i++ {
 		if _, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	// The first write goes at once and the next two wait their turn, so the run
-	// has advanced by two spacings, not three.
-	if waits != 2 {
-		t.Errorf("writes waited %d times, want 2", waits)
-	}
 	if got := c.policy.now().Sub(start); got != 1500*time.Millisecond {
 		t.Errorf("three writes took %v, want 1.5s", got)
+	}
+	if waits != 4 {
+		t.Errorf("waited %d times, want 2 per kind", waits)
+	}
+}
+
+func TestReadsAndWritesDoNotQueueBehindEachOther(t *testing.T) {
+	// A write must not have to wait out a read's turn: the two rates are separate
+	// budgets, and a run that interleaves them would otherwise pay both.
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	c.reads.spacing = 100 * time.Millisecond
+	c.writes.spacing = 750 * time.Millisecond
+	start := c.policy.now()
+
+	if _, err := c.do(context.Background(), "GET", "repos/o/hw1", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.do(context.Background(), "POST", "repos/o/tmpl/generate", map[string]any{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.policy.now().Sub(start); got != 0 {
+		t.Errorf("a read then a write took %v, want neither to wait for the other", got)
 	}
 }
 
