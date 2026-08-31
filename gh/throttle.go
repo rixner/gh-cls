@@ -31,8 +31,8 @@ const contentSpacing = 800 * time.Millisecond
 //
 // They get their own rate because freeze is made entirely of them and is a
 // deadline. Pacing a freeze as though it were creating content would leave a
-// class of 183 writable for four minutes past the moment it was supposed to
-// close, which is a correctness cost, not a speed one.
+// whole class writable for minutes past the moment it was supposed to close,
+// which is a correctness cost, not a speed one.
 const accessSpacing = 333 * time.Millisecond
 
 // readSpacing is the minimum interval between reads, run-wide. Reads are limited

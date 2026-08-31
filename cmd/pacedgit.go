@@ -12,14 +12,13 @@ import (
 // publishes no ceiling for the pattern collect has: one clone each of many
 // different repositories, in quick succession. Its own guidance says only that
 // heavy Git traffic may be slowed rather than refused, which is not what has
-// been observed. What is known is measured: cloning a class of 50 to 70
-// repositories one at a time with three seconds between them completes
-// reliably, and going faster has been seen to fail.
+// been observed. Real class-sized collections have completed reliably at three
+// seconds serialized, and failed when pushed faster.
 //
-// Three seconds is therefore an upper bound on what is needed, not a threshold,
+// So this is an upper bound on what is needed rather than a measured threshold,
 // and it can come down if a run is ever instrumented to find the real one. It
-// costs a 70-repository collection about three and a half minutes, which is
-// cheap for a command run once per assignment.
+// costs a collection a few minutes, which is cheap for a command run once per
+// assignment.
 const cloneSpacing = 3 * time.Second
 
 // pacedGit rate-limits the git operations that talk to GitHub and leaves the
