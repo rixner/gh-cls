@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // GetRef returns the commit SHA a ref points at. ref is given without the
@@ -91,7 +92,10 @@ func (c *restClient) RebaseOntoEmptyRoot(ctx context.Context, owner, repo, branc
 	// reads lag its writes, so poll rather than read once. A move that never lands
 	// (e.g. a protected branch) fails here instead of surfacing later as a
 	// confusing "no history in common" PR error.
-	if err := c.awaitConsistent(ctx, func() (bool, error) {
+	// No first wait: how far the ref read lags this write has never been
+	// measured, and guessing a delay here would cost every repository that time
+	// to save requests that may not be being wasted.
+	if err := c.awaitConsistent(ctx, 0, func() (bool, error) {
 		got, err := c.GetRef(ctx, owner, repo, ref)
 		return got == rebased, err
 	}); err != nil {
@@ -249,12 +253,33 @@ func (c *restClient) EnableIssues(ctx context.Context, owner, repo string) error
 // write is confirmed by re-reading rather than trusted.
 const consistencyChecks = 5
 
+// issueIndexLag is how long to wait before asking whether a just-created issue
+// is listable. GitHub's issue list takes seconds to reflect a create, and this
+// is what real runs showed that lag to be, with margin: under sustained load it
+// settles rather than growing with the size of the run.
+//
+// Checking before then spends a request that cannot succeed. A schedule that
+// looked immediately spent most of its checks that way, and on a class-sized run
+// those are the requests an hourly budget runs out of.
+const issueIndexLag = 10 * time.Second
+
 // awaitConsistent polls check until it reports true, waiting between attempts so
 // GitHub's eventually-consistent reads can catch up with a just-applied write. It
 // returns a generic error after consistencyChecks failed attempts; callers wrap
 // it with what was being confirmed. The wait is the retry policy's, a no-op under
 // test.
-func (c *restClient) awaitConsistent(ctx context.Context, check func() (bool, error)) error {
+//
+// first is how long to wait before looking at all. Where the lag is known, that
+// is the whole cost saving: a check issued before the write can possibly be
+// visible is a wasted request, and the budget it spends is the one a large class
+// runs out of. Pass zero where the lag has not been measured, which only means
+// the first check may be answered too early, as it always was.
+func (c *restClient) awaitConsistent(ctx context.Context, first time.Duration, check func() (bool, error)) error {
+	if first > 0 {
+		if err := c.policy.wait(ctx, first); err != nil {
+			return err
+		}
+	}
 	for attempt := 1; ; attempt++ {
 		ok, err := check()
 		if err != nil {
@@ -283,7 +308,7 @@ func (c *restClient) CreateIssue(ctx context.Context, owner, repo, title, body s
 	if _, err := c.do(ctx, "POST", path, map[string]any{"title": title, "body": body}, nil); err != nil {
 		return err
 	}
-	if err := c.awaitConsistent(ctx, func() (bool, error) {
+	if err := c.awaitConsistent(ctx, issueIndexLag, func() (bool, error) {
 		return c.IssueExists(ctx, owner, repo, title)
 	}); err != nil {
 		return fmt.Errorf("issue %q created in %s/%s but %w; re-run assign to continue", title, owner, repo, err)

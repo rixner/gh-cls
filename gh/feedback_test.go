@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/cli/go-gh/v2/pkg/api"
 )
@@ -197,15 +198,15 @@ func TestEnableIssues(t *testing.T) {
 }
 
 func TestCreateIssue(t *testing.T) {
-	// The create POSTs, then re-reads the issue list to confirm the issue is
-	// listable before returning: a POST followed by a list that already contains
-	// the issue, so the post-condition holds on the first check (no wait).
+	// The create POSTs, waits out the index lag, then re-reads the issue list to
+	// confirm the issue is listable before returning. Looking sooner cannot
+	// succeed, so the confirmation costs exactly one check.
 	f := &fakeRequester{steps: []step{
 		{resp: okResp(`{}`)},
 		{resp: okResp(`[{"number":1,"title":"Feedback","state":"open"}]`)},
 	}}
-	var waits int
-	c := newTestClient(f, &waits)
+	var waited []time.Duration
+	c := newWaitRecordingClient(f, &waited)
 	if err := c.CreateIssue(context.Background(), "org", "hw1-ada", "Feedback", "body text"); err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +221,11 @@ func TestCreateIssue(t *testing.T) {
 	if f.methods[1] != "GET" || !strings.HasPrefix(f.paths[1], "repos/org/hw1-ada/issues?") {
 		t.Errorf("post-condition should list issues, got %s %s", f.methods[1], f.paths[1])
 	}
-	if waits != 0 {
-		t.Errorf("an immediately-listable issue should not wait, got %d waits", waits)
+	if len(waited) != 1 || waited[0] != issueIndexLag {
+		t.Errorf("waits = %v, want one wait of the index lag before looking at all", waited)
+	}
+	if f.calls != 2 {
+		t.Errorf("calls = %d, want the create and a single check", f.calls)
 	}
 }
 
@@ -234,13 +238,16 @@ func TestCreateIssueWaitsForVisibility(t *testing.T) {
 		{resp: okResp(`[]`)}, // list: not visible yet
 		{resp: okResp(`[{"number":1,"title":"Feedback","state":"open"}]`)}, // list: now visible
 	}}
-	var waits int
-	c := newTestClient(f, &waits)
+	var waited []time.Duration
+	c := newWaitRecordingClient(f, &waited)
 	if err := c.CreateIssue(context.Background(), "org", "hw1-ada", "Feedback", "body text"); err != nil {
 		t.Fatal(err)
 	}
-	if waits != 1 {
-		t.Errorf("a create that becomes visible on the second check should wait once, got %d", waits)
+	if len(waited) != 2 || waited[0] != issueIndexLag {
+		t.Errorf("waits = %v, want the index lag and then one backoff", waited)
+	}
+	if f.calls != 3 {
+		t.Errorf("calls = %d, want the create and two checks", f.calls)
 	}
 }
 
@@ -522,4 +529,27 @@ func TestAddComment(t *testing.T) {
 			t.Fatal("a response without html_url should fail")
 		}
 	})
+}
+
+func TestRebaseDoesNotWaitBeforeItsFirstCheck(t *testing.T) {
+	// How far a ref read lags this write has never been measured. Waiting a
+	// guessed interval would cost every repository that time to save requests
+	// that may not be being wasted, so this path still looks immediately.
+	f := &fakeRequester{steps: []step{
+		{resp: okResp(`{"object":{"sha":"tip"}}`)},                    // GetRef
+		{resp: okResp(`{"tree":{"sha":"tree"},"message":"initial"}`)}, // getCommit
+		{resp: okResp(`{"sha":"root"}`)},                              // create root commit
+		{resp: okResp(`{"sha":"rebased"}`)},                           // create rebased commit
+		{resp: okResp(`{}`)},                                          // update ref
+		{resp: okResp(`{"object":{"sha":"rebased"}}`)},                // confirm
+	}}
+	var waited []time.Duration
+	c := newWaitRecordingClient(f, &waited)
+
+	if _, err := c.RebaseOntoEmptyRoot(context.Background(), "org", "hw1-ada", "main"); err != nil {
+		t.Fatal(err)
+	}
+	if len(waited) != 0 {
+		t.Errorf("waits = %v, want the unmeasured path to check immediately", waited)
+	}
 }

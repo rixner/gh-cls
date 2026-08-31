@@ -72,3 +72,20 @@ func TestWaitRepoReadyTimesOutWhenUnpopulated(t *testing.T) {
 		t.Errorf("should poll all %d attempts, got %d", readyAttempts, f.getCalls)
 	}
 }
+
+func TestWaitRepoReadyLooksAfterWaiting(t *testing.T) {
+	// Generation is never instant: across real runs the immediate check failed
+	// every time and the next one succeeded, so looking first only ever spent a
+	// repo read and a ref read to learn nothing.
+	f := &fakeReady{repo: &gh.Repo{Name: "hw1-ada", DefaultBranch: "main"}, exists: true, branchOK: true}
+	var waited []time.Duration
+	if _, err := waitRepoReady(context.Background(), f, func(d time.Duration) { waited = append(waited, d) }, "org", "hw1-ada"); err != nil {
+		t.Fatal(err)
+	}
+	if len(waited) != 1 || waited[0] != readyDelay {
+		t.Errorf("waits = %v, want one wait before the first look", waited)
+	}
+	if f.getCalls != 1 {
+		t.Errorf("read the repo %d times, want once now that the wait comes first", f.getCalls)
+	}
+}

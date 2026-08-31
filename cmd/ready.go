@@ -28,6 +28,10 @@ type repoReady interface {
 // empty shell, whether that is creating a feedback ref on a student repo or
 // generating student repos from a freshly built template.
 func waitRepoReady(ctx context.Context, c repoReady, sleep func(time.Duration), owner, repo string) (*gh.Repo, error) {
+	// Generation is never instant. Across real runs the immediate check failed
+	// every time and the next one succeeded, so looking first only ever spent a
+	// repository read and a ref read to be told what was already known.
+	sleep(readyDelay)
 	for i := 0; i < readyAttempts; i++ {
 		// A real API error (auth, permissions, a 5xx that outlived its retries) is
 		// surfaced immediately rather than swallowed: polling through it would hide

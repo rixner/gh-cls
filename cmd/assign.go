@@ -418,21 +418,22 @@ func countExisting(units []unit.Unit, existing map[string]bool, name string) int
 const (
 	unitReads  = 3 // the repo check, then the two reads that verify the grants
 	unitAccess = 1 // the staff team grant; every member adds another
-	// A repo being created is polled until its default branch lands: about two
-	// rounds of a repo read and a ref read in the run measured.
-	newRepoReads   = 4
+	// A repo being created is polled until its default branch lands. The poll
+	// waits before looking, so that is one round.
+	newRepoReads   = 2
 	newRepoContent = 1
-	// The feedback artifact. The issue is one create plus the polling that
-	// confirms it is listable, which took three to four rounds. A template with
-	// issues disabled costs one more content request to enable them, which the
-	// run measured did not need.
+	// The feedback artifact. The issue is one create plus the single check that
+	// confirms it is listable, the guard before it being provably unnecessary on
+	// a repo this run generated. A template with issues disabled costs one more
+	// content request to enable them.
 	issueFeedbackContent = 1
-	issueFeedbackReads   = 5
-	// The pull request has no run measured behind it. These are its calls on the
-	// same path (rebuilding the base, the branch, the PR) at the polling depth
-	// the issue run showed.
+	issueFeedbackReads   = 1
+	// The pull request has no run behind it: these are its calls on the same path
+	// (the base rebuild, its ref check, the branch, the PR), with the
+	// ref-consistency poll left at the depth the issue path showed, since that
+	// poll is the one still unmeasured.
 	prFeedbackContent = 5
-	prFeedbackReads   = 8
+	prFeedbackReads   = 6
 	// An existing repo is asked which artifact it already carries instead.
 	existingFeedbackReads = 2
 	rulesetContent        = 1
@@ -887,9 +888,16 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 		// rebuild the freshly generated repo's initial commit on top of an empty
 		// root and point the feedback branch at that root: the default branch now
 		// descends from it (the PR opens) and their merge base is empty.
-		branchExists, err := client.BranchExists(ctx, org, repo, feedbackBranch)
-		if err != nil {
-			return fmt.Errorf("checking feedback branch on %s: %w", repo, err)
+		// A repository this run generated carries no feedback branch, unless
+		// --all-branches copied one from the template, so on the default path the
+		// answer is known before asking and the request is pure waste. On a
+		// class-sized run these guards are hundreds of requests.
+		branchExists := false
+		if !created || o.allBranches {
+			var err error
+			if branchExists, err = client.BranchExists(ctx, org, repo, feedbackBranch); err != nil {
+				return fmt.Errorf("checking feedback branch on %s: %w", repo, err)
+			}
 		}
 		if !branchExists {
 			if !created {
@@ -918,9 +926,14 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 				return fmt.Errorf("creating feedback branch on %s: %w", repo, err)
 			}
 		}
-		prExists, err := client.PRExists(ctx, org, repo, feedbackBranch)
-		if err != nil {
-			return fmt.Errorf("checking feedback PR on %s: %w", repo, err)
+		// Generating from a template copies no pull requests, so a repository this
+		// run created provably has none.
+		prExists := false
+		if !created {
+			var err error
+			if prExists, err = client.PRExists(ctx, org, repo, feedbackBranch); err != nil {
+				return fmt.Errorf("checking feedback PR on %s: %w", repo, err)
+			}
 		}
 		if !prExists {
 			if err := client.CreatePR(ctx, org, repo, feedbackTitle, info.DefaultBranch, feedbackBranch, feedbackPRBody); err != nil {
@@ -933,9 +946,13 @@ func (o *assignOpts) addFeedback(ctx context.Context, client assignClient, org, 
 				return fmt.Errorf("enabling issues on %s: %w", repo, err)
 			}
 		}
-		issueExists, err := client.IssueExists(ctx, org, repo, feedbackTitle)
-		if err != nil {
-			return fmt.Errorf("checking feedback issue on %s: %w", repo, err)
+		// Generating from a template copies no issues either.
+		issueExists := false
+		if !created {
+			var err error
+			if issueExists, err = client.IssueExists(ctx, org, repo, feedbackTitle); err != nil {
+				return fmt.Errorf("checking feedback issue on %s: %w", repo, err)
+			}
 		}
 		if !issueExists {
 			if err := client.CreateIssue(ctx, org, repo, feedbackTitle, feedbackIssueBody); err != nil {

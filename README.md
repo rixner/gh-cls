@@ -529,10 +529,14 @@ longer), and it is there so a long run is a decision rather than a surprise.
 
 It also warns where a run would meet one of GitHub's hourly ceilings. The one a
 large class meets first is the primary limit of 5,000 requests an hour, which
-counts reads too: a repository costs around a dozen of them, over half of which
-are polls waiting for GitHub to reflect its own writes. A class of about 250
-provisioned in one run exceeds it, pausing until the hour resets before
-finishing.
+counts reads too. A repository costs six of them for an issue-feedback
+assignment and eleven for a pull-request one, so a class of about 250 in
+pull-request mode sits at the ceiling and a larger one exceeds it, pausing until
+the hour resets before finishing.
+
+Both figures used to be roughly double. A run's reads are mostly waits for
+GitHub to reflect its own writes, and they now wait the measured lag before
+looking rather than asking immediately and being told no.
 
 ## Before a real run
 

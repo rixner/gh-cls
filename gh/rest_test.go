@@ -623,3 +623,21 @@ func TestInFlightCapReleasesOnContextCancel(t *testing.T) {
 		t.Errorf("got %v, want context.Canceled rather than a wait for a slot", err)
 	}
 }
+
+// newWaitRecordingClient is newTestClient for a test that cares which waits
+// happened rather than how many.
+func newWaitRecordingClient(f *fakeRequester, waited *[]time.Duration) *restClient {
+	now := time.Unix(0, 0)
+	return &restClient{
+		request: f.fn,
+		policy: retryPolicy{
+			maxAttempts: defaultMaxAttempts,
+			wait: func(_ context.Context, d time.Duration) error {
+				*waited = append(*waited, d)
+				now = now.Add(d)
+				return nil
+			},
+			now: func() time.Time { return now },
+		},
+	}
+}

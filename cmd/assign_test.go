@@ -64,6 +64,10 @@ type fakeAssignClient struct {
 	branches        []gh.BranchCount
 	isTemplate      map[string]bool // "owner/name" -> repo is a template repository
 
+	// guard reads issued: "IssueExists", "PRExists", "BranchExists:<branch>".
+	// The branch is recorded because the readiness poll checks the default branch
+	// through the same call, and only the feedback one is a guard.
+	checked   []string
 	generated []string
 	deleted   []string
 	collabs   []string
@@ -266,6 +270,7 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 	fk.BranchExistsFunc = func(_ context.Context, _, repo, branch string) (bool, error) {
 		fk.Lock()
 		defer fk.Unlock()
+		f.checked = append(f.checked, "BranchExists:"+branch)
 		return contains(f.refs, repo+":refs/heads/"+branch), nil
 	}
 	fk.CreatePRFunc = func(_ context.Context, _, repo, _, head, base, _ string) error {
@@ -277,6 +282,7 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 	fk.PRExistsFunc = func(_ context.Context, _, repo, base string) (bool, error) {
 		fk.Lock()
 		defer fk.Unlock()
+		f.checked = append(f.checked, "PRExists")
 		for _, p := range f.prs {
 			if strings.HasPrefix(p, repo+":") && strings.HasSuffix(p, "->"+base) {
 				return true, nil
@@ -299,6 +305,7 @@ func (f *fakeAssignClient) fake() *ghtest.Fake {
 	fk.IssueExistsFunc = func(_ context.Context, _, repo, _ string) (bool, error) {
 		fk.Lock()
 		defer fk.Unlock()
+		f.checked = append(f.checked, "IssueExists")
 		return contains(f.issues, repo), nil
 	}
 	// The Find lookups answer with the same recorded state as the Exists ones,
@@ -1597,10 +1604,12 @@ func TestPlanWarnsWhenARunMeetsAnHourlyLimit(t *testing.T) {
 		return buf.String()
 	}
 
-	big := plan(250)
-	t.Logf("a 250-student class, as the instructor sees it:\n%s", big)
+	// Trimming the polls brought a class of 250 in pull-request mode to almost
+	// exactly the hourly budget, so the size that has to warn is above it.
+	big := plan(300)
+	t.Logf("a 300-student class, as the instructor sees it:\n%s", big)
 	if !strings.Contains(big, "will pause partway") {
-		t.Errorf("a 250-student creation should warn about the primary limit:\n%s", big)
+		t.Errorf("a 300-student creation should warn about the primary limit:\n%s", big)
 	}
 	if !strings.Contains(big, "may pause") {
 		t.Errorf("it should warn about the content limit too:\n%s", big)
@@ -1611,4 +1620,70 @@ func TestPlanWarnsWhenARunMeetsAnHourlyLimit(t *testing.T) {
 	if strings.Contains(small, "pause") {
 		t.Errorf("a ten-repo run is nowhere near either limit:\n%s", small)
 	}
+}
+
+func TestGeneratedRepoIsNotAskedWhatItCannotHave(t *testing.T) {
+	// Generating from a template copies no issues and no pull requests, so on a
+	// repo this run created the guard reads can only answer false. On a
+	// class-sized run they are hundreds of requests against an hourly budget.
+	t.Run("issue feedback", func(t *testing.T) {
+		fake := newFakeAssign("admin")
+		o := newAssignOpts(t, fake, assignRoster, "")
+		var buf bytes.Buffer
+		if err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackIssue)}); err != nil {
+			t.Fatalf("%v\n%s", err, buf.String())
+		}
+		if contains(fake.checked, "IssueExists") {
+			t.Error("a repo this run generated cannot already carry the feedback issue")
+		}
+		if len(fake.issues) == 0 {
+			t.Error("the feedback issue should still have been created")
+		}
+	})
+
+	t.Run("pull-request feedback", func(t *testing.T) {
+		fake := newFakeAssign("admin")
+		o := newAssignOpts(t, fake, assignRoster, "")
+		var buf bytes.Buffer
+		if err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackPR)}); err != nil {
+			t.Fatalf("%v\n%s", err, buf.String())
+		}
+		if contains(fake.checked, "PRExists") {
+			t.Error("a repo this run generated cannot already carry the feedback pull request")
+		}
+		if contains(fake.checked, "BranchExists:"+feedbackBranch) {
+			t.Error("without --all-branches a generated repo cannot carry the feedback branch")
+		}
+		if len(fake.prs) == 0 {
+			t.Error("the feedback pull request should still have been opened")
+		}
+	})
+
+	t.Run("--all-branches still asks about the branch", func(t *testing.T) {
+		// The template's own branches are copied, so the feedback branch could
+		// genuinely be there and the answer is no longer known in advance.
+		fake := newFakeAssign("admin")
+		o := newAssignOpts(t, fake, assignRoster, "")
+		o.allBranches = true
+		var buf bytes.Buffer
+		if err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackPR)}); err != nil {
+			t.Fatalf("%v\n%s", err, buf.String())
+		}
+		if !contains(fake.checked, "BranchExists:"+feedbackBranch) {
+			t.Error("with --all-branches the feedback branch has to be checked for")
+		}
+	})
+
+	t.Run("an existing repo is still asked", func(t *testing.T) {
+		fake := newFakeAssign("admin")
+		fake.exists["cs101-spring26/hw1-ada"] = true
+		o := newAssignOpts(t, fake, assignRoster, "")
+		var buf bytes.Buffer
+		if err := o.run(context.Background(), &buf, "hw1", config.Overrides{Feedback: strp(config.FeedbackIssue)}); err != nil {
+			t.Fatalf("%v\n%s", err, buf.String())
+		}
+		if !contains(fake.checked, "IssueExists") {
+			t.Error("a repo that already existed must still be asked what it carries")
+		}
+	})
 }
