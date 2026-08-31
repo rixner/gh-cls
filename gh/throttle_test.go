@@ -214,7 +214,7 @@ func TestCostTakesTheSlowestBudget(t *testing.T) {
 	// budget, not the sum of them. Reporting the sum would tell an instructor a
 	// twenty-minute run takes half an hour.
 	content := Cost{Content: 400, Access: 100, Reads: 100}
-	if got, want := content.Duration(), 300*time.Second; got != want {
+	if got, want := content.Duration(), 320*time.Second; got != want {
 		t.Errorf("content-bound run = %v, want %v", got, want)
 	}
 	access := Cost{Content: 10, Access: 900, Reads: 100}

@@ -523,10 +523,16 @@ nothing that a repository name does not already say.
 
 Because the rates are known, `assign` says what a run will cost before it
 changes anything: how many repositories it will create against how many it will
-only re-assert, and how long that takes at those rates. A run that would make
-more content-creating requests than GitHub allows in an hour says so too. The
-figure is a floor (it counts the pacing, not GitHub's own response time), and it
-is there so a long run is a decision rather than a surprise.
+only re-assert, and how long that takes at those rates. The figure is a floor (it
+counts the pacing, not GitHub's own response time, so a real run takes somewhat
+longer), and it is there so a long run is a decision rather than a surprise.
+
+It also warns where a run would meet one of GitHub's hourly ceilings. The one a
+large class meets first is the primary limit of 5,000 requests an hour, which
+counts reads too: a repository costs around a dozen of them, over half of which
+are polls waiting for GitHub to reflect its own writes. A class of about 250
+provisioned in one run exceeds it, pausing until the hour resets before
+finishing.
 
 ## Before a real run
 

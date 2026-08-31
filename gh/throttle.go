@@ -9,16 +9,19 @@ import (
 
 // contentSpacing is the minimum interval between requests that create content:
 // a repository, a commit, a ref, a pull request, an issue. This is the tight
-// budget, and the one that refused a class-sized assign run. GitHub allows 80
-// content-creating requests a minute, and provisioning one repository costs
-// about six of them, so three every two seconds holds a run near 50 a minute:
-// under the documented ceiling with room to spare, and still roughly nine
-// repositories a minute.
+// budget, and the one that refused a class-sized assign run.
+//
+// GitHub allows 80 content-creating requests a minute, and 800ms holds a run to
+// 75. The margin is deliberate: a rate set to the ceiling exactly crosses it on
+// measurement noise alone, which real runs at 750ms were observed doing.
+//
+// Where above 75 it stops being safe is unknown. Real runs have only ever
+// confirmed the rates below it.
 //
 // Pacing the operation, rather than bounding how many repositories are worked on
 // at once, is what makes the guarantee hold: the rate is enforced where the
 // request is made, so no amount of parallelism above it can raise it.
-const contentSpacing = 750 * time.Millisecond
+const contentSpacing = 800 * time.Millisecond
 
 // accessSpacing is the minimum interval between requests that only change who
 // can reach something: a collaborator grant, an invitation, a team's repositories
@@ -155,6 +158,11 @@ func mutating(method string) bool {
 // completes in twenty minutes into a two-hour one on a guess. A caller that
 // expects to exceed it can say so instead.
 const ContentPerHour = 500
+
+// RequestsPerHour is GitHub's primary rate limit: every request an authenticated
+// user makes counts against it, reads included. A command that expects to exceed
+// it can say so, since the run will pause until the hour resets rather than fail.
+const RequestsPerHour = 5000
 
 // Cost counts the requests an operation will make, by the budget each draws on.
 // A caller that can say what it is about to do can ask how long the pacing will

@@ -1586,21 +1586,29 @@ func TestPlanStatesWhatTheRunWillCost(t *testing.T) {
 	}
 }
 
-func TestPlanWarnsWhenARunMayMeetTheHourlyLimit(t *testing.T) {
-	var buf bytes.Buffer
-	units := classUnits(183)
-	policy := config.Policy{Feedback: config.FeedbackPR, BranchProtection: true}
-	printPlan(&buf, units, map[string]bool{}, "hw1", "org", "org/hw1-template", policy, false, runCost(units, map[string]bool{}, "hw1", policy))
-	t.Logf("plan as the instructor sees it:\n%s", buf.String())
-
-	if !strings.Contains(buf.String(), "may pause") {
-		t.Errorf("a class-sized creation should warn about the hourly limit:\n%s", buf.String())
+func TestPlanWarnsWhenARunMeetsAnHourlyLimit(t *testing.T) {
+	// A large class meets the primary limit first, because a run's reads
+	// outnumber its writes several times over and every one of them counts.
+	plan := func(n int) string {
+		var buf bytes.Buffer
+		units := classUnits(n)
+		policy := config.Policy{Feedback: config.FeedbackPR, BranchProtection: true}
+		printPlan(&buf, units, map[string]bool{}, "hw1", "org", "org/hw1-template", policy, false, runCost(units, map[string]bool{}, "hw1", policy))
+		return buf.String()
 	}
 
-	var small bytes.Buffer
-	few := classUnits(10)
-	printPlan(&small, few, map[string]bool{}, "hw1", "org", "org/hw1-template", policy, false, runCost(few, map[string]bool{}, "hw1", policy))
-	if strings.Contains(small.String(), "may pause") {
-		t.Errorf("a ten-repo run is nowhere near the hourly limit:\n%s", small.String())
+	big := plan(250)
+	t.Logf("a 250-student class, as the instructor sees it:\n%s", big)
+	if !strings.Contains(big, "will pause partway") {
+		t.Errorf("a 250-student creation should warn about the primary limit:\n%s", big)
+	}
+	if !strings.Contains(big, "may pause") {
+		t.Errorf("it should warn about the content limit too:\n%s", big)
+	}
+
+	small := plan(10)
+	t.Logf("a ten-repo run, as the instructor sees it:\n%s", small)
+	if strings.Contains(small, "pause") {
+		t.Errorf("a ten-repo run is nowhere near either limit:\n%s", small)
 	}
 }

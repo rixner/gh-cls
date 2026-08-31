@@ -371,6 +371,14 @@ func printPlan(out io.Writer, units []unit.Unit, existing map[string]bool, name,
 		fmt.Fprintf(out, "  %s to create, %d already there\n", plural(create, "repo"), have)
 	}
 	fmt.Fprintf(out, "  at least %s at the rates GitHub's limits allow\n", roundDuration(cost.Duration()))
+	if total := cost.Reads + cost.Content + cost.Access; total > gh.RequestsPerHour {
+		// The primary limit counts every request, reads included, and a run's
+		// reads outnumber its writes several times over. This is the ceiling a
+		// large class meets first: the run pauses until the hour resets and then
+		// finishes, but that is an hour the instructor should plan for rather
+		// than discover.
+		fmt.Fprintf(out, "  note: about %d requests, and GitHub allows %d an hour, so this run will pause partway until the hour resets\n", total, gh.RequestsPerHour)
+	}
 	if cost.Content > gh.ContentPerHour {
 		// Whether this ceiling governs repository generation is unproven, and
 		// nothing paces to it: a run that met it would pause and carry on rather
@@ -403,21 +411,28 @@ func countExisting(units []unit.Unit, existing map[string]bool, name string) int
 	return n
 }
 
-// Per-unit request counts on the common path, from what provision issues when
-// nothing has to be retried. They drive the run estimate only, so they are
-// deliberately a floor: a repo that needs a second poll or a retry costs more.
+// Per-unit request counts, taken from real runs rather than read off the code.
+// The two disagreed by a factor of two on reads, because half of a run's reads
+// are polls waiting for GitHub to catch up with its own writes, and counting
+// call sites misses every repeat.
 const (
 	unitReads  = 3 // the repo check, then the two reads that verify the grants
 	unitAccess = 1 // the staff team grant; every member adds another
-	// A repo being created also waits to become ready and generates itself.
-	newRepoReads   = 2
+	// A repo being created is polled until its default branch lands: about two
+	// rounds of a repo read and a ref read in the run measured.
+	newRepoReads   = 4
 	newRepoContent = 1
-	// The feedback artifact, which is most of what creating a repo costs: for a
-	// pull request, two commits, the ref move, the feedback branch and the PR.
-	prFeedbackContent    = 5
-	prFeedbackReads      = 4
-	issueFeedbackContent = 2
-	issueFeedbackReads   = 1
+	// The feedback artifact. The issue is one create plus the polling that
+	// confirms it is listable, which took three to four rounds. A template with
+	// issues disabled costs one more content request to enable them, which the
+	// run measured did not need.
+	issueFeedbackContent = 1
+	issueFeedbackReads   = 5
+	// The pull request has no run measured behind it. These are its calls on the
+	// same path (rebuilding the base, the branch, the PR) at the polling depth
+	// the issue run showed.
+	prFeedbackContent = 5
+	prFeedbackReads   = 8
 	// An existing repo is asked which artifact it already carries instead.
 	existingFeedbackReads = 2
 	rulesetContent        = 1
