@@ -235,7 +235,8 @@ gh cls activity hw1 -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
 gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml
 
 # 7. After grading: post one feedback file per student/group as a comment on the
-#    repo's feedback issue or PR. Files are named <username>.md / <group>.md.
+#    repo's feedback issue or PR. Files are named <username>.md / <group>.md,
+#    or after the repo (hw1-<username>.md).
 gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 ```
 
@@ -347,8 +348,10 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   that is not there. A repo whose kind differs from the policy is named in the
   run, and one carrying both is an error. Each file in `--dir` is `<key>.md` or
   `<key>.txt`, where `<key>` is the GitHub username (individual) or group name
-  (group), resolved from `--roster` (plus `--groups` for a group assignment);
-  contents are rendered as Markdown. The directory must hold exactly one
+  (group), resolved from `--roster` (plus `--groups` for a group assignment), or
+  is named after the repository itself (`<name>-<key>.md`, e.g. `hw1-ada.md`);
+  contents are rendered as Markdown. Two files for one student/group, or a file
+  whose name could mean two of them, is an error. The directory must hold exactly one
   file per student/group. A missing file or a file matching no one is named and
   aborts, unless `--force` posts the matching subset and reports the rest.
   Idempotent: a re-run only posts feedback not already present (so a partial or

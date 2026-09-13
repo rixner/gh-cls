@@ -11,6 +11,7 @@ import (
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 	"github.com/rixner/gh-cls/internal/ghtest"
+	"github.com/rixner/gh-cls/unit"
 )
 
 // feedbackGlobals is the loaded-config state the feedback tests run against: an
@@ -488,5 +489,114 @@ func TestFeedbackStreamsEachPostBeforeTheSummary(t *testing.T) {
 	// second occurrence here is inside its own comment URL).
 	if n := strings.Count(out, "hw1-ada"); n != 2 {
 		t.Errorf("hw1-ada should be listed once, got %d occurrences:\n%s", n, out)
+	}
+}
+
+func TestMatchFilesAcceptsKeyOrRepoName(t *testing.T) {
+	// A file may be named by the student's key or by the whole repository, in
+	// any case. A file prefixed with a different assignment names no one.
+	units := []unit.Unit{{Key: "ada"}, {Key: "alan"}, {Key: "grace"}, {Key: "linus"}}
+	files := map[string]feedbackFile{
+		"ada":       {key: "ada", name: "ada.md", body: "a"},
+		"hw1-alan":  {key: "hw1-alan", name: "hw1-alan.md", body: "b"},
+		"hw1-grace": {key: "HW1-Grace", name: "HW1-Grace.txt", body: "c"},
+		"hw2-linus": {key: "hw2-linus", name: "hw2-linus.md", body: "d"},
+	}
+	matched, missing, unmatched, err := matchFiles("hw1", units, files)
+	if err != nil {
+		t.Fatalf("matchFiles: %v", err)
+	}
+	got := map[string]string{}
+	for _, m := range matched {
+		got[m.unit.Key] = m.file.name
+	}
+	want := map[string]string{"ada": "ada.md", "alan": "hw1-alan.md", "grace": "HW1-Grace.txt"}
+	if len(got) != len(want) {
+		t.Fatalf("matched %v, want %v", got, want)
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s matched %q, want %q", k, got[k], v)
+		}
+	}
+	if len(missing) != 1 || missing[0] != "linus" {
+		t.Errorf("missing = %v, want [linus]", missing)
+	}
+	if len(unmatched) != 1 || unmatched[0] != "hw2-linus.md" {
+		t.Errorf("unmatched = %v, want [hw2-linus.md]", unmatched)
+	}
+}
+
+func TestFeedbackRepoNamedFiles(t *testing.T) {
+	t.Run("individual", func(t *testing.T) {
+		fake := newFakeFeedback("admin", "hw1-ada", "hw1-alan", "hw1-grace")
+		files := map[string]string{"hw1-ada.md": "nice work ada", "hw1-alan.md": "see me", "grace.md": "well done"}
+		o, _ := newFeedbackOpts(t, fake, files, assignRoster, "")
+		var buf bytes.Buffer
+		if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+			t.Fatalf("run: %v\n%s", err, buf.String())
+		}
+		for repo, body := range map[string]string{"hw1-ada": "nice work ada", "hw1-alan": "see me", "hw1-grace": "well done"} {
+			if len(fake.comments[repo]) != 1 || !strings.Contains(fake.comments[repo][0], body) {
+				t.Errorf("%s should get one comment with %q, got %q", repo, body, fake.comments[repo])
+			}
+		}
+	})
+
+	t.Run("group", func(t *testing.T) {
+		fake := newFakeFeedback("admin", "proj-group-alpha", "proj-group-beta")
+		files := map[string]string{"proj-group-alpha.md": "group a feedback", "proj-group-beta.md": "group b feedback"}
+		o, _ := newFeedbackOpts(t, fake, files, assignRoster, assignGroups)
+		var buf bytes.Buffer
+		if err := o.run(context.Background(), &buf, "proj"); err != nil {
+			t.Fatalf("run: %v\n%s", err, buf.String())
+		}
+		for repo, body := range map[string]string{"proj-group-alpha": "group a feedback", "proj-group-beta": "group b feedback"} {
+			if len(fake.comments[repo]) != 1 || !strings.Contains(fake.comments[repo][0], body) {
+				t.Errorf("%s should get one comment with %q, got %q", repo, body, fake.comments[repo])
+			}
+		}
+	})
+}
+
+func TestFeedbackRejectsKeyAndRepoNameForOneUnit(t *testing.T) {
+	// ada.md and hw1-ada.md both name ada: which is the real grade is unknowable,
+	// so the run aborts before posting, and --force does not override it.
+	for _, force := range []bool{false, true} {
+		fake := newFakeFeedback("admin", "hw1-ada")
+		o, _ := newFeedbackOpts(t, fake, map[string]string{"ada.md": "x", "hw1-ada.md": "y"}, fbRosterSolo, "")
+		o.force = force
+		err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+		if err == nil || !strings.Contains(err.Error(), "same student/group") || !strings.Contains(err.Error(), "ada.md") || !strings.Contains(err.Error(), "hw1-ada.md") {
+			t.Errorf("force=%v: want an error naming both files, got %v", force, err)
+		}
+		if len(fake.posts) != 0 {
+			t.Errorf("force=%v: nothing should be posted, got %v", force, fake.posts)
+		}
+	}
+}
+
+func TestFeedbackRejectsFileNamingTwoUnits(t *testing.T) {
+	// A student whose username is hw1-ada and another named ada: hw1-ada.md is
+	// the first by name and the second by repository. Posting to either could
+	// hand one student the other's grade, so the run aborts, even with --force.
+	roster := "identifier,username\nstudent-001,ada\nstudent-002,hw1-ada\n"
+	for _, force := range []bool{false, true} {
+		fake := newFakeFeedback("admin", "hw1-ada", "hw1-hw1-ada")
+		o, _ := newFeedbackOpts(t, fake, map[string]string{"hw1-ada.md": "x"}, roster, "")
+		o.force = force
+		err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+		if err == nil {
+			t.Fatalf("force=%v: an ambiguous file must abort", force)
+		}
+		// The suggested names must each resolve to exactly one student.
+		for _, s := range []string{"hw1-ada.md could mean hw1-ada (by name) or ada", "hw1-hw1-ada.md for hw1-ada", "ada.md for ada"} {
+			if !strings.Contains(err.Error(), s) {
+				t.Errorf("force=%v: error missing %q: %v", force, s, err)
+			}
+		}
+		if len(fake.posts) != 0 {
+			t.Errorf("force=%v: nothing should be posted, got %v", force, fake.posts)
+		}
 	}
 }

@@ -64,8 +64,8 @@ func newFeedbackCmd(g *globalOpts) *cobra.Command {
 		Long: `Post one feedback file per student (or group) as a comment on that repo's
 feedback issue or pull request: the artifact assign created, named by the
 assignment's feedback policy. Each file in --dir is named <key>.md or <key>.txt,
-where <key> is the GitHub username (individual) or group name (group), matching
-the <name>-<key> repository.
+where <key> is the GitHub username (individual) or group name (group), or is
+named after the <name>-<key> repository itself (<name>-<key>.md).
 
 The directory must hold exactly one file per student/group. A missing file
 (forgotten feedback) or a file matching no student (a typo) is reported by name
@@ -81,7 +81,7 @@ new comment; existing comments are never changed.`,
 		},
 	}
 	f := cmd.Flags()
-	f.StringVarP(&o.dir, "dir", "d", "", "directory of feedback files, one per student/group named <key>.md or <key>.txt (required)")
+	f.StringVarP(&o.dir, "dir", "d", "", "directory of feedback files, one per student/group named <key>.md, <key>.txt, or <name>-<key>.md/.txt (required)")
 	f.StringVarP(&o.roster, "roster", "r", "", "path to the roster CSV (required)")
 	f.StringVarP(&o.groups, "groups", "g", "", "path to the groups file (required for group, rejected for individual)")
 	f.BoolVarP(&o.force, "force", "F", false, "post the matching subset even when the directory is not exactly one file per student/group")
@@ -140,7 +140,10 @@ func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) erro
 	if err != nil {
 		return err
 	}
-	matched, missing, unmatched := matchFiles(units, files)
+	matched, missing, unmatched, err := matchFiles(name, units, files)
+	if err != nil {
+		return err
+	}
 
 	// The coverage report is printed before anything is posted (the "is there
 	// feedback for everyone?" message), naming every gap explicitly.
@@ -225,27 +228,50 @@ func readFeedbackDir(dir string) (map[string]feedbackFile, []string, error) {
 	return files, ignored, nil
 }
 
-// matchFiles pairs each unit with its feedback file by lower-cased key. It
-// returns the matches in unit order, the keys of units with no file, and the
-// names of files matching no unit.
-func matchFiles(units []unit.Unit, files map[string]feedbackFile) (matched []matchedUnit, missing, unmatched []string) {
-	used := make(map[string]bool, len(files))
+// matchFiles pairs each unit with its feedback file, named (case-insensitively)
+// either by the unit's key or by its <name>-<key> repository, so a directory of
+// ada.md files and one of hw1-ada.md files both work. It returns the matches in
+// unit order, the keys of units with no file, and the names of files matching no
+// unit. A unit with a file under both names, or a file that names two units (a
+// student called hw1-ada alongside one called ada), is an error: either would
+// leave the grade's destination to chance.
+func matchFiles(name string, units []unit.Unit, files map[string]feedbackFile) (matched []matchedUnit, missing, unmatched []string, err error) {
+	usedBy := make(map[string]string, len(files)) // file lkey -> unit key it matched
 	for _, u := range units {
-		lkey := strings.ToLower(u.Key)
-		if f, ok := files[lkey]; ok {
-			used[lkey] = true
-			matched = append(matched, matchedUnit{unit: u, file: f})
-		} else {
+		var found []string
+		for _, lkey := range []string{strings.ToLower(u.Key), strings.ToLower(name + "-" + u.Key)} {
+			if _, ok := files[lkey]; !ok {
+				continue
+			}
+			if other, ok := usedBy[lkey]; ok {
+				// One of the two matched by key, the other by repository name.
+				byKey, byRepo := other, u.Key
+				if strings.ToLower(u.Key) == lkey {
+					byKey, byRepo = u.Key, other
+				}
+				f := files[lkey]
+				ext := filepath.Ext(f.name)
+				return nil, nil, nil, fmt.Errorf("feedback file %s could mean %s (by name) or %s (by repository %s-%s); rename it %s-%s%s for %s, or %s%s for %s", f.name, byKey, byRepo, name, byRepo, name, byKey, ext, byKey, byRepo, ext, byRepo)
+			}
+			usedBy[lkey] = u.Key
+			found = append(found, lkey)
+		}
+		switch len(found) {
+		case 0:
 			missing = append(missing, u.Key)
+		case 1:
+			matched = append(matched, matchedUnit{unit: u, file: files[found[0]]})
+		default:
+			return nil, nil, nil, fmt.Errorf("two feedback files map to the same student/group %q: %s and %s; remove one", u.Key, files[found[0]].name, files[found[1]].name)
 		}
 	}
 	for lkey, f := range files {
-		if !used[lkey] {
+		if _, ok := usedBy[lkey]; !ok {
 			unmatched = append(unmatched, f.name)
 		}
 	}
 	sort.Strings(unmatched)
-	return matched, missing, unmatched
+	return matched, missing, unmatched, nil
 }
 
 // printCoverage prints the match/missing/unmatched breakdown, naming every gap.
