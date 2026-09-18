@@ -42,11 +42,25 @@ hw1/
 `--out` is required on purpose, so repositories are never cloned into a surprise
 location.
 
-## The model: one shallow clone per student, tagged each time
+## The model: one clone per student, tagged each time
 
-Each `<out>/<key>` is a real git clone, but a **shallow** one: it contains the
-files at the collected commit, not the student's entire history. That keeps disk
-use small even when students have committed large binaries over the term.
+Each `<out>/<key>` is a real git clone. By default it is a **shallow** one: it
+contains the files at the collected commit, not the student's entire history.
+That keeps disk use small even when students have committed large binaries over
+the term.
+
+If you want the whole history and every branch instead, say so once:
+
+```sh
+gh cls collect hw1 --roster roster.csv --out ./hw1 --history full
+```
+
+The setting is recorded for that `--out` directory, so later runs keep it even
+if you forget the flag, and a colleague running the plain command into the same
+directory gets clones that match the ones already there. `--history snapshot`
+switches back: history already in the clones stays, new collections have none,
+and the other branches stop being updated. Every run's header says which setting
+is in force and where it came from.
 
 Every time you collect, the commit you took is **tagged** inside that clone, under
 `gh-cls/collect/<label>`. Because each collection is tagged, **no collected state
@@ -81,14 +95,26 @@ that file from GitHub's own record of when each push landed:
 gh cls activity hw1 -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
 ```
 
-The file is just a mapping, so you can also write it by hand or edit one to give
-a student a later commit:
+The file is just a mapping, so you can also write it by hand, or edit one to give
+a student a later commit. Every SHA must be a whole commit name, 40 characters;
+an abbreviation is refused rather than guessed at, since collect names the commit
+to GitHub when it fetches it.
 
 ```yaml
 # deadline.yml
-ada:        9f3a2b1c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a
-alan:       1c4d77e0...
-group-alpha: a0b1c2d3...
+ada:         9f3a2b1c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a
+alan:        1c4d77e0b5a9382f6e1d04c7a3b28e5f9d60c1a4
+group-alpha: a0b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d
+```
+
+**An edited snapshot needs a new label.** A label names one commit per repository,
+for good: that is what makes a collection permanent. If you have already collected
+`--label final` and then edit the file to give a student a later commit, re-running
+`final` is refused for that student, naming both commits, rather than quietly
+moving what `final` means. Collect the extension under its own label instead:
+
+```sh
+gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml --label final-ada
 ```
 
 ```sh
@@ -234,15 +260,33 @@ does not need any of it; these are for when you want more than the snapshot.
   ```sh
   git tag --list 'gh-cls/collect/*'
   ```
-- **Get the full history** of one repo if a shallow copy is not enough:
+- **Get the full history.** For the whole set, collect with `--history full`,
+  which is recorded for the directory and applies to later runs too. For one
+  repo, by hand:
   ```sh
   git fetch --unshallow      # all history
   git fetch --depth=50       # or just deepen by N commits
   ```
+  A clone you deepen by hand keeps its history: collect notices and leaves it
+  alone, mentioning that it holds more than the directory's setting.
+- **Get back to a branch.** A collected clone is parked on a commit, not a
+  branch, and branch-name guessing is off, so `git checkout main` reports that
+  there is no such branch rather than quietly building one from `origin/main`
+  and showing you code that was never collected. What to use instead:
+  ```sh
+  git checkout gh-cls/collect/<label>   # the state that was collected
+  git switch -c main origin/main        # a real branch, in a --history full clone
+  ```
+  A `--history full` clone tracks every branch, so `git checkout origin/main`
+  works there. A snapshot clone holds only the collected commit, so it has no
+  `origin/*` to check out.
 - **What commit am I on:**
   ```sh
   git rev-parse HEAD
   ```
 
-Because each clone is a normal (if shallow) git repository, any other git command
-works too. Collect just gives you the starting point and never gets in your way.
+Because each clone is a normal git repository, shallow or not, any other git
+command works too. Collect just gives you the starting point and never gets in
+your way: it leaves a clone with modified tracked files alone, refuses rather
+than overwrite a file of yours that a new commit also tracks, and will not move
+off a commit you made in the clone that no branch or tag holds.

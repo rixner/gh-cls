@@ -38,8 +38,8 @@ Where it does overlap, it operates differently:
 - **Idempotent and fail-fast.** Commands re-assert state, verify their own pre-
   and post-conditions, and abort rather than leave anything half-done.
 - **Local-first grading.** Feedback is posted as issue or PR comments, and
-  `collect` pulls submissions into local shallow clones for hand grading, rather
-  than running an autograder.
+  `collect` pulls submissions into local clones for hand grading, shallow by
+  default or with full history on request, rather than running an autograder.
 
 ## Install
 
@@ -225,8 +225,8 @@ gh cls freeze hw1 --undo
 gh cls freeze hw1 alice --undo   # extension: unfreeze just one student/group repo
 gh cls freeze hw1 alice          # re-freeze it when the extension expires
 
-# 6. Collect submissions locally to grade by hand (one shallow clone per student,
-#    tagged each collect; see COLLECT.md for the model and the git you need).
+# 6. Collect submissions locally to grade by hand (one clone per student, shallow
+#    unless --history full; tagged each collect; see COLLECT.md for the model).
 gh cls collect hw1 --roster roster.csv --out ./hw1
 
 # 6b. Or pin the deadline commit for every repo first, then collect exactly
@@ -358,7 +358,7 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `--force` run is finished by re-running), and editing a file posts a new comment
   rather than changing the old one.
 - **collect** clones each student or group repository locally for hand grading,
-  one shallow clone per repo under `--out`, taking each to its target commit and
+  one clone per repo under `--out`, taking each to its target commit and
   tagging it (`gh-cls/collect/<label>`) so every collection is preserved. The
   default target is the default-branch tip; `--snapshot <yml>` pins exact SHAs
   (for grading the deadline state), and `gh cls activity --snapshot` is what produces
@@ -368,8 +368,10 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   tags in place. It is roster-aware (`--roster` for individual,
   `--groups` for group), reporting any missing or unexpected repositories, and
   refuses to disturb a clone with local changes so grading-script edits survive.
-  Shallow keeps disk small; a clone is a normal git repo, so `git restore .`,
-  `git fetch --unshallow`, and `git checkout gh-cls/collect/<label>` all work.
+  Clones are shallow by default, which keeps disk small; `--history full` keeps
+  every commit and branch instead, and is recorded for the `--out` directory so
+  later runs match. A clone is a normal git repo, so `git restore .` and
+  `git checkout gh-cls/collect/<label>` work as usual.
   It is the one command that uses git (cloning via `gh`, updates via git). **See
   [COLLECT.md](COLLECT.md) for the model and the git you may want.**
 - **status** reports the current state of the org without changing anything: the
