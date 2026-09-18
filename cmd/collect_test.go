@@ -651,11 +651,63 @@ func TestCollectDryRun(t *testing.T) {
 	if len(git.cloned) != 0 {
 		t.Errorf("dry-run must clone nothing, cloned %v", git.cloned)
 	}
+	if len(git.fetched) != 0 {
+		t.Errorf("dry-run must fetch nothing, fetched %v", git.fetched)
+	}
 	if !strings.Contains(buf.String(), "DRY RUN") || !strings.Contains(buf.String(), "would collect hw1-ada") {
 		t.Errorf("dry-run output wrong:\n%s", buf.String())
 	}
 	if _, err := os.Stat(filepath.Join(o.out, "collected.csv")); !errors.Is(err, os.ErrNotExist) {
 		t.Error("dry-run must not write a manifest")
+	}
+}
+
+func TestCollectDryRunInspectsEachClone(t *testing.T) {
+	// P15: the dry run listed every repository as "would collect" without
+	// opening a single clone, so it could not say what was already up to date,
+	// what was dirty, or what a real run would refuse. That is the only thing
+	// worth knowing before committing a class-sized run to the network.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	o.dryRun = true
+	tag := "gh-cls/collect/test"
+	// Already collected under this label.
+	git.seed(filepath.Join(o.out, "ada"), originURL("cs101-spring26", "hw1-ada"), "sha-hw1-ada", true, tag)
+	// A grader is part way through something.
+	git.seed(filepath.Join(o.out, "alan"), originURL("cs101-spring26", "hw1-alan"), "sha-old", false)
+	// grace has no clone yet, so it would be a new one.
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+
+	// Each repository gets the outcome a real run would give it, not one label.
+	for _, want := range []string{
+		"up-to-date hw1-ada",
+		"skipped (local changes) hw1-alan",
+		"would collect hw1-grace",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the plan should report %q:\n%s", want, out)
+		}
+	}
+	// And it says what the run would cost, which is the reason to look first.
+	if !strings.Contains(out, "Plan for test:") || !strings.Contains(out, "paced git operation(s)") {
+		t.Errorf("the plan should state what a real run would spend:\n%s", out)
+	}
+	// One new clone is the only thing needing the network here.
+	if !strings.Contains(out, "1 paced git operation(s)") {
+		t.Errorf("only the new clone costs a request:\n%s", out)
+	}
+	// The repo a real run would pass over is named again at the end.
+	if !strings.Contains(out, "Would not be collected under test (1)") {
+		t.Errorf("the plan should account for what it would skip:\n%s", out)
+	}
+	if len(git.cloned) != 0 || len(git.fetched) != 0 {
+		t.Errorf("a dry run touches the network for nothing: cloned %v fetched %v", git.cloned, git.fetched)
 	}
 }
 

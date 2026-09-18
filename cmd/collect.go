@@ -175,7 +175,10 @@ type collectResult struct {
 	// detail explains a status that needs more than its own word, and carries
 	// the fix. A refusal always has one.
 	detail string
-	err    error
+	// networkOps is how many paced git operations this repository would cost,
+	// counted during a dry run so the plan can say what a real run would spend.
+	networkOps int
+	err        error
 }
 
 const (
@@ -199,6 +202,11 @@ const (
 	// collectStatusEmpty is a repository with no commits. It clones fine and has
 	// no HEAD, which used to leave a directory behind that failed every later run.
 	collectStatusEmpty = "skipped (empty repository)"
+	// The two outcomes a dry run reports in place of acting. Every other status
+	// a dry run prints is one a real run would print too, because the checks
+	// that produce them are read-only and are the same checks.
+	collectStatusWouldCollect = "would collect"
+	collectStatusWouldUpdate  = "would update"
 )
 
 // gitCLSDir is collect's own directory under --out, holding the staging area a
@@ -329,16 +337,34 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 			len(unmatched), strings.Join(unmatched, "\n  "))
 	}
 
-	if o.dryRun {
-		fmt.Fprintf(out, "\nDRY RUN: nothing cloned\n")
-		for _, it := range items {
-			fmt.Fprintf(out, "  would collect %s -> %s/%s\n", it.repo, o.out, it.key)
-		}
+	if len(items) == 0 && !o.dryRun {
+		fmt.Fprintf(out, "\nno repositories to collect\n")
 		return nil
 	}
 
-	if len(items) == 0 {
-		fmt.Fprintf(out, "\nno repositories to collect\n")
+	// Read before the dry run branches, since both need it and reading changes
+	// nothing. A missing manifest is an empty record, not an error.
+	manifest := filepath.Join(o.out, "collected.csv")
+	// What this label already records. A deleted tag is refilled from it rather
+	// than from the current tip, and a tag that disagrees with it is refused.
+	recorded, err := readManifestSHAs(manifest, label)
+	if err != nil {
+		return err
+	}
+	// The last collection of each repository under any label, which is what a
+	// new target is compared against to tell an ordinary update from a rewrite.
+	previous, err := readManifestLatest(manifest)
+	if err != nil {
+		return err
+	}
+
+	if o.dryRun {
+		fmt.Fprintf(out, "\nDRY RUN: nothing is cloned, fetched, tagged or written\n")
+		prog := newProgress(out, len(items), 0)
+		results := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
+			return o.collectOne(ctx, client, o.g.org, name, tag, label, pinned, recorded, previous, it, true)
+		}, func(r collectResult) { prog.item(collectLine(r)) })
+		reportCollectDryRun(out, label, results)
 		return nil
 	}
 	if err := os.MkdirAll(o.out, 0o755); err != nil {
@@ -363,23 +389,9 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		return fmt.Errorf("clearing %s: %w", filepath.Join(o.out, gitCLSDir, "staging"), err)
 	}
 
-	// What this label already records, read once before any repository is
-	// touched. A deleted tag is refilled from it rather than from the current
-	// tip, and a tag that disagrees with it is refused.
-	recorded, err := readManifestSHAs(filepath.Join(o.out, "collected.csv"), label)
-	if err != nil {
-		return err
-	}
-	// The last collection of each repository under any label, which is what a
-	// new target is compared against to tell an ordinary update from a rewrite.
-	previous, err := readManifestLatest(filepath.Join(o.out, "collected.csv"))
-	if err != nil {
-		return err
-	}
-
 	prog := newProgress(out, len(items), 0) // statuses carry their own reasons; see collectLine
 	results := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
-		return o.collectOne(ctx, client, o.g.org, name, tag, label, pinned, recorded, previous, it)
+		return o.collectOne(ctx, client, o.g.org, name, tag, label, pinned, recorded, previous, it, false)
 	}, func(r collectResult) { prog.item(collectLine(r)) })
 
 	if err := o.writeManifest(label, results); err != nil {
@@ -427,8 +439,12 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 }
 
 // collectOne clones or updates one repository to its target commit and tags it.
+// plan true stops before the first thing that would change anything, reporting
+// what the run would do instead of doing it. Every check above those points is
+// read-only, so a dry run reaches its answer through the same code a real run
+// does rather than a second description of it that could drift.
 func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgName, name, tag, label string,
-	snapshot, recorded map[string]string, previous map[string]manifestEntry, it repoItem) collectResult {
+	snapshot, recorded map[string]string, previous map[string]manifestEntry, it repoItem, plan bool) collectResult {
 	res := collectResult{key: it.key, repo: it.repo, ref: it.defaultBranch}
 	dir := filepath.Join(o.out, it.key)
 
@@ -508,6 +524,12 @@ func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgN
 			res.status = collectStatusRefused
 			res.detail = fmt.Sprintf("%s already exists and is not a clone collect can use; "+
 				"remove it or choose another --out", dir)
+			return res
+		}
+		if plan {
+			res.status = collectStatusWouldCollect
+			res.detail = "a new clone at " + shortSHA(target)
+			res.networkOps = 1
 			return res
 		}
 		return o.cloneInto(ctx, orgName, tag, target, dir, it, res)
@@ -593,6 +615,23 @@ func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgN
 				"collecting would strand it. To keep it: git -C %s tag <name>", shortSHA(head), dir)
 			return res
 		}
+	}
+
+	if plan {
+		// Whether a fetch would be needed is itself a read.
+		has, hasErr := o.git.HasCommit(ctx, dir, target)
+		if hasErr != nil {
+			res.err = fmt.Errorf("checking whether %s already holds %s: %w", it.repo, shortSHA(target), hasErr)
+			return res
+		}
+		res.status = collectStatusWouldUpdate
+		if has {
+			res.detail = "to " + shortSHA(target) + ", already in the clone, so no fetch"
+		} else {
+			res.detail = "to " + shortSHA(target) + ", fetching it first"
+			res.networkOps = 1
+		}
+		return res
 	}
 
 	if err := o.ensureCommit(ctx, dir, target); err != nil {
@@ -998,6 +1037,42 @@ func reportReconcile(out io.Writer, items []repoItem, missing []string) {
 // reportCollect summarizes the run, returning an error if any repository failed.
 // Each repo's own line is streamed as it finishes (see collectLine), so this
 // counts rather than re-lists them.
+// reportPlan summarizes a dry run: what a real run would do, what it would
+// refuse, and what it would spend. The old dry run listed every repository as
+// "would collect" without opening a single clone, so it could not say what was
+// already up to date, dirty, or about to be refused, which is the only thing
+// worth knowing before committing a class-sized run to the network.
+func reportCollectDryRun(out io.Writer, label string, results []collectResult) {
+	counts := map[string]int{}
+	ops := 0
+	for _, r := range results {
+		if r.err != nil {
+			counts["failed a check"]++
+			continue
+		}
+		counts[r.status]++
+		ops += r.networkOps
+	}
+	statuses := make([]string, 0, len(counts))
+	for s := range counts {
+		statuses = append(statuses, s)
+	}
+	sort.Strings(statuses)
+
+	fmt.Fprintf(out, "\nPlan for %s:\n", label)
+	for _, s := range statuses {
+		fmt.Fprintf(out, "  %d  %s\n", counts[s], s)
+	}
+	// The pacing is the whole cost of a collection: the clones and fetches are
+	// serialized and spaced, so the count is the run's length.
+	fmt.Fprintf(out, "  %d paced git operation(s), about %s at the current spacing\n",
+		ops, (time.Duration(ops) * cloneSpacing).Round(time.Second))
+
+	if lines := notCollected(results); len(lines) > 0 {
+		fmt.Fprintf(out, "\nWould not be collected under %s (%d):\n%s\n", label, len(lines), strings.Join(lines, "\n"))
+	}
+}
+
 // notCollected lists the repositories this run did not put under the label,
 // each with its reason and fix. Every one still holds whatever it held before,
 // which is exactly what a grader cannot see by looking at the directory.
@@ -1007,8 +1082,12 @@ func notCollected(results []collectResult) []string {
 		switch {
 		case r.err != nil:
 			lines = append(lines, fmt.Sprintf("  %s  FAILED: %s", r.repo, oneLine(r.err.Error())))
-		case r.status == collectStatusCollected, r.status == collectStatusUpdated, r.status == collectStatusUpToDate:
-			// Collected under this label, so not this list's business.
+		case r.status == collectStatusCollected, r.status == collectStatusUpdated, r.status == collectStatusUpToDate,
+			r.status == collectStatusWouldCollect, r.status == collectStatusWouldUpdate:
+			// Collected under this label, or would be by the run being planned.
+			// The planned outcomes belong here too: listing a repository a dry
+			// run says it would collect under "would not be collected" is the
+			// same lie in the other direction.
 		default:
 			line := fmt.Sprintf("  %s  %s", r.repo, r.status)
 			if r.detail != "" {
