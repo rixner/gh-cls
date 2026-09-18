@@ -47,11 +47,11 @@ func newPacedGit(inner gitRunner, spacing time.Duration) *pacedGit {
 
 // Clone takes its turn, then holds the next one off for the spacing measured
 // from when this one finished, which is where the gap was measured from.
-func (p *pacedGit) Clone(ctx context.Context, org, repo, dir string) error {
+func (p *pacedGit) Clone(ctx context.Context, org, repo, dir string, full bool) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.hold(ctx)
-	err := p.gitRunner.Clone(ctx, org, repo, dir)
+	err := p.gitRunner.Clone(ctx, org, repo, dir, full)
 	p.next = p.now().Add(p.spacing)
 	return err
 }
@@ -63,6 +63,18 @@ func (p *pacedGit) Fetch(ctx context.Context, dir, ref string) error {
 	defer p.mu.Unlock()
 	p.hold(ctx)
 	err := p.gitRunner.Fetch(ctx, dir, ref)
+	p.next = p.now().Add(p.spacing)
+	return err
+}
+
+// FetchAll reaches GitHub like the others, so it takes the same turn. The full
+// setting runs one of these per repository on every run, which is what makes the
+// pacing the whole cost of a full-history collection.
+func (p *pacedGit) FetchAll(ctx context.Context, dir, target string, unshallow bool) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.hold(ctx)
+	err := p.gitRunner.FetchAll(ctx, dir, target, unshallow)
 	p.next = p.now().Add(p.spacing)
 	return err
 }

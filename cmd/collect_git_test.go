@@ -185,6 +185,82 @@ func TestCheckoutRefusesRatherThanOverwriteAGradersFiles(t *testing.T) {
 	}
 }
 
+func TestFetchAllMirrorsBranchesWithoutCostingHistory(t *testing.T) {
+	// V13 through the real code. The fake would accept any argument list, so
+	// only this can show that one request deepens the clone, mirrors every
+	// branch, prunes a deleted one, takes a forced update, and leaves the
+	// collected tag's history alone.
+	requireGit(t)
+	base := t.TempDir()
+	bare := filepath.Join(base, "origin.git")
+	work := filepath.Join(base, "w")
+	runGit(t, base, "init", "-q", "--bare", bare)
+	runGit(t, base, "clone", "-q", bare, work)
+	for i := 1; i <= 3; i++ {
+		studentCommit(t, work, "c"+strconv.Itoa(i))
+	}
+	runGit(t, work, "push", "-q", "origin", "HEAD:refs/heads/main")
+	runGit(t, work, "checkout", "-q", "-b", "feature")
+	studentCommit(t, work, "x")
+	runGit(t, work, "push", "-q", "origin", "feature")
+	runGit(t, work, "checkout", "-q", "-b", "doomed")
+	studentCommit(t, work, "d")
+	runGit(t, work, "push", "-q", "origin", "doomed")
+	runGit(t, work, "checkout", "-q", "main")
+
+	// The clone an earlier snapshot collection left, tagged at what it collected.
+	clone := filepath.Join(base, "c")
+	runGit(t, base, "clone", "-q", "--depth", "1", "--no-tags", "file://"+bare, clone)
+	runGit(t, clone, "tag", "gh-cls/collect/early", "HEAD")
+	if shallow, err := (execGit{}).IsShallow(context.Background(), clone); err != nil || !shallow {
+		t.Fatalf("a depth-1 clone should read as shallow, got %v %v", shallow, err)
+	}
+
+	// The student deletes a branch, rewrites another, and pushes to main.
+	runGit(t, work, "push", "-q", "origin", ":doomed")
+	runGit(t, work, "checkout", "-q", "feature")
+	runGit(t, work, "reset", "-q", "--hard", "HEAD~1")
+	studentCommit(t, work, "y")
+	runGit(t, work, "push", "-qf", "origin", "feature")
+	runGit(t, work, "checkout", "-q", "main")
+	newTip := studentCommit(t, work, "c4")
+	runGit(t, work, "push", "-q", "origin", "main")
+
+	if err := (execGit{}).FetchAll(context.Background(), clone, newTip, true); err != nil {
+		t.Fatalf("FetchAll: %v", err)
+	}
+	// Force a gc, so history that only survives by luck does not pass.
+	runGit(t, clone, "reflog", "expire", "--expire=now", "--all")
+	runGit(t, clone, "gc", "-q", "--prune=now")
+
+	if shallow, err := (execGit{}).IsShallow(context.Background(), clone); err != nil || shallow {
+		t.Errorf("the clone should have been deepened, got shallow=%v err=%v", shallow, err)
+	}
+	branches := runGit(t, clone, "for-each-ref", "--format=%(refname:short)", "refs/remotes/origin")
+	if strings.Contains(branches, "origin/doomed") {
+		t.Errorf("a branch deleted on GitHub should be pruned, got %q", branches)
+	}
+	if !strings.Contains(branches, "origin/feature") || !strings.Contains(branches, "origin/main") {
+		t.Errorf("every branch should be mirrored, got %q", branches)
+	}
+	if got := runGit(t, clone, "log", "-1", "--format=%s", "origin/feature"); got != "y" {
+		t.Errorf("a rewritten branch should be taken as it now stands, got %q", got)
+	}
+	// The collected tag keeps its history, and no student tag came along.
+	if got := runGit(t, clone, "rev-list", "--count", "gh-cls/collect/early"); got != "3" {
+		t.Errorf("the collected tag should have gained its history, got %q commits", got)
+	}
+	if tags := runGit(t, clone, "tag", "-l"); tags != "gh-cls/collect/early" {
+		t.Errorf("only collect's own tag belongs here, got %q", tags)
+	}
+
+	// And a second run must not ask to deepen a clone that is already complete:
+	// git refuses that outright, which would fail the repository.
+	if err := (execGit{}).FetchAll(context.Background(), clone, "", false); err != nil {
+		t.Errorf("a steady-state full fetch should succeed: %v", err)
+	}
+}
+
 func TestFetchNeverImportsAStudentsTag(t *testing.T) {
 	// P6: the tag prefix was documented as one that "never collides with a
 	// student's own tags", which is not true of a namespace anyone can push to.

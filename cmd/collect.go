@@ -45,7 +45,9 @@ type collectClient interface {
 // performs, so tests can fake them without touching disk or the network.
 type gitRunner interface {
 	CloneExists(dir string) bool
-	Clone(ctx context.Context, org, repo, dir string) error
+	// Clone makes a new clone. full asks for the whole history and every branch
+	// rather than the single commit a snapshot collection needs.
+	Clone(ctx context.Context, org, repo, dir string, full bool) error
 	// RemoteURL returns the URL of the clone's origin remote.
 	RemoteURL(ctx context.Context, dir string) (string, error)
 	// WorktreeState reports what a clone's worktree holds that its commit does
@@ -64,6 +66,15 @@ type gitRunner interface {
 	TagSHA(ctx context.Context, dir, tag string) (string, error)
 	// Fetch shallow-fetches ref (always a SHA) from origin.
 	Fetch(ctx context.Context, dir, ref string) error
+	// FetchAll brings every branch up to date in one request, and target too
+	// when it is named. It is the full setting's fetch: it deepens the clone
+	// when unshallow is set, prunes branches deleted on GitHub, and takes forced
+	// updates, all without touching tags or local refs.
+	FetchAll(ctx context.Context, dir, target string, unshallow bool) error
+	// IsShallow reports whether the clone was cut off at a depth. It decides
+	// whether a full fetch may pass --unshallow, which git rejects outright on a
+	// complete repository.
+	IsShallow(ctx context.Context, dir string) (bool, error)
 	// HasCommit reports whether a commit is already in the clone. It is what
 	// keeps a depth-1 fetch away from a commit the clone already holds, which
 	// would make that commit a shallow boundary and cost every tag behind it
@@ -382,7 +393,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		fmt.Fprintf(out, "\nDRY RUN: nothing is cloned, fetched, tagged or written\n")
 		prog := newProgress(out, len(items), 0)
 		results := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
-			return o.collectOne(ctx, client, o.g.org, name, tag, label, pinned, recorded, previous, it, true)
+			return o.collectOne(ctx, client, o.g.org, name, tag, label, history, pinned, recorded, previous, it, true)
 		}, func(r collectResult) { prog.item(collectLine(r)) })
 		reportCollectDryRun(out, label, results)
 		return nil
@@ -421,7 +432,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 
 	prog := newProgress(out, len(items), 0) // statuses carry their own reasons; see collectLine
 	results := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
-		return o.collectOne(ctx, client, o.g.org, name, tag, label, pinned, recorded, previous, it, false)
+		return o.collectOne(ctx, client, o.g.org, name, tag, label, history, pinned, recorded, previous, it, false)
 	}, func(r collectResult) { prog.item(collectLine(r)) })
 
 	if err := o.writeManifest(label, results); err != nil {
@@ -474,7 +485,8 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 // read-only, so a dry run reaches its answer through the same code a real run
 // does rather than a second description of it that could drift.
 func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgName, name, tag, label string,
-	snapshot, recorded map[string]string, previous map[string]manifestEntry, it repoItem, plan bool) collectResult {
+	history historyMode, snapshot, recorded map[string]string, previous map[string]manifestEntry,
+	it repoItem, plan bool) collectResult {
 	res := collectResult{key: it.key, repo: it.repo, ref: it.defaultBranch}
 	dir := filepath.Join(o.out, it.key)
 
@@ -562,7 +574,7 @@ func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgN
 			res.networkOps = 1
 			return res
 		}
-		return o.cloneInto(ctx, orgName, tag, target, dir, it, res)
+		return o.cloneInto(ctx, orgName, tag, target, dir, history, it, res)
 	}
 
 	// A directory with a .git but no readable HEAD is a clone that never
@@ -655,16 +667,20 @@ func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgN
 			return res
 		}
 		res.status = collectStatusWouldUpdate
-		if has {
+		switch {
+		case history == historyFull:
+			res.detail = "to " + shortSHA(target) + ", fetching every branch"
+			res.networkOps = 1
+		case has:
 			res.detail = "to " + shortSHA(target) + ", already in the clone, so no fetch"
-		} else {
+		default:
 			res.detail = "to " + shortSHA(target) + ", fetching it first"
 			res.networkOps = 1
 		}
 		return res
 	}
 
-	if err := o.ensureCommit(ctx, dir, target); err != nil {
+	if err := o.bringUpToDate(ctx, dir, target, history); err != nil {
 		res.err = fmt.Errorf("fetching %s in %s: %w", shortSHA(target), it.repo, err)
 		return res
 	}
@@ -702,15 +718,31 @@ func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgN
 // through it loses that history, and the next gc deletes the commits (V1). Since
 // every target is resolved to a SHA first, a fetch only ever asks for something
 // missing, which is the harmless case (V2).
-func (o *collectOpts) ensureCommit(ctx context.Context, dir, target string) error {
+func (o *collectOpts) bringUpToDate(ctx context.Context, dir, target string, history historyMode) error {
 	has, err := o.git.HasCommit(ctx, dir, target)
 	if err != nil {
 		return err
 	}
-	if has {
-		return nil
+	if history == historySnapshot {
+		if has {
+			return nil
+		}
+		return o.git.Fetch(ctx, dir, target)
 	}
-	return o.git.Fetch(ctx, dir, target)
+
+	// The full setting fetches on every run even when the target is already
+	// here, because that is how the other branches stay current; the cost is one
+	// paced request per repository. --unshallow goes only to a clone still cut
+	// off at a depth, since git refuses it outright on a complete repository.
+	shallow, err := o.git.IsShallow(ctx, dir)
+	if err != nil {
+		return err
+	}
+	name := ""
+	if !has {
+		name = target
+	}
+	return o.git.FetchAll(ctx, dir, name, shallow)
 }
 
 // rewriteNote describes how target stands to the commit a previous collection
@@ -765,7 +797,8 @@ func (o *collectOpts) rewriteNote(ctx context.Context, client collectClient, dir
 // collection; a run killed mid-clone left a partial directory that every later
 // run then treated as a clone. Neither can happen to a directory that only
 // appears once it is finished.
-func (o *collectOpts) cloneInto(ctx context.Context, orgName, tag, target, dir string, it repoItem, res collectResult) collectResult {
+func (o *collectOpts) cloneInto(ctx context.Context, orgName, tag, target, dir string, history historyMode,
+	it repoItem, res collectResult) collectResult {
 	staging := filepath.Join(o.out, gitCLSDir, "staging", it.key)
 	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
 		res.err = fmt.Errorf("creating the staging directory for %s: %w", it.repo, err)
@@ -780,7 +813,7 @@ func (o *collectOpts) cloneInto(ctx context.Context, orgName, tag, target, dir s
 	// Any return before the move leaves nothing behind.
 	defer func() { _ = os.RemoveAll(staging) }()
 
-	if err := o.git.Clone(ctx, orgName, it.repo, staging); err != nil {
+	if err := o.git.Clone(ctx, orgName, it.repo, staging, history == historyFull); err != nil {
 		res.err = fmt.Errorf("cloning %s: %w", it.repo, err)
 		return res
 	}
@@ -801,7 +834,7 @@ func (o *collectOpts) cloneInto(ctx context.Context, orgName, tag, target, dir s
 		return res
 	}
 
-	if err := o.ensureCommit(ctx, staging, target); err != nil {
+	if err := o.bringUpToDate(ctx, staging, target, history); err != nil {
 		res.err = fmt.Errorf("fetching %s in %s: %w", shortSHA(target), it.repo, err)
 		return res
 	}
@@ -1252,15 +1285,56 @@ func (execGit) CloneExists(dir string) bool {
 	return err == nil && info.IsDir()
 }
 
-func (execGit) Clone(ctx context.Context, orgName, repo, dir string) error {
+func (execGit) Clone(ctx context.Context, orgName, repo, dir string, full bool) error {
 	// --no-tags: a clone otherwise imports the student's tags, and a student who
 	// pushes gh-cls/collect/<label> at a commit of their choosing would have it
 	// read back as the collection under that label.
-	_, stderr, err := gh2.ExecContext(ctx, "repo", "clone", orgName+"/"+repo, dir, "--", "--depth", "1", "--no-tags")
+	args := []string{"repo", "clone", orgName + "/" + repo, dir, "--", "--no-tags"}
+	if !full {
+		// Without --depth the clone already carries every commit and branch.
+		args = append(args, "--depth", "1")
+	}
+	_, stderr, err := gh2.ExecContext(ctx, args...)
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
 	return nil
+}
+
+// FetchAll is the full setting's fetch: every branch, plus target when it is
+// named, in one request.
+//
+// The refspec is given on the command line rather than left to the clone's
+// config, because older and hand-made clones are often single-branch and would
+// otherwise never see the other branches. --prune removes branches deleted on
+// GitHub and forced updates are taken, both of which touch only
+// refs/remotes/origin/*: tags and local branches, and so every collected commit
+// and any grader branch, are untouched.
+func (g execGit) FetchAll(ctx context.Context, dir, target string, unshallow bool) error {
+	args := []string{"fetch", "--no-tags", "--prune"}
+	if unshallow {
+		// git refuses this outright on a complete repository, so it is passed
+		// exactly when the clone is still cut off at a depth.
+		args = append(args, "--unshallow")
+	}
+	args = append(args, "origin", "+refs/heads/*:refs/remotes/origin/*")
+	if target != "" {
+		// Named only when missing: a commit GitHub no longer has would otherwise
+		// fail the whole fetch, taking the branch updates down with it.
+		args = append(args, target)
+	}
+	if _, errb, err := g.run(ctx, dir, args...); err != nil {
+		return fmt.Errorf("git fetch (all branches): %w: %s", err, strings.TrimSpace(errb))
+	}
+	return nil
+}
+
+func (g execGit) IsShallow(ctx context.Context, dir string) (bool, error) {
+	out, errb, err := g.run(ctx, dir, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return false, fmt.Errorf("git rev-parse --is-shallow-repository: %w: %s", err, strings.TrimSpace(errb))
+	}
+	return strings.TrimSpace(out) != "false", nil
 }
 
 func (execGit) run(ctx context.Context, dir string, args ...string) (string, string, error) {
@@ -1375,11 +1449,11 @@ func (g execGit) HasCommit(ctx context.Context, dir, sha string) (bool, error) {
 // perfectly ordinary descendants: a confident wrong answer, which is worse than
 // none. The caller asks GitHub instead.
 func (g execGit) IsAncestor(ctx context.Context, dir, a, b string) (bool, bool, error) {
-	shallow, errb, err := g.run(ctx, dir, "rev-parse", "--is-shallow-repository")
+	shallow, err := g.IsShallow(ctx, dir)
 	if err != nil {
-		return false, false, fmt.Errorf("git rev-parse --is-shallow-repository: %w: %s", err, strings.TrimSpace(errb))
+		return false, false, err
 	}
-	if strings.TrimSpace(shallow) != "false" {
+	if shallow {
 		return false, false, nil
 	}
 	for _, sha := range []string{a, b} {

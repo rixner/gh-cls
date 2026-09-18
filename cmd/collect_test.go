@@ -42,6 +42,14 @@ func fakeCollectClient(repos []gh.Repo) *ghtest.Fake {
 	}
 }
 
+// fakeFetchAll records one full-history fetch and what it asked for, so a test
+// can assert the shape of the request rather than only its effect.
+type fakeFetchAll struct {
+	dir       string
+	target    string
+	unshallow bool
+}
+
 // fakeClone is the in-memory state of one cloned repo.
 type fakeClone struct {
 	sha    string
@@ -49,6 +57,9 @@ type fakeClone struct {
 	modified  int  // tracked files changed
 	untracked int  // files git would report as ??
 	headHeld  bool // some branch, tag or remote-tracking ref contains HEAD
+	// shallow is a clone cut off at a depth, which is every clone a snapshot
+	// collection makes. It decides whether a full fetch may pass --unshallow.
+	shallow bool
 	// branch is the branch HEAD is on, empty when detached. A fresh clone lands
 	// on one; collect is expected to detach and delete it.
 	branch          string
@@ -82,8 +93,10 @@ type fakeGit struct {
 	// tips is the default-branch tip GetRef reports per repo, which is how a
 	// test moves a student's branch now that the target is resolved before any
 	// git runs. Unset means "sha-<repo>".
-	tips    map[string]string
-	fetched []string // refs fetched, for asserting the fetch rule held
+	tips       map[string]string
+	fetched    []string       // refs fetched, for asserting the fetch rule held
+	fetchedAll []fakeFetchAll // the full setting's fetches, with their arguments
+	clonedFull []bool         // whether each clone asked for the whole history
 	// compare is what GitHub's compare API reports for a repo. Unset means
 	// "ahead": the new commit descends from the old one, an ordinary update.
 	compare map[string]string
@@ -143,7 +156,9 @@ func (f *fakeGit) seed(dir, origin, sha string, clean bool, tags ...string) {
 	if !clean {
 		modified = 1
 	}
-	c := &fakeClone{sha: sha, origin: origin, modified: modified, headHeld: true,
+	// Seeded clones stand in for what earlier runs left: snapshot clones, cut
+	// off at a depth.
+	c := &fakeClone{sha: sha, origin: origin, modified: modified, headHeld: true, shallow: true,
 		config: map[string]string{}, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	for _, t := range tags {
 		c.tags[t] = true
@@ -158,23 +173,48 @@ func (f *fakeGit) CloneExists(dir string) bool {
 	return f.clones[dir] != nil
 }
 
-func (f *fakeGit) Clone(_ context.Context, org, repo, dir string) error {
+func (f *fakeGit) IsShallow(_ context.Context, dir string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.clones[dir]
+	if c == nil {
+		return false, nil
+	}
+	return c.shallow, nil
+}
+
+func (f *fakeGit) FetchAll(_ context.Context, dir, target string, unshallow bool) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.clones[dir]
+	if target != "" {
+		c.present = append(c.present, target)
+	}
+	if unshallow {
+		c.shallow = false
+	}
+	f.fetchedAll = append(f.fetchedAll, fakeFetchAll{dir: dir, target: target, unshallow: unshallow})
+	return nil
+}
+
+func (f *fakeGit) Clone(_ context.Context, org, repo, dir string, full bool) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e := f.cloneErr[repo]; e != nil {
 		return e
 	}
+	f.clonedFull = append(f.clonedFull, full)
 	if f.emptyRepos[repo] {
 		// An empty repository clones successfully and has no commit.
 		f.clones[dir] = &fakeClone{origin: originURL(org, repo), config: map[string]string{},
-			tags: map[string]bool{}, tagSHA: map[string]string{}}
+			shallow: !full, tags: map[string]bool{}, tagSHA: map[string]string{}}
 		f.cloned = append(f.cloned, dir)
 		return nil
 	}
 	// A fresh clone lands on the default branch, which is what collect has to
 	// detach from and delete.
 	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), headHeld: true, branch: "main",
-		config: map[string]string{}, tags: map[string]bool{}, tagSHA: map[string]string{}}
+		shallow: !full, config: map[string]string{}, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	f.cloned = append(f.cloned, dir)
 	return nil
 }
@@ -511,6 +551,73 @@ func TestCollectFetchesOnlyWhatTheCloneLacks(t *testing.T) {
 	}
 	if git.clones[alanDir].sha != "sha-moved" {
 		t.Errorf("alan should have moved to the new commit, got %q", git.clones[alanDir].sha)
+	}
+	// The snapshot setting never reaches for the all-branches fetch, which is
+	// what would cut every branch already in a clone down to one commit (V11).
+	if len(git.fetchedAll) != 0 {
+		t.Errorf("the snapshot setting must not fetch every branch, did %v", git.fetchedAll)
+	}
+}
+
+func TestCollectFullHistoryFetchesEveryBranchAndDeepensOnlyOnce(t *testing.T) {
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	o.history = "full"
+	// ada is a snapshot clone an earlier run left behind: shallow, and a commit
+	// short of where its student now is.
+	adaDir := filepath.Join(o.out, "ada")
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true)
+	git.tips["hw1-ada"] = "sha-new"
+
+	var first bytes.Buffer
+	if err := o.run(context.Background(), &first, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, first.String())
+	}
+	t.Log("\n" + first.String())
+
+	// The existing shallow clone is deepened, and the missing commit is named.
+	var ada *fakeFetchAll
+	for i := range git.fetchedAll {
+		if git.fetchedAll[i].dir == adaDir {
+			ada = &git.fetchedAll[i]
+		}
+	}
+	if ada == nil {
+		t.Fatalf("the full setting should fetch every branch for ada, did %v", git.fetchedAll)
+	}
+	if !ada.unshallow {
+		t.Error("a shallow clone has to be deepened on its first full run")
+	}
+	if ada.target != "sha-new" {
+		t.Errorf("a commit the clone lacks should be named, got %q", ada.target)
+	}
+	// Nothing goes through the depth-1 fetch in this setting.
+	if len(git.fetched) != 0 {
+		t.Errorf("the full setting must not use the shallow fetch, did %v", git.fetched)
+	}
+	// New clones ask for the whole history rather than one commit.
+	if slices.Contains(git.clonedFull, false) {
+		t.Errorf("every clone should ask for full history, got %v", git.clonedFull)
+	}
+
+	// A later run must not pass --unshallow again: git refuses it outright on a
+	// complete repository, which would fail the repo rather than update it.
+	o.label = "second"
+	git.fetchedAll = nil
+	var second bytes.Buffer
+	if err := o.run(context.Background(), &second, "hw1"); err != nil {
+		t.Fatalf("second run: %v\n%s", err, second.String())
+	}
+	for _, f := range git.fetchedAll {
+		if f.unshallow {
+			t.Errorf("a clone that is already complete must not be deepened again: %+v", f)
+		}
+		if f.dir == adaDir && f.target != "" {
+			t.Errorf("a commit already in the clone should not be named, got %q", f.target)
+		}
+	}
+	if len(git.fetchedAll) == 0 {
+		t.Error("the full setting fetches every run, since that is how other branches stay current")
 	}
 }
 

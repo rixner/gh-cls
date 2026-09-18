@@ -64,7 +64,12 @@ func (r *recordingGit) enter() {
 	r.mu.Unlock()
 }
 
-func (r *recordingGit) Clone(_ context.Context, _, _, _ string) error {
+func (r *recordingGit) Clone(_ context.Context, _, _, _ string, _ bool) error {
+	r.enter()
+	return r.err
+}
+
+func (r *recordingGit) FetchAll(_ context.Context, _, _ string, _ bool) error {
 	r.enter()
 	return r.err
 }
@@ -104,7 +109,7 @@ func TestClonesAreSpacedAndSerial(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := p.Clone(ctx, "org", "hw1-s01", "dir"); err != nil {
+			if err := p.Clone(ctx, "org", "hw1-s01", "dir", false); err != nil {
 				t.Error(err)
 			}
 		}()
@@ -131,13 +136,13 @@ func TestFetchesShareTheCloneRate(t *testing.T) {
 	p, rec, _ := newPacedTest(3 * time.Second)
 	ctx := context.Background()
 
-	if err := p.Clone(ctx, "org", "hw1-s01", "dir"); err != nil {
+	if err := p.Clone(ctx, "org", "hw1-s01", "dir", false); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Fetch(ctx, "dir", "main"); err != nil {
 		t.Fatal(err)
 	}
-	if err := p.Clone(ctx, "org", "hw1-s02", "dir2"); err != nil {
+	if err := p.Clone(ctx, "org", "hw1-s02", "dir2", false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -174,12 +179,12 @@ func TestPacingStopsWaitingWhenTheRunIsCancelled(t *testing.T) {
 	p, rec, clock := newPacedTest(3 * time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 
-	if err := p.Clone(ctx, "org", "hw1-s01", "dir"); err != nil {
+	if err := p.Clone(ctx, "org", "hw1-s01", "dir", false); err != nil {
 		t.Fatal(err)
 	}
 	cancel()
 	for i := 0; i < 3; i++ {
-		_ = p.Clone(ctx, "org", "hw1-s02", "dir2")
+		_ = p.Clone(ctx, "org", "hw1-s02", "dir2", false)
 	}
 
 	if got := clock.since(); got != 0 {
@@ -197,11 +202,11 @@ func TestPacingHoldsTheNextTurnEvenWhenAnOperationFails(t *testing.T) {
 	rec.err = errors.New("clone failed")
 	ctx := context.Background()
 
-	if err := p.Clone(ctx, "org", "hw1-s01", "dir"); err == nil {
+	if err := p.Clone(ctx, "org", "hw1-s01", "dir", false); err == nil {
 		t.Fatal("want the underlying error surfaced")
 	}
 	rec.err = nil
-	if err := p.Clone(ctx, "org", "hw1-s02", "dir2"); err != nil {
+	if err := p.Clone(ctx, "org", "hw1-s02", "dir2", false); err != nil {
 		t.Fatal(err)
 	}
 	if rec.at[1] != 3*time.Second {
