@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -52,6 +53,14 @@ type gitRunner interface {
 	Fetch(ctx context.Context, dir, ref string) (forced bool, err error)
 	Checkout(ctx context.Context, dir, ref string) error
 	CreateTag(ctx context.Context, dir, tag, sha string) error
+	// CheckRefFormat reports whether ref is a name git will accept. It takes no
+	// clone: it is asked once, before any repository is touched, so a label that
+	// cannot become a tag fails the run before it has moved a worktree.
+	//
+	// A false with a nil error is git's considered no. A non-nil error means git
+	// could not be asked at all, which is a different problem and must not reach
+	// the instructor as a complaint about their label.
+	CheckRefFormat(ctx context.Context, ref string) (bool, error)
 }
 
 // collectOpts carries the resolved flags and dependencies for `gh cls collect`.
@@ -178,6 +187,18 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		label = o.now().Format("20060102-150405")
 	}
 	tag := collectTagPrefix + label
+	// A label git cannot spell as a tag used to fail every repository at the
+	// tagging step, by which point every worktree had already moved and nothing
+	// had been recorded. Ask git first, while a refusal still costs nothing.
+	ok, err := o.git.CheckRefFormat(ctx, "refs/tags/"+tag)
+	if err != nil {
+		return fmt.Errorf("checking whether %q is a usable tag name: %w", tag, err)
+	}
+	if !ok {
+		return fmt.Errorf("--label %q cannot be used in a tag name: git will not accept %q; "+
+			"use a label without spaces, without the characters ~^:?*[\\, without \"..\", and not ending in \".lock\"",
+			label, tag)
+	}
 
 	client, err := o.newClient(ctx)
 	if err != nil {
@@ -210,8 +231,23 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	}
 	sort.Strings(missing)
 
+	// A snapshot file for another assignment matches nothing here, and every
+	// repository would be skipped as "not in the snapshot": a full run that
+	// collects nobody and reads as if that were the answer. Refuse it instead,
+	// before anything is cloned.
+	unmatched := unmatchedSnapshotKeys(pinned, present)
+	if len(pinned) > 0 && len(unmatched) == len(pinned) {
+		return fmt.Errorf("snapshot file %s names %d key(s), none of which match a %s-* repository: %s; "+
+			"this looks like another assignment's snapshot file",
+			o.snapshot, len(pinned), name, strings.Join(unmatched, ", "))
+	}
+
 	fmt.Fprintf(out, "Collecting %s into %s (tag %s)\n", name, o.out, tag)
 	reportReconcile(out, items, missing)
+	if len(unmatched) > 0 {
+		fmt.Fprintf(out, "note: %d snapshot key(s) match no repository, so nothing is pinned for them:\n  %s\n",
+			len(unmatched), strings.Join(unmatched, "\n  "))
+	}
 
 	if o.dryRun {
 		fmt.Fprintf(out, "\nDRY RUN: nothing cloned\n")
@@ -556,13 +592,38 @@ func parseSnapshot(path string) (map[string]string, error) {
 	}
 	out := make(map[string]string, len(raw))
 	for k, v := range raw {
-		v = strings.TrimSpace(v)
+		v = strings.ToLower(strings.TrimSpace(v))
 		if v == "" {
 			return nil, fmt.Errorf("snapshot file %s: empty SHA for %q", path, k)
+		}
+		if !fullCommitSHA.MatchString(v) {
+			return nil, fmt.Errorf("snapshot file %s: %q for %q is not a full commit SHA; "+
+				"give the whole 40-character SHA (64 in a SHA-256 repository) that gh cls activity --snapshot writes",
+				path, v, k)
 		}
 		out[strings.ToLower(k)] = v
 	}
 	return out, nil
+}
+
+// fullCommitSHA matches a complete git object name: 40 hex digits for a SHA-1
+// repository, 64 for SHA-256. An abbreviation is rejected rather than resolved,
+// because collect names the commit to GitHub in a fetch, which takes the whole
+// name, and because a prefix that is unambiguous today need not stay so.
+var fullCommitSHA = regexp.MustCompile(`^(?:[0-9a-f]{40}|[0-9a-f]{64})$`)
+
+// unmatchedSnapshotKeys returns the snapshot keys that name no repository in
+// this assignment, sorted. A mistyped key collects nothing for that student and
+// says nothing about it, so they are named rather than passed over.
+func unmatchedSnapshotKeys(snapshot map[string]string, present map[string]bool) []string {
+	var out []string
+	for k := range snapshot {
+		if !present[k] {
+			out = append(out, k)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // execGit is the real gitRunner: clones via gh (inheriting its auth) and runs
@@ -649,6 +710,26 @@ func (g execGit) Checkout(ctx context.Context, dir, ref string) error {
 		return fmt.Errorf("git checkout %s: %w: %s", ref, err, strings.TrimSpace(errb))
 	}
 	return nil
+}
+
+// CheckRefFormat asks git whether ref is a usable ref name. It runs outside any
+// clone, since the answer does not depend on one. check-ref-format exits 1 for a
+// name it rejects, which is an answer; any other failure means git could not be
+// asked and is reported as an error.
+func (execGit) CheckRefFormat(ctx context.Context, ref string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "check-ref-format", ref)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, fmt.Errorf("git check-ref-format %s: %w: %s", ref, err, strings.TrimSpace(errb.String()))
 }
 
 func (g execGit) CreateTag(ctx context.Context, dir, tag, sha string) error {

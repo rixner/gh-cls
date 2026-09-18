@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -55,6 +56,9 @@ type fakeGit struct {
 	remoteTip map[string]string // dir -> sha a fetch moves FETCH_HEAD to
 	cloneErr  map[string]error  // repo -> error returned by Clone
 	cloned    []string          // dirs cloned, for asserting dry-run did nothing
+	// refFormatErr makes CheckRefFormat fail to run at all, which is a different
+	// outcome from git rejecting the name.
+	refFormatErr error
 }
 
 func newFakeGit() *fakeGit {
@@ -157,6 +161,39 @@ func (f *fakeGit) CreateTag(_ context.Context, dir, tag, sha string) error {
 	f.clones[dir].tags[tag] = true
 	f.clones[dir].tagSHA[tag] = sha
 	return nil
+}
+
+func (f *fakeGit) CheckRefFormat(_ context.Context, ref string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.refFormatErr != nil {
+		return false, f.refFormatErr
+	}
+	return refNameLooksValid(ref), nil
+}
+
+// refNameLooksValid implements the part of git-check-ref-format(1) a collect
+// label can plausibly violate. Git itself is the authority; the fake exists so
+// the unit tests need no git, and TestCheckRefFormatMatchesGit holds the two to
+// the same answers so this cannot drift into a comfortable fiction.
+func refNameLooksValid(ref string) bool {
+	if ref == "" || ref == "@" ||
+		strings.HasSuffix(ref, "/") || strings.HasSuffix(ref, ".") ||
+		strings.Contains(ref, "..") || strings.Contains(ref, "//") ||
+		strings.Contains(ref, "@{") {
+		return false
+	}
+	for _, r := range ref {
+		if r <= ' ' || r == 0x7f || strings.ContainsRune("~^:?*[\\", r) {
+			return false
+		}
+	}
+	for part := range strings.SplitSeq(ref, "/") {
+		if part == "" || strings.HasPrefix(part, ".") || strings.HasSuffix(part, ".lock") {
+			return false
+		}
+	}
+	return true
 }
 
 func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, groupsYML, snapshotYML string) *collectOpts {
@@ -288,23 +325,30 @@ func TestCollectNonFFWarns(t *testing.T) {
 	}
 }
 
+// Snapshot SHAs are full-length: collect rejects an abbreviation rather than
+// resolving it, so these fixtures spell whole object names.
+const (
+	adaSHA  = "aaaa1111aaaa1111aaaa1111aaaa1111aaaa1111"
+	alanSHA = "bbbb2222bbbb2222bbbb2222bbbb2222bbbb2222"
+)
+
 func TestCollectPinned(t *testing.T) {
 	git := newFakeGit()
 	// grace has no SHA, so it is skipped.
-	commits := "ada: aaaa1111\nalan: bbbb2222\n"
+	commits := "ada: " + adaSHA + "\nalan: " + alanSHA + "\n"
 	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", commits)
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
 		t.Fatalf("run: %v\n%s", err, buf.String())
 	}
-	if git.clones[filepath.Join(o.out, "ada")].sha != "aaaa1111" {
+	if git.clones[filepath.Join(o.out, "ada")].sha != adaSHA {
 		t.Errorf("ada should be at the pinned SHA, got %q", git.clones[filepath.Join(o.out, "ada")].sha)
 	}
 	if !strings.Contains(buf.String(), "skipped (not in the snapshot) hw1-grace") {
 		t.Errorf("a unit absent from the snapshot should be skipped:\n%s", buf.String())
 	}
 	ada := manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada")
-	if ada == nil || ada[3] != "aaaa1111" || ada[4] != "(pinned)" {
+	if ada == nil || ada[3] != adaSHA || ada[4] != "(pinned)" {
 		t.Errorf("pinned manifest row wrong: %v", ada)
 	}
 }
@@ -481,6 +525,144 @@ func TestCollectRejectsClonesOfAnotherRepo(t *testing.T) {
 	}
 	if manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada") != nil {
 		t.Error("a repo that was never collected must not appear in the manifest")
+	}
+}
+
+func TestCollectRefusesALabelGitCannotTag(t *testing.T) {
+	// A label git cannot spell as a tag used to fail at the tagging step, by
+	// which point every worktree had moved and nothing had been recorded. It is
+	// refused while a refusal still costs nothing.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	o.label = "fall 2026"
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil {
+		t.Fatalf("a label with a space should be refused:\n%s", buf.String())
+	}
+	t.Log("\n" + err.Error())
+	for _, want := range []string{"fall 2026", "cannot be used in a tag name"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal should mention %q, got: %v", want, err)
+		}
+	}
+	if len(git.cloned) != 0 {
+		t.Errorf("nothing should be cloned before the label is checked, cloned %v", git.cloned)
+	}
+	if _, err := os.Stat(filepath.Join(o.out, "collected.csv")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a refused run must leave no manifest")
+	}
+}
+
+func TestCollectReportsAnUnaskableGitSeparatelyFromABadLabel(t *testing.T) {
+	// git failing to run at all is not the instructor's label being wrong, and
+	// telling them to fix their label would send them after the wrong problem.
+	git := newFakeGit()
+	git.refFormatErr = errors.New("exec: \"git\": executable file not found in $PATH")
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil {
+		t.Fatal("a git that cannot be run should fail the run")
+	}
+	t.Log("\n" + err.Error())
+	if strings.Contains(err.Error(), "cannot be used in a tag name") {
+		t.Errorf("a git failure must not be reported as a bad label: %v", err)
+	}
+	if !strings.Contains(err.Error(), "executable file not found") {
+		t.Errorf("the underlying failure should survive: %v", err)
+	}
+}
+
+func TestCollectRefusesAnAbbreviatedSnapshotSHA(t *testing.T) {
+	// Only an empty SHA used to be rejected. An abbreviation reaches the fetch,
+	// where it fails per repo, after new clones exist.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "ada: aaaa1111\n")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil {
+		t.Fatalf("an abbreviated SHA should be refused:\n%s", buf.String())
+	}
+	t.Log("\n" + err.Error())
+	for _, want := range []string{"aaaa1111", "full commit SHA", "activity --snapshot"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal should mention %q, got: %v", want, err)
+		}
+	}
+	if len(git.cloned) != 0 {
+		t.Errorf("nothing should be cloned, cloned %v", git.cloned)
+	}
+}
+
+func TestCollectRefusesASnapshotThatMatchesNoRepository(t *testing.T) {
+	// A snapshot file for another assignment matches nothing here. Every repo
+	// would be skipped as "not in the snapshot" and the run would collect nobody
+	// while reading as though that were the answer.
+	git := newFakeGit()
+	commits := "zeta: " + adaSHA + "\nomega: " + alanSHA + "\n"
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", commits)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil {
+		t.Fatalf("a snapshot matching nothing should be refused:\n%s", buf.String())
+	}
+	t.Log("\n" + err.Error())
+	for _, want := range []string{"none of which match", "zeta", "omega", "another assignment"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal should mention %q, got: %v", want, err)
+		}
+	}
+	if len(git.cloned) != 0 {
+		t.Errorf("nothing should be cloned, cloned %v", git.cloned)
+	}
+}
+
+func TestCollectNotesSnapshotKeysThatMatchNoRepository(t *testing.T) {
+	// A mistyped key silently pins nothing for that student. The run still goes
+	// ahead, since the other keys are good, but the typo is named.
+	git := newFakeGit()
+	commits := "ada: " + adaSHA + "\nadaa: " + alanSHA + "\n"
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", commits)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+	if !strings.Contains(out, "adaa") || !strings.Contains(out, "match no repository") {
+		t.Errorf("a snapshot key matching nothing should be named:\n%s", out)
+	}
+}
+
+func TestCheckRefFormatMatchesGit(t *testing.T) {
+	// The fake stands in for git so the unit tests need none, which is only safe
+	// while the two agree. This holds them to the same answers, so a drifted fake
+	// (or a git release that changes the rules) fails here rather than during a
+	// term's collection.
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git is not installed")
+	}
+	const p = "refs/tags/gh-cls/collect/"
+	refs := []string{
+		p + "final", p + "20260629-141233", p + "ok-dash_under.dot",
+		p + "fall 2026", p + "fall..2026", p + "final.lock",
+		p + "ca~ret", p + "co:lon", p + "quest?ion", p + "star*",
+		p + "brack[et", p + "back\\slash", p + "at@{brace",
+		p + "trailing.", p + ".leading", p, p + "/double",
+	}
+	for _, ref := range refs {
+		want, err := execGit{}.CheckRefFormat(context.Background(), ref)
+		if err != nil {
+			t.Fatalf("asking git about %q: %v", ref, err)
+		}
+		if got := refNameLooksValid(ref); got != want {
+			t.Errorf("refNameLooksValid(%q) = %v, but git says %v", ref, got, want)
+		}
 	}
 }
 
