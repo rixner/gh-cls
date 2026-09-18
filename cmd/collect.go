@@ -333,6 +333,18 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	if err := os.MkdirAll(o.out, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", o.out, err)
 	}
+	// Claim the directory before touching anything in it. This comes after the
+	// dry run has returned, so a dry run still writes nothing at all.
+	lock, err := acquireRunLock(o.out)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if rerr := lock.release(); rerr != nil {
+			fmt.Fprintf(out, "warning: %v\n", rerr)
+		}
+	}()
+
 	// Clear anything a killed run left staged. This is collect's own directory,
 	// and the path is built from the resolved --out plus fixed segments, never
 	// from a student key, so nothing a student or grader names can steer it.
@@ -401,6 +413,15 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label string, snapshot, recorded map[string]string, it repoItem) collectResult {
 	res := collectResult{key: it.key, repo: it.repo, ref: it.defaultBranch}
 	dir := filepath.Join(o.out, it.key)
+
+	// <out>/.gh-cls is collect's own. A repository whose key lands there would
+	// have its clone and collect's staging area fight over one directory.
+	if strings.EqualFold(it.key, gitCLSDir) {
+		res.status = collectStatusRefused
+		res.detail = fmt.Sprintf("the key %q is the name collect uses for its own directory under --out; "+
+			"rename the repository, or collect it into a different --out", it.key)
+		return res
+	}
 
 	pinned := snapshot != nil
 	var sha string

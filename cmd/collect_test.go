@@ -621,6 +621,81 @@ func TestCollectRejectsClonesOfAnotherRepo(t *testing.T) {
 	}
 }
 
+func TestCollectRefusesASecondRunInTheSameDirectory(t *testing.T) {
+	// P12: two runs into one --out race on the clones and the tags, and both
+	// read the manifest before appending, so rows can be duplicated.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	if err := os.MkdirAll(o.out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	held, err := acquireRunLock(o.out)
+	if err != nil {
+		t.Fatalf("first claim: %v", err)
+	}
+
+	runErr := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if runErr == nil {
+		t.Fatal("a second run in the same directory should refuse")
+	}
+	t.Log("\n" + runErr.Error())
+	for _, want := range []string{"already running", "host:", "pid:", "delete"} {
+		if !strings.Contains(runErr.Error(), want) {
+			t.Errorf("the refusal should mention %q, got: %v", want, runErr)
+		}
+	}
+	if len(git.cloned) != 0 {
+		t.Errorf("a refused run must clone nothing, cloned %v", git.cloned)
+	}
+
+	// Once the first run is done the directory is free again.
+	if err := held.release(); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+		t.Fatalf("the directory should be usable once released: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(o.out, gitCLSDir, "lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a finished run should leave no lock behind")
+	}
+}
+
+func TestCollectDryRunTakesNoLock(t *testing.T) {
+	// A dry run writes nothing, the lock included, so it can be run against a
+	// directory a real collection is working in.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	o.dryRun = true
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+		t.Fatalf("dry run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(o.out, gitCLSDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a dry run should create nothing under --out")
+	}
+}
+
+func TestCollectRefusesAKeyThatCollidesWithItsOwnDirectory(t *testing.T) {
+	// <out>/.gh-cls holds the lock and the staging area. A repository whose key
+	// landed there would fight collect for the same directory.
+	repos := []gh.Repo{{Name: "hw1-.gh-cls", DefaultBranch: "main"}}
+	git := newFakeGit()
+	o := newCollectOpts(t, git, repos, assignRoster, "", "")
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	out := buf.String()
+	t.Log("\n" + out)
+	if err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("a key colliding with collect's own directory should be refused, got %v", err)
+	}
+	if !strings.Contains(out, "collect uses for its own directory") {
+		t.Errorf("the refusal should say why:\n%s", out)
+	}
+	if len(git.cloned) != 0 {
+		t.Errorf("nothing should be cloned for it, cloned %v", git.cloned)
+	}
+}
+
 func TestCollectLeavesNothingBehindWhenAFirstCollectionFails(t *testing.T) {
 	// P7: collect cloned the tip into <out>/<key> and then fetched the pinned
 	// SHA. When that fetch failed the tip stayed on disk, untagged and often
