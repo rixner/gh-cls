@@ -61,6 +61,20 @@ type gitRunner interface {
 	Fetch(ctx context.Context, dir, ref string) (forced bool, err error)
 	Checkout(ctx context.Context, dir, ref string) error
 	CreateTag(ctx context.Context, dir, tag, sha string) error
+	// CurrentBranch returns the branch HEAD is on, or "" when HEAD is detached.
+	// A fresh clone is always on one, and collect deletes it so that nothing in
+	// the clone can later be taken for a branch that tracks GitHub.
+	CurrentBranch(ctx context.Context, dir string) (string, error)
+	DeleteBranch(ctx context.Context, dir, branch string) error
+	// MoveIntoPlace moves a finished clone from the staging area to its place
+	// under --out. It fails with errTargetExists rather than replace anything
+	// already there, which is the whole point: it is the one operation that
+	// writes a path under --out, and it writes only names that do not yet exist.
+	MoveIntoPlace(ctx context.Context, staging, dir string) error
+	// SetConfig writes one setting into a clone. Collect uses it for
+	// checkout.guess, without which `git checkout main` recreates the branch
+	// from origin/main and silently yields code other than what was collected.
+	SetConfig(ctx context.Context, dir, key, value string) error
 	// CheckRefFormat reports whether ref is a name git will accept. It takes no
 	// clone: it is asked once, before any repository is touched, so a label that
 	// cannot become a tag fails the run before it has moved a worktree.
@@ -169,7 +183,22 @@ const (
 	// sitting untracked or ignored in the worktree. Git refuses the checkout and
 	// changes nothing, so the grader's file survives.
 	collectStatusInTheWay = "skipped (files in the way)"
+	// collectStatusEmpty is a repository with no commits. It clones fine and has
+	// no HEAD, which used to leave a directory behind that failed every later run.
+	collectStatusEmpty = "skipped (empty repository)"
 )
+
+// gitCLSDir is collect's own directory under --out, holding the staging area a
+// new clone is assembled in. Collect creates, rewrites and removes what it keeps
+// there freely; the one constraint is that nothing it does there may affect
+// anything outside it.
+const gitCLSDir = ".gh-cls"
+
+// dirExists reports whether path is present, whatever it is.
+func dirExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
 
 // worktreeState is what a clone's worktree holds beyond its commit. Ignored
 // files are deliberately not counted: git does not list them without an extra
@@ -304,6 +333,12 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	if err := os.MkdirAll(o.out, 0o755); err != nil {
 		return fmt.Errorf("creating %s: %w", o.out, err)
 	}
+	// Clear anything a killed run left staged. This is collect's own directory,
+	// and the path is built from the resolved --out plus fixed segments, never
+	// from a student key, so nothing a student or grader names can steer it.
+	if err := os.RemoveAll(filepath.Join(o.out, gitCLSDir, "staging")); err != nil {
+		return fmt.Errorf("clearing %s: %w", filepath.Join(o.out, gitCLSDir, "staging"), err)
+	}
 
 	// What this label already records, read once before any repository is
 	// touched. A deleted tag is refilled from it rather than from the current
@@ -409,21 +444,28 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 	}
 
 	if !o.git.CloneExists(dir) {
-		if err := o.git.Clone(ctx, orgName, it.repo, dir); err != nil {
-			res.err = fmt.Errorf("cloning %s: %w", it.repo, err)
+		// Something that is not a clone is in the way. Collect never moves or
+		// deletes anything under --out, empty or not: judging a directory
+		// disposable is the instructor's call, not collect's.
+		if dirExists(dir) {
+			res.status = collectStatusRefused
+			res.detail = fmt.Sprintf("%s already exists and is not a clone collect can use; "+
+				"remove it or choose another --out", dir)
 			return res
 		}
-		if target != "" {
-			if _, err := o.git.Fetch(ctx, dir, target); err != nil {
-				res.err = fmt.Errorf("fetching %s in %s: %w", target, it.repo, err)
-				return res
-			}
-			if err := o.git.Checkout(ctx, dir, target); err != nil {
-				res.err = fmt.Errorf("checking out %s in %s: %w", target, it.repo, err)
-				return res
-			}
-		}
-		return o.tagHead(ctx, dir, tag, collectStatusCollected, res)
+		return o.cloneInto(ctx, orgName, tag, target, dir, it, res)
+	}
+
+	// A directory with a .git but no readable HEAD is a clone that never
+	// finished: a run killed mid-clone, or the empty-repository clone an older
+	// version left behind. Either way collect neither removes nor moves it.
+	head, err := o.git.Head(ctx, dir)
+	if err != nil {
+		res.status = collectStatusRefused
+		res.detail = fmt.Sprintf("%s has no readable HEAD, so it is an incomplete clone "+
+			"(a killed run, or a repository that had no commits when it was first collected); "+
+			"delete the directory and re-run", dir)
+		return res
 	}
 
 	// Existing clone. It is only this repository's clone if its origin says so:
@@ -482,11 +524,6 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 	// anything else would leave it reachable only from the reflog, which expires,
 	// so the clone is left alone and the grader is told how to keep it. HEAD
 	// already sitting on the target is not at risk: nothing is left behind.
-	head, err := o.git.Head(ctx, dir)
-	if err != nil {
-		res.err = fmt.Errorf("reading HEAD of %s: %w", it.repo, err)
-		return res
-	}
 	if !strings.EqualFold(head, target) {
 		held, err := o.git.HeadHeldByRef(ctx, dir)
 		if err != nil {
@@ -528,6 +565,93 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 		res.detail = fmt.Sprintf("collected with %d untracked file(s) still in the worktree", state.untracked)
 	}
 	return o.tagHead(ctx, dir, tag, collectStatusUpdated, res)
+}
+
+// cloneInto builds a new clone somewhere else and moves it into place only once
+// it is complete and tagged, so <out>/<key> never exists in a half-made state.
+//
+// This is what makes a failed first collection leave nothing behind. Cloning
+// straight into <out>/<key> put the tip on disk, untagged and often
+// post-deadline, and a grader browsing the directory saw what looked like a
+// collection; a run killed mid-clone left a partial directory that every later
+// run then treated as a clone. Neither can happen to a directory that only
+// appears once it is finished.
+func (o *collectOpts) cloneInto(ctx context.Context, orgName, tag, target, dir string, it repoItem, res collectResult) collectResult {
+	staging := filepath.Join(o.out, gitCLSDir, "staging", it.key)
+	if err := os.MkdirAll(filepath.Dir(staging), 0o755); err != nil {
+		res.err = fmt.Errorf("creating the staging directory for %s: %w", it.repo, err)
+		return res
+	}
+	// Anything already here is a leftover from a killed run, in collect's own
+	// directory. Removing it affects nothing outside .gh-cls.
+	if err := os.RemoveAll(staging); err != nil {
+		res.err = fmt.Errorf("clearing the staging directory for %s: %w", it.repo, err)
+		return res
+	}
+	// Any return before the move leaves nothing behind.
+	defer func() { _ = os.RemoveAll(staging) }()
+
+	if err := o.git.Clone(ctx, orgName, it.repo, staging); err != nil {
+		res.err = fmt.Errorf("cloning %s: %w", it.repo, err)
+		return res
+	}
+
+	// A repository with no commits clones fine and has no HEAD. It is reported
+	// and gets no directory at all, rather than leaving an empty clone that
+	// fails on every later run.
+	if _, err := o.git.Head(ctx, staging); err != nil {
+		res.status = collectStatusEmpty
+		res.detail = "the repository has no commits yet, so there is nothing to collect"
+		return res
+	}
+
+	// Read the branch before detaching, while there still is one.
+	branch, err := o.git.CurrentBranch(ctx, staging)
+	if err != nil {
+		res.err = fmt.Errorf("reading the branch of the new clone of %s: %w", it.repo, err)
+		return res
+	}
+
+	checkoutRef := target
+	if checkoutRef == "" {
+		checkoutRef = "HEAD"
+	} else if _, err := o.git.Fetch(ctx, staging, target); err != nil {
+		res.err = fmt.Errorf("fetching %s in %s: %w", target, it.repo, err)
+		return res
+	}
+	if err := o.git.Checkout(ctx, staging, checkoutRef); err != nil {
+		res.err = fmt.Errorf("checking out %s in %s: %w", checkoutRef, it.repo, err)
+		return res
+	}
+	if branch != "" {
+		if err := o.git.DeleteBranch(ctx, staging, branch); err != nil {
+			res.err = fmt.Errorf("removing the branch %s left by the new clone of %s: %w", branch, it.repo, err)
+			return res
+		}
+	}
+	// Without this, `git checkout main` recreates the branch from origin/main
+	// and hands a grading script code other than what was collected.
+	if err := o.git.SetConfig(ctx, staging, "checkout.guess", "false"); err != nil {
+		res.err = fmt.Errorf("setting checkout.guess in the new clone of %s: %w", it.repo, err)
+		return res
+	}
+
+	if res = o.tagHead(ctx, staging, tag, collectStatusCollected, res); res.err != nil {
+		return res
+	}
+
+	// The move is the commit point, and it refuses rather than replace.
+	if err := o.git.MoveIntoPlace(ctx, staging, dir); err != nil {
+		if errors.Is(err, errTargetExists) {
+			res.status = collectStatusRefused
+			res.detail = fmt.Sprintf("%s appeared while %s was being collected; "+
+				"remove it or choose another --out, then re-run", dir, it.repo)
+			return res
+		}
+		res.err = fmt.Errorf("moving the new clone of %s into place: %w", it.repo, err)
+		return res
+	}
+	return res
 }
 
 // originNames reports whether a clone's origin URL names org/repo. Remotes are
@@ -928,6 +1052,38 @@ func (g execGit) Checkout(ctx context.Context, dir, ref string) error {
 // else. The runner pins LC_ALL=C, so the wording is stable English.
 func filesInTheWay(err error) bool {
 	return err != nil && strings.Contains(err.Error(), "would be overwritten by checkout")
+}
+
+// CurrentBranch reports the branch HEAD is on. A detached HEAD is not an error
+// here, it is simply no branch: symbolic-ref --quiet exits non-zero and says
+// nothing, which is how the two are told apart.
+func (g execGit) CurrentBranch(ctx context.Context, dir string) (string, error) {
+	out, errb, err := g.run(ctx, dir, "symbolic-ref", "--quiet", "--short", "HEAD")
+	if err != nil {
+		if strings.TrimSpace(errb) == "" {
+			return "", nil
+		}
+		return "", fmt.Errorf("git symbolic-ref HEAD: %w: %s", err, strings.TrimSpace(errb))
+	}
+	return strings.TrimSpace(out), nil
+}
+
+func (execGit) MoveIntoPlace(_ context.Context, staging, dir string) error {
+	return renameNoReplace(staging, dir)
+}
+
+func (g execGit) DeleteBranch(ctx context.Context, dir, branch string) error {
+	if _, errb, err := g.run(ctx, dir, "branch", "--delete", "--force", branch); err != nil {
+		return fmt.Errorf("git branch -D %s: %w: %s", branch, err, strings.TrimSpace(errb))
+	}
+	return nil
+}
+
+func (g execGit) SetConfig(ctx context.Context, dir, key, value string) error {
+	if _, errb, err := g.run(ctx, dir, "config", key, value); err != nil {
+		return fmt.Errorf("git config %s %s: %w: %s", key, value, err, strings.TrimSpace(errb))
+	}
+	return nil
 }
 
 // CheckRefFormat asks git whether ref is a usable ref name. It runs outside any

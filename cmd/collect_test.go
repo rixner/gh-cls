@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -39,7 +40,12 @@ type fakeClone struct {
 	modified  int  // tracked files changed
 	untracked int  // files git would report as ??
 	headHeld  bool // some branch, tag or remote-tracking ref contains HEAD
-	tags      map[string]bool
+	// branch is the branch HEAD is on, empty when detached. A fresh clone lands
+	// on one; collect is expected to detach and delete it.
+	branch          string
+	deletedBranches []string
+	config          map[string]string
+	tags            map[string]bool
 	// tagSHA is the commit each tag names, which is not necessarily the clone's
 	// current sha: a grading checkout can move HEAD after a collection.
 	tagSHA map[string]string
@@ -58,7 +64,10 @@ type fakeGit struct {
 	remoteTip map[string]string // dir -> sha a fetch moves FETCH_HEAD to
 	cloneErr    map[string]error // repo -> error returned by Clone
 	checkoutErr map[string]error // dir -> error returned by Checkout
+	fetchErr    map[string]error // ref -> error returned by Fetch
+	emptyRepos  map[string]bool  // repo -> clones fine but has no commits
 	cloned      []string         // dirs cloned, for asserting dry-run did nothing
+	moved       []string         // dirs a finished clone was moved into place at
 	// refFormatErr makes CheckRefFormat fail to run at all, which is a different
 	// outcome from git rejecting the name.
 	refFormatErr error
@@ -71,6 +80,8 @@ func newFakeGit() *fakeGit {
 		remoteTip: map[string]string{},
 		cloneErr:    map[string]error{},
 		checkoutErr: map[string]error{},
+		fetchErr:    map[string]error{},
+		emptyRepos:  map[string]bool{},
 	}
 }
 
@@ -83,7 +94,8 @@ func (f *fakeGit) seed(dir, origin, sha string, clean bool, tags ...string) {
 	if !clean {
 		modified = 1
 	}
-	c := &fakeClone{sha: sha, origin: origin, modified: modified, headHeld: true, tags: map[string]bool{}, tagSHA: map[string]string{}}
+	c := &fakeClone{sha: sha, origin: origin, modified: modified, headHeld: true,
+		config: map[string]string{}, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	for _, t := range tags {
 		c.tags[t] = true
 		c.tagSHA[t] = sha
@@ -103,7 +115,17 @@ func (f *fakeGit) Clone(_ context.Context, org, repo, dir string) error {
 	if e := f.cloneErr[repo]; e != nil {
 		return e
 	}
-	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), headHeld: true, tags: map[string]bool{}, tagSHA: map[string]string{}}
+	if f.emptyRepos[repo] {
+		// An empty repository clones successfully and has no commit.
+		f.clones[dir] = &fakeClone{origin: originURL(org, repo), config: map[string]string{},
+			tags: map[string]bool{}, tagSHA: map[string]string{}}
+		f.cloned = append(f.cloned, dir)
+		return nil
+	}
+	// A fresh clone lands on the default branch, which is what collect has to
+	// detach from and delete.
+	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), headHeld: true, branch: "main",
+		config: map[string]string{}, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	f.cloned = append(f.cloned, dir)
 	return nil
 }
@@ -127,10 +149,16 @@ func (f *fakeGit) HeadHeldByRef(_ context.Context, dir string) (bool, error) {
 	return f.clones[dir].headHeld, nil
 }
 
+// Head fails when the clone holds no commit, which is how git behaves on a
+// clone of an empty repository and on one a killed run left half-made.
 func (f *fakeGit) Head(_ context.Context, dir string) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.clones[dir].sha, nil
+	c := f.clones[dir]
+	if c == nil || c.sha == "" {
+		return "", errors.New("fatal: ambiguous argument 'HEAD': unknown revision")
+	}
+	return c.sha, nil
 }
 
 func (f *fakeGit) TagExists(_ context.Context, dir, tag string) (bool, error) {
@@ -152,6 +180,9 @@ func (f *fakeGit) TagSHA(_ context.Context, dir, tag string) (string, error) {
 func (f *fakeGit) Fetch(_ context.Context, dir, ref string) (bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if e := f.fetchErr[ref]; e != nil {
+		return false, e
+	}
 	c := f.clones[dir]
 	if tip, ok := f.remoteTip[dir]; ok {
 		c.fetchHead = tip
@@ -168,11 +199,16 @@ func (f *fakeGit) Checkout(_ context.Context, dir, ref string) error {
 		return e
 	}
 	c := f.clones[dir]
-	if ref == "FETCH_HEAD" {
+	switch ref {
+	case "FETCH_HEAD":
 		c.sha = c.fetchHead
-	} else {
+	case "HEAD":
+		// Detaching at the commit already checked out leaves it where it is.
+		// Treating "HEAD" as a commit name would record the string as the SHA.
+	default:
 		c.sha = ref
 	}
+	c.branch = ""
 	return nil
 }
 
@@ -181,6 +217,42 @@ func (f *fakeGit) CreateTag(_ context.Context, dir, tag, sha string) error {
 	defer f.mu.Unlock()
 	f.clones[dir].tags[tag] = true
 	f.clones[dir].tagSHA[tag] = sha
+	return nil
+}
+
+func (f *fakeGit) MoveIntoPlace(_ context.Context, staging, dir string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.clones[dir] != nil {
+		return errTargetExists
+	}
+	f.clones[dir] = f.clones[staging]
+	delete(f.clones, staging)
+	f.moved = append(f.moved, dir)
+	return nil
+}
+
+func (f *fakeGit) CurrentBranch(_ context.Context, dir string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clones[dir].branch, nil
+}
+
+func (f *fakeGit) DeleteBranch(_ context.Context, dir, branch string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.clones[dir]
+	if c.branch == branch {
+		c.branch = ""
+	}
+	c.deletedBranches = append(c.deletedBranches, branch)
+	return nil
+}
+
+func (f *fakeGit) SetConfig(_ context.Context, dir, key, value string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clones[dir].config[key] = value
 	return nil
 }
 
@@ -546,6 +618,143 @@ func TestCollectRejectsClonesOfAnotherRepo(t *testing.T) {
 	}
 	if manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada") != nil {
 		t.Error("a repo that was never collected must not appear in the manifest")
+	}
+}
+
+func TestCollectLeavesNothingBehindWhenAFirstCollectionFails(t *testing.T) {
+	// P7: collect cloned the tip into <out>/<key> and then fetched the pinned
+	// SHA. When that fetch failed the tip stayed on disk, untagged and often
+	// past the deadline, and a grader browsing the directory saw what looked
+	// like a collection.
+	git := newFakeGit()
+	commits := "ada: " + adaSHA + "\n"
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", commits)
+	git.fetchErr[adaSHA] = errors.New("could not find remote ref " + adaSHA)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	t.Log("\n" + buf.String())
+	if err == nil || !strings.Contains(err.Error(), "failed") {
+		t.Fatalf("a failed pinned clone should fail that repo, got %v", err)
+	}
+
+	adaDir := filepath.Join(o.out, "ada")
+	if _, statErr := os.Stat(adaDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("%s must not exist after a failed first collection", adaDir)
+	}
+	if git.clones[adaDir] != nil {
+		t.Error("no clone may be left in place after a failed first collection")
+	}
+}
+
+func TestNewClonesKeepNoBranchAndWillNotGuessOne(t *testing.T) {
+	// P8: a new clone was left on a local branch sitting at the tip from clone
+	// time, so `git checkout main`, or a grading script running `git pull`,
+	// silently handed back code other than what was collected. Deleting the
+	// branch is not enough on its own: git recreates it from origin/main unless
+	// guessing is turned off.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+
+	c := git.clones[filepath.Join(o.out, "ada")]
+	if c == nil {
+		t.Fatal("ada should have been collected")
+	}
+	if c.branch != "" {
+		t.Errorf("a new clone should end detached, on branch %q", c.branch)
+	}
+	if !slices.Contains(c.deletedBranches, "main") {
+		t.Errorf("the branch the clone created should be deleted, deleted %v", c.deletedBranches)
+	}
+	if got := c.config["checkout.guess"]; got != "false" {
+		t.Errorf("checkout.guess should be false so the branch cannot be guessed back, got %q", got)
+	}
+}
+
+func TestCollectSkipsAnEmptyRepositoryAndCreatesNoDirectory(t *testing.T) {
+	// P14: the clone succeeded, reading HEAD failed, and an empty clone was left
+	// behind that failed on every later run.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	git.emptyRepos["hw1-ada"] = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("an empty repository is a skip, not a failure: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+	if !strings.Contains(out, "skipped (empty repository)") || !strings.Contains(out, "no commits yet") {
+		t.Errorf("an empty repository should be reported as such:\n%s", out)
+	}
+	adaDir := filepath.Join(o.out, "ada")
+	if _, statErr := os.Stat(adaDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("%s must not be created for a repository with no commits", adaDir)
+	}
+	if manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada") != nil {
+		t.Error("nothing was collected, so nothing belongs in the manifest")
+	}
+}
+
+func TestCollectRefusesADirectoryItDidNotMake(t *testing.T) {
+	// Collect never moves or deletes anything under --out. A directory that is
+	// not a clone it can use is refused, empty or not: deciding one is
+	// disposable is the instructor's call.
+	for _, tc := range []struct{ name, file string }{
+		{"holding a file", "notes.txt"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newFakeGit()
+			o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+			adaDir := filepath.Join(o.out, "ada")
+			if err := os.MkdirAll(adaDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if tc.file != "" {
+				if err := os.WriteFile(filepath.Join(adaDir, tc.file), []byte("grader\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var buf bytes.Buffer
+			err := o.run(context.Background(), &buf, "hw1")
+			out := buf.String()
+			t.Log("\n" + out)
+			if err == nil || !strings.Contains(err.Error(), "refused") {
+				t.Fatalf("a directory collect cannot use should be refused, got %v", err)
+			}
+			if !strings.Contains(out, "is not a clone collect can use") {
+				t.Errorf("the refusal should say why:\n%s", out)
+			}
+			if tc.file != "" {
+				body, readErr := os.ReadFile(filepath.Join(adaDir, tc.file))
+				if readErr != nil || string(body) != "grader\n" {
+					t.Errorf("the directory's contents must be untouched, got %q %v", body, readErr)
+				}
+			}
+		})
+	}
+}
+
+func TestCollectLeavesNoStagingBehind(t *testing.T) {
+	// Staging is collect's own scratch space. A finished run should hold nothing
+	// there, so a later run is not deciding what an old directory was for.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	staging := filepath.Join(o.out, gitCLSDir, "staging")
+	entries, err := os.ReadDir(staging)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("staging should be empty after a run, holds %v", entries)
 	}
 }
 
