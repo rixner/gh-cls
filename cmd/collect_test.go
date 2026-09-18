@@ -621,6 +621,51 @@ func TestCollectRejectsClonesOfAnotherRepo(t *testing.T) {
 	}
 }
 
+func TestCollectAccountsForEveryRepoAtTheEnd(t *testing.T) {
+	// P13: dirty, refused and skipped repositories keep their previous commit
+	// checked out, each reported in one line that has scrolled away by the end
+	// of a class-sized run. A grader who opens the directory sees code either
+	// way and cannot tell the label passed it over, so they grade the old work.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	adaDir := filepath.Join(o.out, "ada")
+	alanDir := filepath.Join(o.out, "alan")
+	graceDir := filepath.Join(o.out, "grace")
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", false) // modified tracked files
+	git.seed(alanDir, originURL("cs101-spring26", "hw1-alan"), "sha-alan", true)
+	git.clones[alanDir].headHeld = false // a grader committed here
+	git.seed(graceDir, originURL("cs101-spring26", "hw1-grace"), "sha-grace", true)
+	git.clones[graceDir].untracked = 2
+	git.remoteTip[graceDir] = "sha-grace-new"
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+
+	tail := out[strings.Index(out, "0 collected"):]
+	if !strings.Contains(tail, "Not collected under test (2)") {
+		t.Errorf("the end of the run should account for both uncollected repos:\n%s", tail)
+	}
+	// Each is named again, with why and what to do, after the streaming lines.
+	for _, want := range []string{"hw1-ada", "tracked file(s) modified", "hw1-alan", "no branch or tag holds"} {
+		if !strings.Contains(tail, want) {
+			t.Errorf("the end-of-run list should mention %q:\n%s", want, tail)
+		}
+	}
+	// Collected, but with the grader's files still there.
+	if !strings.Contains(tail, "Collected, with something to note (1)") ||
+		!strings.Contains(tail, "hw1-grace") {
+		t.Errorf("a repo collected over untracked files should be noted:\n%s", tail)
+	}
+	// A clean collection is not dragged into either list.
+	if strings.Count(tail, "hw1-grace") != 1 {
+		t.Errorf("hw1-grace should appear once at the end:\n%s", tail)
+	}
+}
+
 func TestCollectRefusesASecondRunInTheSameDirectory(t *testing.T) {
 	// P12: two runs into one --out race on the clones and the tags, and both
 	// read the manifest before appending, so rows can be duplicated.

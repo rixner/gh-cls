@@ -368,7 +368,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	if err := o.writeManifest(label, results); err != nil {
 		return err
 	}
-	return reportCollect(out, results, missing)
+	return reportCollect(out, label, results, missing)
 }
 
 // expectedKeys returns the lower-cased->display key set the assignment's type
@@ -864,7 +864,48 @@ func reportReconcile(out io.Writer, items []repoItem, missing []string) {
 // reportCollect summarizes the run, returning an error if any repository failed.
 // Each repo's own line is streamed as it finishes (see collectLine), so this
 // counts rather than re-lists them.
-func reportCollect(out io.Writer, results []collectResult, missing []string) error {
+// notCollected lists the repositories this run did not put under the label,
+// each with its reason and fix. Every one still holds whatever it held before,
+// which is exactly what a grader cannot see by looking at the directory.
+func notCollected(results []collectResult) []string {
+	var lines []string
+	for _, r := range results {
+		switch {
+		case r.err != nil:
+			lines = append(lines, fmt.Sprintf("  %s  FAILED: %s", r.repo, oneLine(r.err.Error())))
+		case r.status == collectStatusCollected, r.status == collectStatusUpdated, r.status == collectStatusUpToDate:
+			// Collected under this label, so not this list's business.
+		default:
+			line := fmt.Sprintf("  %s  %s", r.repo, r.status)
+			if r.detail != "" {
+				line += ": " + oneLine(r.detail)
+			}
+			lines = append(lines, line)
+		}
+	}
+	sort.Strings(lines) // the repo name leads each line, so this orders by repo
+	return lines
+}
+
+// collectedWithNotes lists repositories that were collected but carry something
+// worth saying: a rewritten upstream history, or a grader's files still sitting
+// in the worktree beside the newly checked-out code.
+func collectedWithNotes(results []collectResult) []string {
+	var lines []string
+	for _, r := range results {
+		if r.err != nil || r.detail == "" {
+			continue
+		}
+		switch r.status {
+		case collectStatusCollected, collectStatusUpdated, collectStatusUpToDate:
+			lines = append(lines, fmt.Sprintf("  %s  %s", r.repo, oneLine(r.detail)))
+		}
+	}
+	sort.Strings(lines)
+	return lines
+}
+
+func reportCollect(out io.Writer, label string, results []collectResult, missing []string) error {
 	var collected, updated, upToDate, skipped, refused, failed int
 	for _, r := range results {
 		switch {
@@ -884,6 +925,17 @@ func reportCollect(out io.Writer, results []collectResult, missing []string) err
 	}
 	fmt.Fprintf(out, "\n%d collected, %d updated, %d up-to-date, %d skipped, %d refused, %d failed\n",
 		collected, updated, upToDate, skipped, refused, failed)
+
+	// The per-repo lines stream as the run goes, so on a class-sized collection
+	// the early ones have scrolled away by the end. A grader who opens a
+	// student's directory sees code either way and cannot tell that this label
+	// passed the repository over, so every one of them is named again here.
+	if lines := notCollected(results); len(lines) > 0 {
+		fmt.Fprintf(out, "\nNot collected under %s (%d):\n%s\n", label, len(lines), strings.Join(lines, "\n"))
+	}
+	if lines := collectedWithNotes(results); len(lines) > 0 {
+		fmt.Fprintf(out, "\nCollected, with something to note (%d):\n%s\n", len(lines), strings.Join(lines, "\n"))
+	}
 	if len(missing) > 0 {
 		fmt.Fprintf(out, "note: %d student/group(s) have no repo (see above)\n", len(missing))
 	}
