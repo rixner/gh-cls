@@ -42,7 +42,15 @@ type gitRunner interface {
 	Clone(ctx context.Context, org, repo, dir string) error
 	// RemoteURL returns the URL of the clone's origin remote.
 	RemoteURL(ctx context.Context, dir string) (string, error)
-	WorktreeClean(ctx context.Context, dir string) (bool, error)
+	// WorktreeState reports what a clone's worktree holds that its commit does
+	// not. Modified tracked files stop a collection; untracked ones only earn a
+	// warning, since they are usually a grader's own output sitting beside the
+	// code rather than a change to it.
+	WorktreeState(ctx context.Context, dir string) (worktreeState, error)
+	// HeadHeldByRef reports whether any branch, tag or remote-tracking ref
+	// contains HEAD. A commit no ref holds is one a grader made in the clone,
+	// and moving HEAD off it leaves it reachable only from the reflog.
+	HeadHeldByRef(ctx context.Context, dir string) (bool, error)
 	Head(ctx context.Context, dir string) (string, error)
 	TagExists(ctx context.Context, dir, tag string) (bool, error)
 	// TagSHA returns the commit a tag points at, which is the state that was
@@ -153,7 +161,24 @@ const (
 	// so would make something permanently wrong, as against one it merely could
 	// not finish. It exits non-zero: it points at a mistake to correct.
 	collectStatusRefused = "refused"
+	// collectStatusStranded is a clone whose HEAD no ref holds: a grader
+	// committed here, and checking out anything else would leave that commit
+	// reachable only from the reflog, which expires.
+	collectStatusStranded = "skipped (HEAD held by no ref)"
+	// collectStatusInTheWay is a clone where a file the target commit tracks is
+	// sitting untracked or ignored in the worktree. Git refuses the checkout and
+	// changes nothing, so the grader's file survives.
+	collectStatusInTheWay = "skipped (files in the way)"
 )
+
+// worktreeState is what a clone's worktree holds beyond its commit. Ignored
+// files are deliberately not counted: git does not list them without an extra
+// walk of the whole tree, and the checkout refusing to overwrite one (V15) is
+// what actually protects them.
+type worktreeState struct {
+	modified  int // tracked files changed, staged or not
+	untracked int
+}
 
 // collectLine renders one repo's outcome for the progress stream. These are the
 // lines the summary used to print once every clone had finished, which on a full
@@ -167,11 +192,17 @@ func collectLine(r collectResult) (outcome, target string) {
 	case r.status == collectStatusUpdated && r.forced:
 		return r.status, r.repo + " (warning: upstream history was rewritten since the last collect; the prior state keeps its tag)"
 	case r.detail != "":
-		return r.status, r.repo + ": " + r.detail
+		return r.status, r.repo + ": " + oneLine(r.detail)
 	default:
 		return r.status, r.repo
 	}
 }
+
+// oneLine collapses whitespace so a detail stays on the single progress line it
+// is printed on. Git's messages carry embedded newlines and tabs, the list of
+// files it refused to overwrite among them, which would otherwise break the
+// stream into ragged fragments.
+func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error {
 	policy, err := o.g.cfg.Resolve(name, config.Overrides{})
@@ -436,12 +467,38 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 		res.sha = tagged
 		return res
 	}
-	if clean, err := o.git.WorktreeClean(ctx, dir); err != nil {
+	state, err := o.git.WorktreeState(ctx, dir)
+	if err != nil {
 		res.err = fmt.Errorf("checking %s for local changes: %w", it.repo, err)
 		return res
-	} else if !clean {
+	}
+	if state.modified > 0 {
 		res.status = collectStatusDirty
+		res.detail = fmt.Sprintf("%d tracked file(s) modified; commit, stash or discard them, then re-run", state.modified)
 		return res
+	}
+
+	// A commit no ref holds is one a grader made in this clone. Checking out
+	// anything else would leave it reachable only from the reflog, which expires,
+	// so the clone is left alone and the grader is told how to keep it. HEAD
+	// already sitting on the target is not at risk: nothing is left behind.
+	head, err := o.git.Head(ctx, dir)
+	if err != nil {
+		res.err = fmt.Errorf("reading HEAD of %s: %w", it.repo, err)
+		return res
+	}
+	if !strings.EqualFold(head, target) {
+		held, err := o.git.HeadHeldByRef(ctx, dir)
+		if err != nil {
+			res.err = fmt.Errorf("checking what holds HEAD of %s: %w", it.repo, err)
+			return res
+		}
+		if !held {
+			res.status = collectStatusStranded
+			res.detail = fmt.Sprintf("HEAD is at %s, which no branch or tag holds (a commit made in this clone?); "+
+				"collecting would strand it. To keep it: git -C %s tag <name>", shortSHA(head), dir)
+			return res
+		}
 	}
 
 	ref, checkoutRef := target, target
@@ -455,8 +512,20 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 	}
 	res.forced = forced
 	if err := o.git.Checkout(ctx, dir, checkoutRef); err != nil {
+		// Git refuses rather than overwrite a file it would clobber, and changes
+		// nothing when it does (V14, V15). That is a repository to come back to
+		// once the file is moved, not a failed run.
+		if filesInTheWay(err) {
+			res.status = collectStatusInTheWay
+			res.detail = fmt.Sprintf("a file the target commit tracks is sitting in the worktree untracked or ignored; "+
+				"move it aside and re-run (%v)", err)
+			return res
+		}
 		res.err = fmt.Errorf("checking out %s in %s: %w", ref, it.repo, err)
 		return res
+	}
+	if state.untracked > 0 {
+		res.detail = fmt.Sprintf("collected with %d untracked file(s) still in the worktree", state.untracked)
 	}
 	return o.tagHead(ctx, dir, tag, collectStatusUpdated, res)
 }
@@ -774,12 +843,33 @@ func (g execGit) RemoteURL(ctx context.Context, dir string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-func (g execGit) WorktreeClean(ctx context.Context, dir string) (bool, error) {
+func (g execGit) WorktreeState(ctx context.Context, dir string) (worktreeState, error) {
 	out, errb, err := g.run(ctx, dir, "status", "--porcelain")
 	if err != nil {
-		return false, fmt.Errorf("git status: %w: %s", err, strings.TrimSpace(errb))
+		return worktreeState{}, fmt.Errorf("git status: %w: %s", err, strings.TrimSpace(errb))
 	}
-	return strings.TrimSpace(out) == "", nil
+	var st worktreeState
+	for line := range strings.SplitSeq(out, "\n") {
+		switch {
+		case strings.TrimSpace(line) == "":
+		case strings.HasPrefix(line, "??"):
+			st.untracked++
+		default:
+			st.modified++
+		}
+	}
+	return st, nil
+}
+
+// HeadHeldByRef asks which refs contain HEAD. Emptiness is the answer: the
+// command succeeds either way, so the exit status says nothing.
+func (g execGit) HeadHeldByRef(ctx context.Context, dir string) (bool, error) {
+	out, errb, err := g.run(ctx, dir, "for-each-ref", "--contains", "HEAD",
+		"--format=%(refname)", "refs/heads", "refs/tags", "refs/remotes")
+	if err != nil {
+		return false, fmt.Errorf("git for-each-ref --contains HEAD: %w: %s", err, strings.TrimSpace(errb))
+	}
+	return strings.TrimSpace(out) != "", nil
 }
 
 func (g execGit) Head(ctx context.Context, dir string) (string, error) {
@@ -816,11 +906,28 @@ func (g execGit) Fetch(ctx context.Context, dir, ref string) (bool, error) {
 	return strings.Contains(out+errb, "forced update"), nil
 }
 
+// Checkout moves HEAD to ref. --no-overwrite-ignore is what keeps a grader's
+// output safe: git does not list an ignored file in `status --porcelain`, and
+// without the flag it silently replaces one whose path the target commit tracks
+// (V15). With it, and for untracked files by default (V14), git refuses and
+// changes nothing.
 func (g execGit) Checkout(ctx context.Context, dir, ref string) error {
-	if _, errb, err := g.run(ctx, dir, "checkout", "--detach", ref); err != nil {
+	if _, errb, err := g.run(ctx, dir, "checkout", "--no-overwrite-ignore", "--detach", ref); err != nil {
 		return fmt.Errorf("git checkout %s: %w: %s", ref, err, strings.TrimSpace(errb))
 	}
 	return nil
+}
+
+// filesInTheWay reports whether a checkout failed because the worktree holds
+// files the target commit tracks, which git refuses rather than overwrite.
+//
+// This reads git's message, which the design rightly distrusts for deciding
+// facts (it is how the old force-push warning went wrong). Here it only chooses
+// which report the instructor sees: either way the checkout failed and the
+// worktree is untouched, so a misread costs a less specific message and nothing
+// else. The runner pins LC_ALL=C, so the wording is stable English.
+func filesInTheWay(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "would be overwritten by checkout")
 }
 
 // CheckRefFormat asks git whether ref is a usable ref name. It runs outside any

@@ -71,6 +71,120 @@ func studentCommit(t *testing.T, work, name string) string {
 	return runGit(t, work, "rev-parse", "HEAD")
 }
 
+func TestHeadHeldByRefSeesAGraderCommitAsUnheld(t *testing.T) {
+	// V10/P2. Emptiness is the answer, not the exit status: for-each-ref
+	// succeeds either way, so a check written against its exit code would call
+	// every clone held and strand the commit it was meant to protect.
+	requireGit(t)
+	origin, _ := newOrigin(t, 3)
+	base := t.TempDir()
+	clone := filepath.Join(base, "c")
+	runGit(t, base, "clone", "-q", "--depth", "1", "--no-tags", origin, clone)
+	runGit(t, clone, "checkout", "-q", "--detach", "HEAD")
+	runGit(t, clone, "tag", "gh-cls/collect/final", "HEAD")
+	runGit(t, clone, "branch", "-q", "-D", "main")
+
+	held, err := (execGit{}).HeadHeldByRef(context.Background(), clone)
+	if err != nil {
+		t.Fatalf("HeadHeldByRef: %v", err)
+	}
+	if !held {
+		t.Error("the collect tag holds HEAD, so it should read as held")
+	}
+
+	// The grader commits a fix so the tests will run.
+	runGit(t, clone, "commit", "-q", "--allow-empty", "-m", "grader patch")
+	held, err = (execGit{}).HeadHeldByRef(context.Background(), clone)
+	if err != nil {
+		t.Fatalf("HeadHeldByRef: %v", err)
+	}
+	if held {
+		t.Error("a commit made on a detached HEAD is held by no ref, and collecting over it would strand it")
+	}
+}
+
+func TestCheckoutRefusesRatherThanOverwriteAGradersFiles(t *testing.T) {
+	// V14 and V15 together, and the reason --no-overwrite-ignore is passed: git
+	// does not list an ignored file in `status --porcelain`, so nothing upstream
+	// of the checkout can see it, and a plain checkout replaces it in silence.
+	requireGit(t)
+	base := t.TempDir()
+	bare := filepath.Join(base, "origin.git")
+	work := filepath.Join(base, "w")
+	runGit(t, base, "init", "-q", "--bare", bare)
+	runGit(t, base, "clone", "-q", bare, work)
+
+	// The first commit ignores out/. The second tracks a file inside it, plus an
+	// ordinary untracked-to-be file, which is the situation P18 describes.
+	if err := os.WriteFile(filepath.Join(work, ".gitignore"), []byte("out/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(work, "f1"), []byte("1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, work, "add", "-A")
+	runGit(t, work, "commit", "-qm", "ignore")
+	runGit(t, work, "push", "-q", "origin", "HEAD:refs/heads/main")
+	first := runGit(t, work, "rev-parse", "HEAD")
+
+	if err := os.MkdirAll(filepath.Join(work, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{"out/result.txt": "student\n", "notes.txt": "student\n"} {
+		if err := os.WriteFile(filepath.Join(work, path), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runGit(t, work, "add", "-f", "out/result.txt", "notes.txt")
+	runGit(t, work, "commit", "-qm", "result")
+	runGit(t, work, "push", "-q", "origin", "HEAD:main")
+
+	clone := filepath.Join(base, "c")
+	runGit(t, base, "clone", "-q", "--no-tags", "file://"+bare, clone)
+	runGit(t, clone, "checkout", "-q", "--detach", first)
+
+	// The grader's own output lands at both paths.
+	if err := os.MkdirAll(filepath.Join(clone, "out"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"out/result.txt", "notes.txt"} {
+		if err := os.WriteFile(filepath.Join(clone, path), []byte("grader\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Only the untracked one is visible: the ignored file is invisible to every
+	// check collect could make before the checkout.
+	st, err := (execGit{}).WorktreeState(context.Background(), clone)
+	if err != nil {
+		t.Fatalf("WorktreeState: %v", err)
+	}
+	if st.modified != 0 || st.untracked != 1 {
+		t.Errorf("expected no modified and one untracked file, got %+v", st)
+	}
+
+	err = (execGit{}).Checkout(context.Background(), clone, "origin/main")
+	if err == nil {
+		t.Fatal("the checkout must refuse rather than overwrite the grader's files")
+	}
+	if !filesInTheWay(err) {
+		t.Errorf("the refusal should be recognised as files in the way, got: %v", err)
+	}
+	// Nothing moved, and both of the grader's files are as they were.
+	if head := runGit(t, clone, "rev-parse", "HEAD"); head != first {
+		t.Errorf("HEAD moved despite the refusal: %s", head)
+	}
+	for _, path := range []string{"out/result.txt", "notes.txt"} {
+		body, readErr := os.ReadFile(filepath.Join(clone, path))
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if string(body) != "grader\n" {
+			t.Errorf("%s was overwritten with %q", path, body)
+		}
+	}
+}
+
 func TestFetchNeverImportsAStudentsTag(t *testing.T) {
 	// P6: the tag prefix was documented as one that "never collides with a
 	// student's own tags", which is not true of a namespace anyone can push to.

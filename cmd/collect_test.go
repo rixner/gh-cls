@@ -36,7 +36,9 @@ type fakeClone struct {
 	sha       string
 	fetchHead string
 	origin    string
-	clean     bool
+	modified  int  // tracked files changed
+	untracked int  // files git would report as ??
+	headHeld  bool // some branch, tag or remote-tracking ref contains HEAD
 	tags      map[string]bool
 	// tagSHA is the commit each tag names, which is not necessarily the clone's
 	// current sha: a grading checkout can move HEAD after a collection.
@@ -54,8 +56,9 @@ type fakeGit struct {
 	clones    map[string]*fakeClone
 	forced    map[string]bool   // dir -> next fetch reports a forced update
 	remoteTip map[string]string // dir -> sha a fetch moves FETCH_HEAD to
-	cloneErr  map[string]error  // repo -> error returned by Clone
-	cloned    []string          // dirs cloned, for asserting dry-run did nothing
+	cloneErr    map[string]error // repo -> error returned by Clone
+	checkoutErr map[string]error // dir -> error returned by Checkout
+	cloned      []string         // dirs cloned, for asserting dry-run did nothing
 	// refFormatErr makes CheckRefFormat fail to run at all, which is a different
 	// outcome from git rejecting the name.
 	refFormatErr error
@@ -66,13 +69,21 @@ func newFakeGit() *fakeGit {
 		clones:    map[string]*fakeClone{},
 		forced:    map[string]bool{},
 		remoteTip: map[string]string{},
-		cloneErr:  map[string]error{},
+		cloneErr:    map[string]error{},
+		checkoutErr: map[string]error{},
 	}
 }
 
-// seed registers an existing clone at dir, cloned from origin.
+// seed registers an existing clone at dir, cloned from origin. clean false means
+// a worktree with a modified tracked file, which is what it has always meant
+// here; a test wanting untracked files or a stranded HEAD sets those fields on
+// the returned clone directly.
 func (f *fakeGit) seed(dir, origin, sha string, clean bool, tags ...string) {
-	c := &fakeClone{sha: sha, origin: origin, clean: clean, tags: map[string]bool{}, tagSHA: map[string]string{}}
+	modified := 0
+	if !clean {
+		modified = 1
+	}
+	c := &fakeClone{sha: sha, origin: origin, modified: modified, headHeld: true, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	for _, t := range tags {
 		c.tags[t] = true
 		c.tagSHA[t] = sha
@@ -92,7 +103,7 @@ func (f *fakeGit) Clone(_ context.Context, org, repo, dir string) error {
 	if e := f.cloneErr[repo]; e != nil {
 		return e
 	}
-	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), clean: true, tags: map[string]bool{}, tagSHA: map[string]string{}}
+	f.clones[dir] = &fakeClone{sha: "sha-" + repo, origin: originURL(org, repo), headHeld: true, tags: map[string]bool{}, tagSHA: map[string]string{}}
 	f.cloned = append(f.cloned, dir)
 	return nil
 }
@@ -103,10 +114,17 @@ func (f *fakeGit) RemoteURL(_ context.Context, dir string) (string, error) {
 	return f.clones[dir].origin, nil
 }
 
-func (f *fakeGit) WorktreeClean(_ context.Context, dir string) (bool, error) {
+func (f *fakeGit) WorktreeState(_ context.Context, dir string) (worktreeState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.clones[dir].clean, nil
+	c := f.clones[dir]
+	return worktreeState{modified: c.modified, untracked: c.untracked}, nil
+}
+
+func (f *fakeGit) HeadHeldByRef(_ context.Context, dir string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.clones[dir].headHeld, nil
 }
 
 func (f *fakeGit) Head(_ context.Context, dir string) (string, error) {
@@ -146,6 +164,9 @@ func (f *fakeGit) Fetch(_ context.Context, dir, ref string) (bool, error) {
 func (f *fakeGit) Checkout(_ context.Context, dir, ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if e := f.checkoutErr[dir]; e != nil {
+		return e
+	}
 	c := f.clones[dir]
 	if ref == "FETCH_HEAD" {
 		c.sha = c.fetchHead
@@ -525,6 +546,91 @@ func TestCollectRejectsClonesOfAnotherRepo(t *testing.T) {
 	}
 	if manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada") != nil {
 		t.Error("a repo that was never collected must not appear in the manifest")
+	}
+}
+
+func TestCollectSkipsAGraderCommitNoRefHolds(t *testing.T) {
+	// P2: a clone detached after its first update, where a grader committed a fix
+	// so the tests would run. The next label checked the new commit out from
+	// under them, leaving it held only by the reflog, which expires; gc then
+	// deletes it. COLLECT.md promises grading edits survive.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	adaDir := filepath.Join(o.out, "ada")
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-grader-fix", true)
+	git.clones[adaDir].headHeld = false
+	git.remoteTip[adaDir] = "sha-new-tip"
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("a stranded HEAD is a skip, not a failure: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+	for _, want := range []string{"HEAD held by no ref", shortSHA("sha-grader-fix"), "tag <name>"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the skip should mention %q:\n%s", want, out)
+		}
+	}
+	// The grader's commit is still checked out, and nothing was tagged over it.
+	if c := git.clones[adaDir]; c.sha != "sha-grader-fix" || len(c.tags) != 0 {
+		t.Errorf("the clone must be left exactly as it was, got %+v", c)
+	}
+}
+
+func TestCollectSkipsWhenAFileIsInTheWayOfTheCheckout(t *testing.T) {
+	// P18: a grader's output at a path the new commit tracks. Git refuses the
+	// checkout and changes nothing, so this is a repository to come back to once
+	// the file is moved, not a failed run.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	adaDir := filepath.Join(o.out, "ada")
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true)
+	git.checkoutErr[adaDir] = errors.New(
+		"git checkout origin/main: exit status 1: error: The following untracked working tree files would be overwritten by checkout:\n\tout/result.txt")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("a refused checkout is a skip, not a failure: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+	for _, want := range []string{"skipped (files in the way)", "out/result.txt", "move it aside"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the skip should mention %q:\n%s", want, out)
+		}
+	}
+	if c := git.clones[adaDir]; c.sha != "sha-old" || len(c.tags) != 0 {
+		t.Errorf("nothing may be tagged when the checkout was refused, got %+v", c)
+	}
+}
+
+func TestCollectTakesACloneWithUntrackedFilesAndSaysSo(t *testing.T) {
+	// A behaviour change: any untracked file used to make the worktree "dirty",
+	// so a grader's own build output stopped the collection entirely. Untracked
+	// files are not a change to the student's code, so they no longer block it;
+	// they are reported, since stale output now sits beside the new commit.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	adaDir := filepath.Join(o.out, "ada")
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true)
+	git.clones[adaDir].untracked = 3
+	git.remoteTip[adaDir] = "sha-new"
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+	if !strings.Contains(out, "updated hw1-ada") {
+		t.Errorf("untracked files must not stop a collection:\n%s", out)
+	}
+	if !strings.Contains(out, "3 untracked file(s)") {
+		t.Errorf("the untracked files should be reported:\n%s", out)
+	}
+	if git.clones[adaDir].sha != "sha-new" {
+		t.Errorf("the clone should have moved to the new tip, got %q", git.clones[adaDir].sha)
 	}
 }
 
