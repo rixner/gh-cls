@@ -69,9 +69,9 @@ func (r *recordingGit) Clone(_ context.Context, _, _, _ string) error {
 	return r.err
 }
 
-func (r *recordingGit) Fetch(_ context.Context, _, _ string) (bool, error) {
+func (r *recordingGit) Fetch(_ context.Context, _, _ string) error {
 	r.enter()
-	return true, r.err
+	return r.err
 }
 
 func (r *recordingGit) CloneExists(string) bool {
@@ -134,7 +134,7 @@ func TestFetchesShareTheCloneRate(t *testing.T) {
 	if err := p.Clone(ctx, "org", "hw1-s01", "dir"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := p.Fetch(ctx, "dir", "main"); err != nil {
+	if err := p.Fetch(ctx, "dir", "main"); err != nil {
 		t.Fatal(err)
 	}
 	if err := p.Clone(ctx, "org", "hw1-s02", "dir2"); err != nil {

@@ -58,13 +58,13 @@ func (p *pacedGit) Clone(ctx context.Context, org, repo, dir string) error {
 
 // Fetch is paced with Clone, and against the same turn: both reach GitHub, so
 // the rate has to cover them together rather than each separately.
-func (p *pacedGit) Fetch(ctx context.Context, dir, ref string) (bool, error) {
+func (p *pacedGit) Fetch(ctx context.Context, dir, ref string) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.hold(ctx)
-	forced, err := p.gitRunner.Fetch(ctx, dir, ref)
+	err := p.gitRunner.Fetch(ctx, dir, ref)
 	p.next = p.now().Add(p.spacing)
-	return forced, err
+	return err
 }
 
 // hold waits for this operation's turn. It is called with the lock held, so the

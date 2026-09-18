@@ -33,6 +33,12 @@ const collectTagPrefix = "gh-cls/collect/"
 // Cloning and fetching go through git/gh, not the REST client.
 type collectClient interface {
 	ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]gh.Repo, error)
+	// GetRef resolves a ref to a SHA, so an unpinned run knows the commit it is
+	// collecting before it runs any git at all.
+	GetRef(ctx context.Context, owner, repo, ref string) (string, error)
+	// CompareCommits tells a rewrite from an ordinary update when the clone has
+	// no history to answer with locally.
+	CompareCommits(ctx context.Context, owner, repo, base, head string) (status string, found bool, err error)
 }
 
 // gitRunner is the seam over the git and `gh repo clone` operations collect
@@ -56,9 +62,17 @@ type gitRunner interface {
 	// TagSHA returns the commit a tag points at, which is the state that was
 	// collected under that tag however the clone has been moved since.
 	TagSHA(ctx context.Context, dir, tag string) (string, error)
-	// Fetch shallow-fetches ref (a branch name or a SHA) from origin, reporting
-	// whether the update rewrote history (a forced, non-fast-forward update).
-	Fetch(ctx context.Context, dir, ref string) (forced bool, err error)
+	// Fetch shallow-fetches ref (always a SHA) from origin.
+	Fetch(ctx context.Context, dir, ref string) error
+	// HasCommit reports whether a commit is already in the clone. It is what
+	// keeps a depth-1 fetch away from a commit the clone already holds, which
+	// would make that commit a shallow boundary and cost every tag behind it
+	// its history at the next gc.
+	HasCommit(ctx context.Context, dir, sha string) (bool, error)
+	// IsAncestor reports whether a is an ancestor of b. It answers only when the
+	// clone holds the history to decide; ok is false when it does not, and the
+	// caller has to ask GitHub instead.
+	IsAncestor(ctx context.Context, dir, a, b string) (yes, ok bool, err error)
 	Checkout(ctx context.Context, dir, ref string) error
 	CreateTag(ctx context.Context, dir, tag, sha string) error
 	// CurrentBranch returns the branch HEAD is on, or "" when HEAD is detached.
@@ -161,7 +175,6 @@ type collectResult struct {
 	// detail explains a status that needs more than its own word, and carries
 	// the fix. A refusal always has one.
 	detail string
-	forced bool
 	err    error
 }
 
@@ -218,8 +231,6 @@ func collectLine(r collectResult) (outcome, target string) {
 	switch {
 	case r.err != nil:
 		return "FAILED", fmt.Sprintf("%s: %v", r.repo, r.err)
-	case r.status == collectStatusUpdated && r.forced:
-		return r.status, r.repo + " (warning: upstream history was rewritten since the last collect; the prior state keeps its tag)"
 	case r.detail != "":
 		return r.status, r.repo + ": " + oneLine(r.detail)
 	default:
@@ -359,10 +370,16 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	if err != nil {
 		return err
 	}
+	// The last collection of each repository under any label, which is what a
+	// new target is compared against to tell an ordinary update from a rewrite.
+	previous, err := readManifestLatest(filepath.Join(o.out, "collected.csv"))
+	if err != nil {
+		return err
+	}
 
 	prog := newProgress(out, len(items), 0) // statuses carry their own reasons; see collectLine
 	results := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
-		return o.collectOne(ctx, o.g.org, name, tag, label, pinned, recorded, it)
+		return o.collectOne(ctx, client, o.g.org, name, tag, label, pinned, recorded, previous, it)
 	}, func(r collectResult) { prog.item(collectLine(r)) })
 
 	if err := o.writeManifest(label, results); err != nil {
@@ -410,7 +427,8 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 }
 
 // collectOne clones or updates one repository to its target commit and tags it.
-func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label string, snapshot, recorded map[string]string, it repoItem) collectResult {
+func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgName, name, tag, label string,
+	snapshot, recorded map[string]string, previous map[string]manifestEntry, it repoItem) collectResult {
 	res := collectResult{key: it.key, repo: it.repo, ref: it.defaultBranch}
 	dir := filepath.Join(o.out, it.key)
 
@@ -462,6 +480,24 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 	target := sha
 	if target == "" {
 		target = expected
+	}
+	if target == "" {
+		// Unpinned, and this label has collected nothing for this repository
+		// yet: the default branch's tip, read when collect reaches the repo,
+		// which is what an unpinned collect has always meant. Resolving it here,
+		// before any git runs, is what lets every fetch name a commit.
+		tip, err := client.GetRef(ctx, orgName, it.repo, "heads/"+it.defaultBranch)
+		if err != nil {
+			if gh.IsNotFound(err) {
+				res.status = collectStatusEmpty
+				res.detail = fmt.Sprintf("GitHub has no %s branch for it (a repository with no commits yet), "+
+					"so there is nothing to collect", it.defaultBranch)
+				return res
+			}
+			res.err = fmt.Errorf("reading the tip of %s: %w", it.repo, err)
+			return res
+		}
+		target = tip
 	}
 
 	if !o.git.CloneExists(dir) {
@@ -559,17 +595,11 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 		}
 	}
 
-	ref, checkoutRef := target, target
-	if target == "" {
-		ref, checkoutRef = it.defaultBranch, "FETCH_HEAD"
-	}
-	forced, err := o.git.Fetch(ctx, dir, ref)
-	if err != nil {
-		res.err = fmt.Errorf("fetching %s in %s: %w", ref, it.repo, err)
+	if err := o.ensureCommit(ctx, dir, target); err != nil {
+		res.err = fmt.Errorf("fetching %s in %s: %w", shortSHA(target), it.repo, err)
 		return res
 	}
-	res.forced = forced
-	if err := o.git.Checkout(ctx, dir, checkoutRef); err != nil {
+	if err := o.git.Checkout(ctx, dir, target); err != nil {
 		// Git refuses rather than overwrite a file it would clobber, and changes
 		// nothing when it does (V14, V15). That is a repository to come back to
 		// once the file is moved, not a failed run.
@@ -579,13 +609,82 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label 
 				"move it aside and re-run (%v)", err)
 			return res
 		}
-		res.err = fmt.Errorf("checking out %s in %s: %w", ref, it.repo, err)
+		res.err = fmt.Errorf("checking out %s in %s: %w", shortSHA(target), it.repo, err)
 		return res
 	}
-	if state.untracked > 0 {
-		res.detail = fmt.Sprintf("collected with %d untracked file(s) still in the worktree", state.untracked)
+	var notes []string
+	if prev, ok := previous[it.repo]; ok && !strings.EqualFold(prev.sha, target) {
+		if n := o.rewriteNote(ctx, client, dir, orgName, it, prev, target); n != "" {
+			notes = append(notes, n)
+		}
 	}
+	if state.untracked > 0 {
+		notes = append(notes, fmt.Sprintf("collected with %d untracked file(s) still in the worktree", state.untracked))
+	}
+	res.detail = strings.Join(notes, "; ")
 	return o.tagHead(ctx, dir, tag, collectStatusUpdated, res)
+}
+
+// ensureCommit brings target into the clone, and does nothing when it is already
+// there.
+//
+// That condition is the whole point. A depth-1 fetch naming a commit the clone
+// already holds makes it a shallow boundary: every tag whose history runs
+// through it loses that history, and the next gc deletes the commits (V1). Since
+// every target is resolved to a SHA first, a fetch only ever asks for something
+// missing, which is the harmless case (V2).
+func (o *collectOpts) ensureCommit(ctx context.Context, dir, target string) error {
+	has, err := o.git.HasCommit(ctx, dir, target)
+	if err != nil {
+		return err
+	}
+	if has {
+		return nil
+	}
+	return o.git.Fetch(ctx, dir, target)
+}
+
+// rewriteNote describes how target stands to the commit a previous collection
+// recorded, or "" when it is an ordinary descendant and there is nothing to say.
+//
+// It replaces reading git's "(forced update)" text, which was wrong both ways:
+// it fired on every ordinary update of a shallow clone, because the old tip's
+// ancestry is not local so git cannot tell a fast-forward from a rewrite, and it
+// never fired on a pinned run, because fetching a SHA updates no tracking ref.
+func (o *collectOpts) rewriteNote(ctx context.Context, client collectClient, dir, orgName string, it repoItem, prev manifestEntry, target string) string {
+	rewritten := fmt.Sprintf("history was rewritten since %s, which is still tagged at %s",
+		prev.label, shortSHA(prev.sha))
+	older := fmt.Sprintf("this target is older than %s, which holds %s", prev.label, shortSHA(prev.sha))
+
+	// Ask the clone first: it costs no request, and a full clone can answer.
+	if descends, ok, err := o.git.IsAncestor(ctx, dir, prev.sha, target); err == nil && ok {
+		if descends {
+			return ""
+		}
+		if behind, ok2, err2 := o.git.IsAncestor(ctx, dir, target, prev.sha); err2 == nil && ok2 && behind {
+			return older
+		}
+		return rewritten
+	}
+
+	// A shallow clone holds no ancestry, so GitHub is the only thing that knows.
+	status, found, err := client.CompareCommits(ctx, orgName, it.repo, prev.sha, target)
+	if err != nil {
+		// A note is not worth failing a collection that otherwise succeeded.
+		return fmt.Sprintf("could not tell whether history was rewritten since %s: %v", prev.label, err)
+	}
+	if !found {
+		return fmt.Sprintf("history was rewritten since %s: the commit it recorded (%s) is gone from GitHub",
+			prev.label, shortSHA(prev.sha))
+	}
+	switch status {
+	case "ahead", "identical":
+		return ""
+	case "behind":
+		return older
+	default:
+		return rewritten
+	}
 }
 
 // cloneInto builds a new clone somewhere else and moves it into place only once
@@ -633,15 +732,12 @@ func (o *collectOpts) cloneInto(ctx context.Context, orgName, tag, target, dir s
 		return res
 	}
 
-	checkoutRef := target
-	if checkoutRef == "" {
-		checkoutRef = "HEAD"
-	} else if _, err := o.git.Fetch(ctx, staging, target); err != nil {
-		res.err = fmt.Errorf("fetching %s in %s: %w", target, it.repo, err)
+	if err := o.ensureCommit(ctx, staging, target); err != nil {
+		res.err = fmt.Errorf("fetching %s in %s: %w", shortSHA(target), it.repo, err)
 		return res
 	}
-	if err := o.git.Checkout(ctx, staging, checkoutRef); err != nil {
-		res.err = fmt.Errorf("checking out %s in %s: %w", checkoutRef, it.repo, err)
+	if err := o.git.Checkout(ctx, staging, target); err != nil {
+		res.err = fmt.Errorf("checking out %s in %s: %w", shortSHA(target), it.repo, err)
 		return res
 	}
 	if branch != "" {
@@ -802,6 +898,44 @@ func readManifestSHAs(path, label string) (map[string]string, error) {
 		}
 		if sha := strings.TrimSpace(rec[3]); sha != "" {
 			out[rec[2]] = sha
+		}
+	}
+	return out, nil
+}
+
+// manifestEntry is one recorded collection: the commit, and the label it was
+// collected under.
+type manifestEntry struct {
+	sha   string
+	label string
+}
+
+// readManifestLatest returns the most recent collection recorded for each
+// repository, whatever label it was under. Rows are appended as runs proceed, so
+// a repository's last row is its latest collection.
+func readManifestLatest(path string) (map[string]manifestEntry, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]manifestEntry{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("opening manifest %s: %w", path, err)
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	r.FieldsPerRecord = -1
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("parsing manifest %s: %w; fix or remove it, then re-run", path, err)
+	}
+	out := map[string]manifestEntry{}
+	for _, rec := range records {
+		if len(rec) < 4 || (rec[0] == "label" && rec[2] == "repo") { // skip the header
+			continue
+		}
+		if sha := strings.TrimSpace(rec[3]); sha != "" {
+			out[rec[2]] = manifestEntry{sha: sha, label: rec[0]}
 		}
 	}
 	return out, nil
@@ -1095,12 +1229,72 @@ func (g execGit) TagSHA(ctx context.Context, dir, tag string) (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-func (g execGit) Fetch(ctx context.Context, dir, ref string) (bool, error) {
-	out, errb, err := g.run(ctx, dir, "fetch", "--no-tags", "--depth", "1", "origin", ref)
-	if err != nil {
-		return false, fmt.Errorf("git fetch %s: %w: %s", ref, err, strings.TrimSpace(errb))
+// Fetch brings one commit into the clone. ref is always a SHA: naming a branch
+// would let a depth-1 fetch land on a commit the clone already holds, which
+// makes that commit a shallow boundary and costs every tag behind it its history
+// at the next gc.
+func (g execGit) Fetch(ctx context.Context, dir, ref string) error {
+	if _, errb, err := g.run(ctx, dir, "fetch", "--no-tags", "--depth", "1", "origin", ref); err != nil {
+		return fmt.Errorf("git fetch %s: %w: %s", ref, err, strings.TrimSpace(errb))
 	}
-	return strings.Contains(out+errb, "forced update"), nil
+	return nil
+}
+
+// HasCommit reports whether the clone already holds a commit. A non-zero exit is
+// the answer "no" rather than a failure, so only git failing to run at all is an
+// error.
+func (g execGit) HasCommit(ctx context.Context, dir, sha string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "cat-file", "-e", sha+"^{commit}")
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	var errb bytes.Buffer
+	cmd.Stderr = &errb
+	err := cmd.Run()
+	if err == nil {
+		return true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return false, nil
+	}
+	return false, fmt.Errorf("git cat-file -e %s: %w: %s", sha, err, strings.TrimSpace(errb.String()))
+}
+
+// IsAncestor reports whether a is an ancestor of b.
+//
+// ok is false when the clone cannot answer. A shallow clone holds one commit and
+// no ancestry, so merge-base would report "not an ancestor" for commits that are
+// perfectly ordinary descendants: a confident wrong answer, which is worse than
+// none. The caller asks GitHub instead.
+func (g execGit) IsAncestor(ctx context.Context, dir, a, b string) (bool, bool, error) {
+	shallow, errb, err := g.run(ctx, dir, "rev-parse", "--is-shallow-repository")
+	if err != nil {
+		return false, false, fmt.Errorf("git rev-parse --is-shallow-repository: %w: %s", err, strings.TrimSpace(errb))
+	}
+	if strings.TrimSpace(shallow) != "false" {
+		return false, false, nil
+	}
+	for _, sha := range []string{a, b} {
+		has, hasErr := g.HasCommit(ctx, dir, sha)
+		if hasErr != nil {
+			return false, false, hasErr
+		}
+		if !has {
+			return false, false, nil
+		}
+	}
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "merge-base", "--is-ancestor", a, b)
+	cmd.Env = append(os.Environ(), "LC_ALL=C", "LANG=C")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	runErr := cmd.Run()
+	if runErr == nil {
+		return true, true, nil
+	}
+	var ee *exec.ExitError
+	if errors.As(runErr, &ee) && ee.ExitCode() == 1 {
+		return false, true, nil
+	}
+	return false, false, fmt.Errorf("git merge-base --is-ancestor: %w: %s", runErr, strings.TrimSpace(stderr.String()))
 }
 
 // Checkout moves HEAD to ref. --no-overwrite-ignore is what keeps a grader's

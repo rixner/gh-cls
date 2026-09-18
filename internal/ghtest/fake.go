@@ -67,6 +67,7 @@ type Fake struct {
 	SetRepoPropertyValueFunc          func(ctx context.Context, org, repo, name, value string) error
 	ListRepoActivityFunc              func(ctx context.Context, owner, repo, ref string) ([]gh.Activity, error)
 	CommitExistsFunc                  func(ctx context.Context, owner, repo, sha string) (bool, error)
+	CompareCommitsFunc                func(ctx context.Context, owner, repo, base, head string) (string, bool, error)
 }
 
 var _ gh.Client = (*Fake)(nil)
@@ -445,4 +446,12 @@ func (f *Fake) CommitExists(ctx context.Context, owner, repo, sha string) (bool,
 		missing("CommitExists")
 	}
 	return f.CommitExistsFunc(ctx, owner, repo, sha)
+}
+
+func (f *Fake) CompareCommits(ctx context.Context, owner, repo, base, head string) (string, bool, error) {
+	f.record("CompareCommits")
+	if f.CompareCommitsFunc == nil {
+		missing("CompareCommits")
+	}
+	return f.CompareCommitsFunc(ctx, owner, repo, base, head)
 }

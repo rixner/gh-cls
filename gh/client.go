@@ -126,6 +126,11 @@ type Client interface {
 	ListRepoActivity(ctx context.Context, owner, repo, ref string) ([]Activity, error)
 	// CommitExists reports whether a commit is still retrievable.
 	CommitExists(ctx context.Context, owner, repo, sha string) (bool, error)
+	// CompareCommits reports how head stands to base: "ahead" (head descends
+	// from base), "behind" (head is an ancestor of base), "identical", or
+	// "diverged" (neither, which means history was rewritten). found is false
+	// when either commit is no longer on GitHub, which a force-push can cause.
+	CompareCommits(ctx context.Context, owner, repo, base, head string) (status string, found bool, err error)
 }
 
 // Repo is the subset of a repository's fields the tool inspects.

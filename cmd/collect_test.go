@@ -29,14 +29,23 @@ func fakeCollectClient(repos []gh.Repo) *ghtest.Fake {
 			}
 			return out, nil
 		},
+		// The default-branch tip, named the way fakeGit names a fresh clone's
+		// commit, so an unpinned collect lands where it always has. A test that
+		// needs a moving tip overrides this.
+		GetRefFunc: func(_ context.Context, _, repo, _ string) (string, error) {
+			return "sha-" + repo, nil
+		},
+		// An ordinary update: the new commit descends from the old one.
+		CompareCommitsFunc: func(_ context.Context, _, _, _, _ string) (string, bool, error) {
+			return "ahead", true, nil
+		},
 	}
 }
 
 // fakeClone is the in-memory state of one cloned repo.
 type fakeClone struct {
-	sha       string
-	fetchHead string
-	origin    string
+	sha    string
+	origin string
 	modified  int  // tracked files changed
 	untracked int  // files git would report as ??
 	headHeld  bool // some branch, tag or remote-tracking ref contains HEAD
@@ -45,7 +54,13 @@ type fakeClone struct {
 	branch          string
 	deletedBranches []string
 	config          map[string]string
-	tags            map[string]bool
+	// present are commits fetched into the clone beyond the one checked out.
+	present []string
+	// hasHistory stands in for a full clone: only then can the clone answer an
+	// ancestry question at all. ancestors maps a commit to those behind it.
+	hasHistory bool
+	ancestors  map[string][]string
+	tags       map[string]bool
 	// tagSHA is the commit each tag names, which is not necessarily the clone's
 	// current sha: a grading checkout can move HEAD after a collection.
 	tagSHA map[string]string
@@ -59,13 +74,22 @@ func originURL(org, repo string) string {
 // fakeGit is a concurrency-safe stand-in for the git/gh operations.
 type fakeGit struct {
 	mu        sync.Mutex
-	clones    map[string]*fakeClone
-	forced    map[string]bool   // dir -> next fetch reports a forced update
-	remoteTip map[string]string // dir -> sha a fetch moves FETCH_HEAD to
+	clones map[string]*fakeClone
 	cloneErr    map[string]error // repo -> error returned by Clone
 	checkoutErr map[string]error // dir -> error returned by Checkout
 	fetchErr    map[string]error // ref -> error returned by Fetch
 	emptyRepos  map[string]bool  // repo -> clones fine but has no commits
+	// tips is the default-branch tip GetRef reports per repo, which is how a
+	// test moves a student's branch now that the target is resolved before any
+	// git runs. Unset means "sha-<repo>".
+	tips    map[string]string
+	fetched []string // refs fetched, for asserting the fetch rule held
+	// compare is what GitHub's compare API reports for a repo. Unset means
+	// "ahead": the new commit descends from the old one, an ordinary update.
+	compare map[string]string
+	// compareMissing marks a repo whose recorded commit GitHub no longer has,
+	// which is what a force-push can leave behind.
+	compareMissing map[string]bool
 	cloned      []string         // dirs cloned, for asserting dry-run did nothing
 	moved       []string         // dirs a finished clone was moved into place at
 	// refFormatErr makes CheckRefFormat fail to run at all, which is a different
@@ -75,14 +99,39 @@ type fakeGit struct {
 
 func newFakeGit() *fakeGit {
 	return &fakeGit{
-		clones:    map[string]*fakeClone{},
-		forced:    map[string]bool{},
-		remoteTip: map[string]string{},
+		clones:  map[string]*fakeClone{},
+		compare: map[string]string{},
 		cloneErr:    map[string]error{},
 		checkoutErr: map[string]error{},
 		fetchErr:    map[string]error{},
 		emptyRepos:  map[string]bool{},
+		tips:           map[string]string{},
+		compareMissing: map[string]bool{},
 	}
+}
+
+// tip is the commit GetRef reports for a repo's default branch.
+func (f *fakeGit) tip(repo string) string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if t, ok := f.tips[repo]; ok {
+		return t
+	}
+	return "sha-" + repo
+}
+
+// comparison is what GitHub reports about a repo's previous commit and its new
+// one, standing in for the compare API a shallow clone has to fall back on.
+func (f *fakeGit) comparison(repo string) (string, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.compareMissing[repo] {
+		return "", false, nil
+	}
+	if s, ok := f.compare[repo]; ok {
+		return s, true, nil
+	}
+	return "ahead", true, nil
 }
 
 // seed registers an existing clone at dir, cloned from origin. clean false means
@@ -177,19 +226,38 @@ func (f *fakeGit) TagSHA(_ context.Context, dir, tag string) (string, error) {
 	return c.tagSHA[tag], nil
 }
 
-func (f *fakeGit) Fetch(_ context.Context, dir, ref string) (bool, error) {
+func (f *fakeGit) Fetch(_ context.Context, dir, ref string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if e := f.fetchErr[ref]; e != nil {
-		return false, e
+		return e
 	}
 	c := f.clones[dir]
-	if tip, ok := f.remoteTip[dir]; ok {
-		c.fetchHead = tip
-	} else {
-		c.fetchHead = ref
+	c.present = append(c.present, ref)
+	f.fetched = append(f.fetched, ref)
+	return nil
+}
+
+func (f *fakeGit) HasCommit(_ context.Context, dir, sha string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.clones[dir]
+	if c == nil {
+		return false, nil
 	}
-	return f.forced[dir], nil
+	return c.sha == sha || slices.Contains(c.present, sha), nil
+}
+
+// IsAncestor answers only when the test says the clone has the history for it,
+// which stands in for a full clone; a shallow one cannot answer at all.
+func (f *fakeGit) IsAncestor(_ context.Context, dir, a, b string) (bool, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	c := f.clones[dir]
+	if c == nil || !c.hasHistory {
+		return false, false, nil
+	}
+	return slices.Contains(c.ancestors[b], a), true, nil
 }
 
 func (f *fakeGit) Checkout(_ context.Context, dir, ref string) error {
@@ -199,15 +267,8 @@ func (f *fakeGit) Checkout(_ context.Context, dir, ref string) error {
 		return e
 	}
 	c := f.clones[dir]
-	switch ref {
-	case "FETCH_HEAD":
-		c.sha = c.fetchHead
-	case "HEAD":
-		// Detaching at the commit already checked out leaves it where it is.
-		// Treating "HEAD" as a commit name would record the string as the SHA.
-	default:
-		c.sha = ref
-	}
+	// Every target is a SHA now, so a checkout names the commit outright.
+	c.sha = ref
 	c.branch = ""
 	return nil
 }
@@ -289,15 +350,24 @@ func refNameLooksValid(ref string) bool {
 	return true
 }
 
-func newCollectOpts(t *testing.T, git gitRunner, repos []gh.Repo, rosterCSV, groupsYML, snapshotYML string) *collectOpts {
+func newCollectOpts(t *testing.T, git *fakeGit, repos []gh.Repo, rosterCSV, groupsYML, snapshotYML string) *collectOpts {
 	t.Helper()
 	base := t.TempDir()
+	client := fakeCollectClient(repos)
+	// The tip comes from the runner's own table, so a test moves a student's
+	// branch the same way it sets up everything else about that clone.
+	client.GetRefFunc = func(_ context.Context, _, repo, _ string) (string, error) {
+		return git.tip(repo), nil
+	}
+	client.CompareCommitsFunc = func(_ context.Context, _, repo, _, _ string) (string, bool, error) {
+		return git.comparison(repo)
+	}
 	o := &collectOpts{
 		g:         assignGlobals(),
 		out:       filepath.Join(base, "out"),
 		label:     "test",
 		now:       func() time.Time { return time.Date(2026, 6, 29, 14, 12, 33, 0, time.UTC) },
-		newClient: func(context.Context) (collectClient, error) { return fakeCollectClient(repos), nil },
+		newClient: func(context.Context) (collectClient, error) { return client, nil },
 		git:       git,
 	}
 	write := func(name, content string) string {
@@ -399,22 +469,99 @@ func TestCollectDirtySkipped(t *testing.T) {
 	}
 }
 
-func TestCollectNonFFWarns(t *testing.T) {
+func TestCollectFetchesOnlyWhatTheCloneLacks(t *testing.T) {
+	// P1, and the reason every target is resolved to a SHA before any git runs.
+	// A depth-1 fetch naming a commit the clone already holds makes that commit
+	// a shallow boundary: every tag whose history runs through it loses that
+	// history, and the next gc deletes the commits. Knowing the target up front
+	// is what lets collect skip the fetch entirely when the commit is there,
+	// and name a commit rather than a branch when it is not.
 	git := newFakeGit()
 	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
 	adaDir := filepath.Join(o.out, "ada")
-	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true) // clean, untagged
-	git.forced[adaDir] = true
-	git.remoteTip[adaDir] = "sha-new"
+	alanDir := filepath.Join(o.out, "alan")
+	// ada already sits on the commit collect will resolve, carrying an earlier
+	// label's tag whose history a boundary would destroy.
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-hw1-ada", true, "gh-cls/collect/midterm")
+	// alan's student has pushed since.
+	git.seed(alanDir, originURL("cs101-spring26", "hw1-alan"), "sha-old", true)
+	git.tips["hw1-alan"] = "sha-moved"
+
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
-		t.Fatal(err)
+		t.Fatalf("run: %v\n%s", err, buf.String())
 	}
-	if !strings.Contains(buf.String(), "updated hw1-ada") || !strings.Contains(buf.String(), "rewritten") {
-		t.Errorf("a forced update should be reported with a warning:\n%s", buf.String())
+	t.Log("\n" + buf.String())
+
+	if slices.Contains(git.fetched, "sha-hw1-ada") {
+		t.Errorf("a commit the clone already holds must never be fetched, fetched %v", git.fetched)
 	}
-	if git.clones[adaDir].sha != "sha-new" {
-		t.Errorf("ada should be at the new tip, got %q", git.clones[adaDir].sha)
+	if !slices.Contains(git.fetched, "sha-moved") {
+		t.Errorf("a commit the clone lacks has to be fetched, fetched %v", git.fetched)
+	}
+	// Never a branch: a depth-1 fetch by branch name lands on whatever the tip
+	// is now, which may be a commit the clone already has.
+	for _, ref := range git.fetched {
+		if !strings.HasPrefix(ref, "sha-") {
+			t.Errorf("every fetch should name a commit, got %q in %v", ref, git.fetched)
+		}
+	}
+	if git.clones[adaDir].sha != "sha-hw1-ada" {
+		t.Errorf("ada should be where it already was, got %q", git.clones[adaDir].sha)
+	}
+	if git.clones[alanDir].sha != "sha-moved" {
+		t.Errorf("alan should have moved to the new commit, got %q", git.clones[alanDir].sha)
+	}
+}
+
+func TestCollectTellsARewriteFromAnOrdinaryUpdate(t *testing.T) {
+	// P5: the old warning read git's "(forced update)" text, which was wrong
+	// both ways. It fired on every ordinary update of a shallow clone, because
+	// the old tip's ancestry is not local so git cannot tell a fast-forward from
+	// a rewrite, and it never fired on a pinned run, because fetching a SHA
+	// updates no tracking ref. The question is now asked of the commits.
+	for _, tc := range []struct {
+		name, status string
+		missing      bool
+		wantNote     bool
+	}{
+		{name: "an ordinary update", status: "ahead"},
+		{name: "a rewritten history", status: "diverged", wantNote: true},
+		{name: "a recorded commit GitHub no longer has", missing: true, wantNote: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newFakeGit()
+			o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+			adaDir := filepath.Join(o.out, "ada")
+			git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true)
+			seedManifest(t, o.out, "midterm", "ada", "hw1-ada", "sha-old")
+			git.tips["hw1-ada"] = "sha-new"
+			if tc.status != "" {
+				git.compare["hw1-ada"] = tc.status
+			}
+			git.compareMissing["hw1-ada"] = tc.missing
+
+			var buf bytes.Buffer
+			if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+				t.Fatalf("a rewrite is collected, not failed: %v\n%s", err, buf.String())
+			}
+			out := buf.String()
+			t.Log("\n" + out)
+
+			// Either way the new commit is collected and the old tag stands.
+			if !strings.Contains(out, "updated hw1-ada") {
+				t.Errorf("the new commit should still be collected:\n%s", out)
+			}
+			if git.clones[adaDir].sha != "sha-new" {
+				t.Errorf("ada should be at the new commit, got %q", git.clones[adaDir].sha)
+			}
+			if got := strings.Contains(out, "rewritten"); got != tc.wantNote {
+				t.Errorf("rewrite note = %v, want %v:\n%s", got, tc.wantNote, out)
+			}
+			if tc.wantNote && !strings.Contains(out, "midterm") {
+				t.Errorf("the note should name the label that still holds the old commit:\n%s", out)
+			}
+		})
 	}
 }
 
@@ -636,7 +783,7 @@ func TestCollectAccountsForEveryRepoAtTheEnd(t *testing.T) {
 	git.clones[alanDir].headHeld = false // a grader committed here
 	git.seed(graceDir, originURL("cs101-spring26", "hw1-grace"), "sha-grace", true)
 	git.clones[graceDir].untracked = 2
-	git.remoteTip[graceDir] = "sha-grace-new"
+	git.tips["hw1-grace"] = "sha-grace-new"
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
@@ -888,7 +1035,7 @@ func TestCollectSkipsAGraderCommitNoRefHolds(t *testing.T) {
 	adaDir := filepath.Join(o.out, "ada")
 	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-grader-fix", true)
 	git.clones[adaDir].headHeld = false
-	git.remoteTip[adaDir] = "sha-new-tip"
+	git.tips["hw1-ada"] = "sha-new-tip"
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
@@ -944,7 +1091,7 @@ func TestCollectTakesACloneWithUntrackedFilesAndSaysSo(t *testing.T) {
 	adaDir := filepath.Join(o.out, "ada")
 	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true)
 	git.clones[adaDir].untracked = 3
-	git.remoteTip[adaDir] = "sha-new"
+	git.tips["hw1-ada"] = "sha-new"
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
@@ -1049,7 +1196,7 @@ func TestCollectRecollectsADeletedTagAtTheRecordedCommit(t *testing.T) {
 	// The clone is clean and untagged, the manifest still records the commit,
 	// and the student has pushed since.
 	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-whatever", true)
-	git.remoteTip[adaDir] = "sha-pushed-since"
+	git.tips["hw1-ada"] = "sha-pushed-since"
 	seedManifest(t, o.out, "test", "ada", "hw1-ada", adaSHA)
 
 	var buf bytes.Buffer

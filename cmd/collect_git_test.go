@@ -253,7 +253,7 @@ func TestFetchNeverImportsAStudentsTag(t *testing.T) {
 	// passed too: on the fetch the flag is defence in depth, and states the
 	// guarantee rather than leaving it resting on that incidental behaviour.
 	// The hole P6 describes is on the clone above, where it was real.
-	if _, err := (execGit{}).Fetch(context.Background(), legacyFixed, "main"); err != nil {
+	if err := (execGit{}).Fetch(context.Background(), legacyFixed, "main"); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if tags := runGit(t, legacyFixed, "tag", "-l"); tags != "" {

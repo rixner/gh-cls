@@ -73,6 +73,36 @@ func (c *restClient) ListRepoActivity(ctx context.Context, owner, repo, ref stri
 // CommitExists reports whether a commit is still retrievable from a repository.
 // A commit orphaned by a force push and since collected is gone, which is the
 // case that turns a pinned SHA into an artifact that cannot be collected.
+// IsNotFound reports whether an error is GitHub answering 404. Callers outside
+// this package need it to tell "there is nothing there" from "the request
+// failed", which otherwise leaves them matching on message text.
+func IsNotFound(err error) bool { return notFound(err) }
+
+// CompareCommits reports how head stands to base: "ahead" when head descends
+// from base, "behind" when head is an ancestor of it, "identical", or "diverged"
+// when neither, which is what a rewritten history looks like.
+//
+// This answers the question a shallow clone cannot: with only one commit of
+// history on disk, nothing local can tell an ordinary update from a force-push.
+// found is false when GitHub no longer has one of the commits, which is itself
+// evidence that history was rewritten.
+func (c *restClient) CompareCommits(ctx context.Context, owner, repo, base, head string) (string, bool, error) {
+	var out struct {
+		Status string `json:"status"`
+	}
+	// The commits are joined by "..." in the path, so each is escaped on its own
+	// and the separator is written literally.
+	path := fmt.Sprintf("repos/%s/%s/compare/%s...%s",
+		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(base), url.PathEscape(head))
+	if _, err := c.do(ctx, "GET", path, nil, &out); err != nil {
+		if notFound(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return out.Status, true, nil
+}
+
 func (c *restClient) CommitExists(ctx context.Context, owner, repo, sha string) (bool, error) {
 	path := fmt.Sprintf("repos/%s/%s/commits/%s",
 		url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(sha))
