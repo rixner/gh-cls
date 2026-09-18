@@ -636,7 +636,10 @@ func (execGit) CloneExists(dir string) bool {
 }
 
 func (execGit) Clone(ctx context.Context, orgName, repo, dir string) error {
-	_, stderr, err := gh2.ExecContext(ctx, "repo", "clone", orgName+"/"+repo, dir, "--", "--depth", "1")
+	// --no-tags: a clone otherwise imports the student's tags, and a student who
+	// pushes gh-cls/collect/<label> at a commit of their choosing would have it
+	// read back as the collection under that label.
+	_, stderr, err := gh2.ExecContext(ctx, "repo", "clone", orgName+"/"+repo, dir, "--", "--depth", "1", "--no-tags")
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(stderr.String()))
 	}
@@ -698,7 +701,7 @@ func (g execGit) TagSHA(ctx context.Context, dir, tag string) (string, error) {
 }
 
 func (g execGit) Fetch(ctx context.Context, dir, ref string) (bool, error) {
-	out, errb, err := g.run(ctx, dir, "fetch", "--depth", "1", "origin", ref)
+	out, errb, err := g.run(ctx, dir, "fetch", "--no-tags", "--depth", "1", "origin", ref)
 	if err != nil {
 		return false, fmt.Errorf("git fetch %s: %w: %s", ref, err, strings.TrimSpace(errb))
 	}
