@@ -140,17 +140,25 @@ func newCollectCmd(g *globalOpts) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "collect <name>",
 		Short: "Clone each student's repository locally for grading",
-		Long: `Maintain one shallow clone per student (or group) under --out, taking each repo
-to a target commit and tagging it so every collection is preserved. The default
-target is the repo's default-branch tip; --snapshot pins the exact SHAs recorded
-by a gh cls activity --snapshot run. Re-running
+		Long: `Maintain one clone per student (or group) under --out, taking each repo to a
+target commit and tagging it so every collection is preserved. The default target
+is the repo's default-branch tip; --snapshot pins the exact SHAs recorded by a
+gh cls activity --snapshot run. Re-running
 the same --label tops up only repos not yet collected under it; a new label
 updates the clones to the new target and tags the new state, leaving prior tags
-in place so no collected state is ever lost.
+in place so no collected state is ever lost. A label names one commit per repo
+for good: asking an existing label for a different commit is refused rather than
+quietly moving what that label means.
+
+Clones are shallow by default, holding just the collected commit. --history full
+keeps every commit and branch instead, and is recorded for the --out directory so
+later runs match it even without the flag.
 
 Roster-aware: it collects every <name>-* repo and reports any that are missing
 (a student with no repo) or unexpected (a repo matching no roster/groups entry).
-A clone with local changes is left untouched, so grading-script edits survive.
+A clone whose tracked files you have modified is left untouched, and so is a
+commit you made in it that no branch or tag holds, so grading edits survive;
+untracked files of your own do not block a collection but are reported.
 
 This is the one command that uses git: clones go through gh, updates through git.
 See COLLECT.md for the model and the git you need.`,
