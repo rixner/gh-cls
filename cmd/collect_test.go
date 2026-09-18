@@ -52,8 +52,8 @@ type fakeFetchAll struct {
 
 // fakeClone is the in-memory state of one cloned repo.
 type fakeClone struct {
-	sha    string
-	origin string
+	sha       string
+	origin    string
 	modified  int  // tracked files changed
 	untracked int  // files git would report as ??
 	headHeld  bool // some branch, tag or remote-tracking ref contains HEAD
@@ -84,8 +84,8 @@ func originURL(org, repo string) string {
 
 // fakeGit is a concurrency-safe stand-in for the git/gh operations.
 type fakeGit struct {
-	mu        sync.Mutex
-	clones map[string]*fakeClone
+	mu          sync.Mutex
+	clones      map[string]*fakeClone
 	cloneErr    map[string]error // repo -> error returned by Clone
 	checkoutErr map[string]error // dir -> error returned by Checkout
 	fetchErr    map[string]error // ref -> error returned by Fetch
@@ -93,18 +93,19 @@ type fakeGit struct {
 	// tips is the default-branch tip GetRef reports per repo, which is how a
 	// test moves a student's branch now that the target is resolved before any
 	// git runs. Unset means "sha-<repo>".
-	tips       map[string]string
-	fetched    []string       // refs fetched, for asserting the fetch rule held
-	fetchedAll []fakeFetchAll // the full setting's fetches, with their arguments
-	clonedFull []bool         // whether each clone asked for the whole history
+	tips           map[string]string
+	fetched        []string       // refs fetched, for asserting the fetch rule held
+	fetchedAll     []fakeFetchAll // the full setting's fetches, with their arguments
+	clonedFull     []bool         // whether each clone asked for the whole history
+	clearedRemotes []string       // dirs whose remote-tracking refs were removed
 	// compare is what GitHub's compare API reports for a repo. Unset means
 	// "ahead": the new commit descends from the old one, an ordinary update.
 	compare map[string]string
 	// compareMissing marks a repo whose recorded commit GitHub no longer has,
 	// which is what a force-push can leave behind.
 	compareMissing map[string]bool
-	cloned      []string         // dirs cloned, for asserting dry-run did nothing
-	moved       []string         // dirs a finished clone was moved into place at
+	cloned         []string // dirs cloned, for asserting dry-run did nothing
+	moved          []string // dirs a finished clone was moved into place at
 	// refFormatErr makes CheckRefFormat fail to run at all, which is a different
 	// outcome from git rejecting the name.
 	refFormatErr error
@@ -112,12 +113,12 @@ type fakeGit struct {
 
 func newFakeGit() *fakeGit {
 	return &fakeGit{
-		clones:  map[string]*fakeClone{},
-		compare: map[string]string{},
-		cloneErr:    map[string]error{},
-		checkoutErr: map[string]error{},
-		fetchErr:    map[string]error{},
-		emptyRepos:  map[string]bool{},
+		clones:         map[string]*fakeClone{},
+		compare:        map[string]string{},
+		cloneErr:       map[string]error{},
+		checkoutErr:    map[string]error{},
+		fetchErr:       map[string]error{},
+		emptyRepos:     map[string]bool{},
 		tips:           map[string]string{},
 		compareMissing: map[string]bool{},
 	}
@@ -171,6 +172,13 @@ func (f *fakeGit) CloneExists(dir string) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.clones[dir] != nil
+}
+
+func (f *fakeGit) DeleteRemoteTrackingRefs(_ context.Context, dir string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.clearedRemotes = append(f.clearedRemotes, dir)
+	return nil
 }
 
 func (f *fakeGit) IsShallow(_ context.Context, dir string) (bool, error) {
@@ -556,6 +564,71 @@ func TestCollectFetchesOnlyWhatTheCloneLacks(t *testing.T) {
 	// what would cut every branch already in a clone down to one commit (V11).
 	if len(git.fetchedAll) != 0 {
 		t.Errorf("the snapshot setting must not fetch every branch, did %v", git.fetchedAll)
+	}
+}
+
+func TestSnapshotClonesKeepNoRemoteBranches(t *testing.T) {
+	// A snapshot clone is meant to hold the collected commit and nothing else.
+	// The origin/main a clone arrives with points at the tip as of clone time,
+	// which in a pinned collection is a commit from after the deadline, so
+	// `git checkout origin/main` would show a grader code never collected.
+	// The full setting keeps them: mirroring GitHub's branches is its point.
+	for _, tc := range []struct {
+		name, history string
+		wantCleared   bool
+	}{
+		{name: "snapshot", history: "", wantCleared: true},
+		{name: "full", history: "full"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			git := newFakeGit()
+			o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+			o.history = tc.history
+			if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+				t.Fatalf("run: %v", err)
+			}
+			// The refs are cleared while the clone is still being assembled.
+			staging := filepath.Join(o.out, gitCLSDir, "staging", "ada")
+			got := slices.Contains(git.clearedRemotes, staging)
+			if got != tc.wantCleared {
+				t.Errorf("cleared remote-tracking refs = %v, want %v (cleared: %v)",
+					got, tc.wantCleared, git.clearedRemotes)
+			}
+		})
+	}
+}
+
+func TestCollectNotesACloneHoldingMoreHistoryThanTheSetting(t *testing.T) {
+	// Unshallowed by hand, or copied in from a full-history directory. Collect
+	// leaves it exactly as it is, since nothing here is worth throwing history
+	// away for, but silence would leave the instructor thinking the directory
+	// is uniform when it is not.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	adaDir := filepath.Join(o.out, "ada")
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-old", true)
+	git.clones[adaDir].shallow = false
+	git.tips["hw1-ada"] = "sha-new"
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	t.Log("\n" + out)
+
+	if !strings.Contains(out, "more history than this directory's snapshot setting") {
+		t.Errorf("a deeper clone should be noted:\n%s", out)
+	}
+	if !strings.Contains(out, "--history full") {
+		t.Errorf("the note should say how to keep it on purpose:\n%s", out)
+	}
+	// Noted, not acted on: it is still collected, and still deep.
+	if !strings.Contains(out, "updated hw1-ada") {
+		t.Errorf("the clone should still be collected:\n%s", out)
+	}
+	if git.clones[adaDir].shallow {
+		t.Error("collect must not shorten a clone to match the setting")
 	}
 }
 

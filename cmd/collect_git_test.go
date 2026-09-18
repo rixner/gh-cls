@@ -185,6 +185,44 @@ func TestCheckoutRefusesRatherThanOverwriteAGradersFiles(t *testing.T) {
 	}
 }
 
+func TestDeleteRemoteTrackingRefsClearsTheMirrorSymrefIncluded(t *testing.T) {
+	// The fake only records that this was called, so only the real thing can
+	// show the symref is handled. origin/HEAD points at origin/main, and
+	// deleting both in one update-ref batch is refused outright:
+	// "multiple updates for 'refs/remotes/origin/main' (including one via
+	// symref 'refs/remotes/origin/HEAD') are not allowed".
+	requireGit(t)
+	origin, work := newOrigin(t, 2)
+	base := t.TempDir()
+	clone := filepath.Join(base, "c")
+	runGit(t, base, "clone", "-q", "--depth", "1", "--no-tags", origin, clone)
+
+	before := runGit(t, clone, "for-each-ref", "--format=%(refname)", "refs/remotes")
+	if !strings.Contains(before, "refs/remotes/origin/HEAD") {
+		t.Fatalf("expected the clone to carry the origin/HEAD symref, got %q", before)
+	}
+
+	if err := (execGit{}).DeleteRemoteTrackingRefs(context.Background(), clone); err != nil {
+		t.Fatalf("DeleteRemoteTrackingRefs: %v", err)
+	}
+	if after := runGit(t, clone, "for-each-ref", "--format=%(refname)", "refs/remotes"); after != "" {
+		t.Errorf("every remote-tracking ref should be gone, got %q", after)
+	}
+
+	// The remote itself survives, so later runs still fetch through it.
+	if remotes := runGit(t, clone, "remote"); remotes != "origin" {
+		t.Errorf("the origin remote should be left alone, got %q", remotes)
+	}
+	newTip := studentCommit(t, work, "c3")
+	runGit(t, work, "push", "-q", "origin", "main")
+	if err := (execGit{}).Fetch(context.Background(), clone, newTip); err != nil {
+		t.Errorf("a later fetch by commit should still work: %v", err)
+	}
+	if has, err := (execGit{}).HasCommit(context.Background(), clone, newTip); err != nil || !has {
+		t.Errorf("the fetched commit should be present, got %v %v", has, err)
+	}
+}
+
 func TestFetchAllMirrorsBranchesWithoutCostingHistory(t *testing.T) {
 	// V13 through the real code. The fake would accept any argument list, so
 	// only this can show that one request deepens the clone, mirrors every

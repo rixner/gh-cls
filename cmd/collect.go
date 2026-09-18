@@ -71,6 +71,11 @@ type gitRunner interface {
 	// when unshallow is set, prunes branches deleted on GitHub, and takes forced
 	// updates, all without touching tags or local refs.
 	FetchAll(ctx context.Context, dir, target string, unshallow bool) error
+	// DeleteRemoteTrackingRefs clears refs/remotes/origin/*. A snapshot clone is
+	// meant to hold the collected commit and nothing else; the origin/main a
+	// clone arrives with points at the tip as of clone time, which in a pinned
+	// collection is a commit after the deadline.
+	DeleteRemoteTrackingRefs(ctx context.Context, dir string) error
 	// IsShallow reports whether the clone was cut off at a depth. It decides
 	// whether a full fetch may pass --unshallow, which git rejects outright on a
 	// complete repository.
@@ -706,6 +711,19 @@ func (o *collectOpts) collectOne(ctx context.Context, client collectClient, orgN
 	if state.untracked > 0 {
 		notes = append(notes, fmt.Sprintf("collected with %d untracked file(s) still in the worktree", state.untracked))
 	}
+	// A clone with more history than this directory asks for: unshallowed by
+	// hand, or copied in from a full-history directory. It is left exactly as it
+	// is, since nothing here is worth throwing history away for, but silence
+	// would leave the instructor thinking the directory is uniform.
+	if history == historySnapshot {
+		switch shallow, shallowErr := o.git.IsShallow(ctx, dir); {
+		case shallowErr != nil:
+			notes = append(notes, fmt.Sprintf("could not tell how much history this clone holds: %v", shallowErr))
+		case !shallow:
+			notes = append(notes, "this clone holds more history than this directory's snapshot setting, and is left as it is; "+
+				"--history full would keep it on purpose")
+		}
+	}
 	res.detail = strings.Join(notes, "; ")
 	return o.tagHead(ctx, dir, tag, collectStatusUpdated, res)
 }
@@ -853,6 +871,18 @@ func (o *collectOpts) cloneInto(ctx context.Context, orgName, tag, target, dir s
 	if err := o.git.SetConfig(ctx, staging, "checkout.guess", "false"); err != nil {
 		res.err = fmt.Errorf("setting checkout.guess in the new clone of %s: %w", it.repo, err)
 		return res
+	}
+
+	// A snapshot clone holds the collected commit and nothing else. Left in
+	// place, origin/main would sit at the tip as of clone time, which in a
+	// pinned collection is a commit from after the deadline, and `git checkout
+	// origin/main` would show a grader code that was never collected. The full
+	// setting keeps them: mirroring GitHub's branches is the point of it.
+	if history == historySnapshot {
+		if err := o.git.DeleteRemoteTrackingRefs(ctx, staging); err != nil {
+			res.err = fmt.Errorf("clearing the remote-tracking refs of the new clone of %s: %w", it.repo, err)
+			return res
+		}
 	}
 
 	if res = o.tagHead(ctx, staging, tag, collectStatusCollected, res); res.err != nil {
@@ -1325,6 +1355,41 @@ func (g execGit) FetchAll(ctx context.Context, dir, target string, unshallow boo
 	}
 	if _, errb, err := g.run(ctx, dir, args...); err != nil {
 		return fmt.Errorf("git fetch (all branches): %w: %s", err, strings.TrimSpace(errb))
+	}
+	return nil
+}
+
+// DeleteRemoteTrackingRefs removes every refs/remotes/origin/* ref.
+//
+// Symrefs go first and one at a time. origin/HEAD is a symref to origin/main,
+// and deleting both in one `update-ref --stdin` batch is refused outright:
+// "multiple updates for 'refs/remotes/origin/main' (including one via symref
+// 'refs/remotes/origin/HEAD') are not allowed". A fresh clone has two or three
+// of these refs, so deleting them individually costs nothing worth batching for.
+//
+// The remote itself is left alone: later runs still fetch through it, and a run
+// that switches this directory to full history rebuilds the whole mirror.
+func (g execGit) DeleteRemoteTrackingRefs(ctx context.Context, dir string) error {
+	out, errb, err := g.run(ctx, dir, "for-each-ref", "--format=%(refname) %(symref)", "refs/remotes")
+	if err != nil {
+		return fmt.Errorf("git for-each-ref refs/remotes: %w: %s", err, strings.TrimSpace(errb))
+	}
+	var symbolic, plain []string
+	for line := range strings.SplitSeq(strings.TrimSpace(out), "\n") {
+		name, target, _ := strings.Cut(strings.TrimSpace(line), " ")
+		if name == "" {
+			continue
+		}
+		if strings.TrimSpace(target) != "" {
+			symbolic = append(symbolic, name)
+		} else {
+			plain = append(plain, name)
+		}
+	}
+	for _, ref := range append(symbolic, plain...) {
+		if _, delErr, delRunErr := g.run(ctx, dir, "update-ref", "-d", ref); delRunErr != nil {
+			return fmt.Errorf("git update-ref -d %s: %w: %s", ref, delRunErr, strings.TrimSpace(delErr))
+		}
 	}
 	return nil
 }
