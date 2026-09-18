@@ -242,7 +242,7 @@ func TestCollectFresh(t *testing.T) {
 	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
 		t.Fatalf("run: %v\n%s", err, buf.String())
 	}
-	if !strings.Contains(buf.String(), "3 collected, 0 updated, 0 up-to-date, 0 skipped, 0 failed") {
+	if !strings.Contains(buf.String(), "3 collected, 0 updated, 0 up-to-date, 0 skipped, 0 refused, 0 failed") {
 		t.Errorf("summary wrong:\n%s", buf.String())
 	}
 	for _, key := range []string{"ada", "alan", "grace"} {
@@ -525,6 +525,114 @@ func TestCollectRejectsClonesOfAnotherRepo(t *testing.T) {
 	}
 	if manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada") != nil {
 		t.Error("a repo that was never collected must not appear in the manifest")
+	}
+}
+
+// seedManifest writes a collected.csv recording one commit for a repo under a
+// label, standing in for what an earlier run left behind.
+func seedManifest(t *testing.T, out, label, key, repo, sha string) {
+	t.Helper()
+	if err := os.MkdirAll(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rows := "label,key,repo,sha,ref,time\n" +
+		strings.Join([]string{label, key, repo, sha, "main", "2026-06-29T14:12:33Z"}, ",") + "\n"
+	if err := os.WriteFile(filepath.Join(out, "collected.csv"), []byte(rows), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestCollectRefusesALabelAskedForASecondCommit(t *testing.T) {
+	// P3: COLLECT.md suggests editing the snapshot to give a student a later
+	// commit. Re-running the same label after that edit hit the tag-exists check
+	// before anything was compared, so the old commit was silently kept, the run
+	// said up-to-date, and the instructor believed the new commit was collected.
+	git := newFakeGit()
+	commits := "ada: " + adaSHA + "\n"
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", commits)
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1"); err != nil {
+		t.Fatalf("first run: %v", err)
+	}
+
+	// The instructor edits the snapshot to a later commit and re-runs the label.
+	if err := os.WriteFile(o.snapshot, []byte("ada: "+alanSHA+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	out := buf.String()
+	t.Log("\n" + out)
+
+	if err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("a label asked for a second commit should be refused and exit non-zero, got %v", err)
+	}
+	if strings.Contains(out, "up-to-date hw1-ada") {
+		t.Error("the old commit must not be reported as up to date")
+	}
+	for _, want := range []string{"refused", shortSHA(adaSHA), shortSHA(alanSHA), "new label"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal should mention %q:\n%s", want, out)
+		}
+	}
+	// Nothing moved: the tag still holds what it collected.
+	if got := git.clones[filepath.Join(o.out, "ada")].tagSHA["gh-cls/collect/test"]; got != adaSHA {
+		t.Errorf("the tag must not move, got %q", got)
+	}
+}
+
+func TestCollectRefusesWhenTheTagDisagreesWithTheTarget(t *testing.T) {
+	// The same refusal reached through the tag rather than the manifest: a run
+	// died before writing collected.csv, so the clone is tagged and unrecorded.
+	git := newFakeGit()
+	tag := "gh-cls/collect/test"
+	commits := "ada: " + adaSHA + "\n"
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", commits)
+	git.seed(filepath.Join(o.out, "ada"), originURL("cs101-spring26", "hw1-ada"), alanSHA, true, tag)
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	out := buf.String()
+	t.Log("\n" + out)
+
+	if err == nil || !strings.Contains(err.Error(), "refused") {
+		t.Fatalf("a tag disagreeing with the snapshot should be refused, got %v", err)
+	}
+	for _, want := range []string{"label test holds", shortSHA(alanSHA), "the snapshot says", shortSHA(adaSHA)} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the refusal should mention %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestCollectRecollectsADeletedTagAtTheRecordedCommit(t *testing.T) {
+	// P4: deleting a clone or a tag and re-running the same label used to take
+	// the current tip under the old label, while the manifest kept the old SHA,
+	// so tag and manifest silently disagreed about what had been graded.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	adaDir := filepath.Join(o.out, "ada")
+	// The clone is clean and untagged, the manifest still records the commit,
+	// and the student has pushed since.
+	git.seed(adaDir, originURL("cs101-spring26", "hw1-ada"), "sha-whatever", true)
+	git.remoteTip[adaDir] = "sha-pushed-since"
+	seedManifest(t, o.out, "test", "ada", "hw1-ada", adaSHA)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	t.Log("\n" + buf.String())
+
+	if got := git.clones[adaDir].sha; got != adaSHA {
+		t.Errorf("the recorded commit should be recovered, got %q (the tip is sha-pushed-since)", got)
+	}
+	if got := git.clones[adaDir].tagSHA["gh-cls/collect/test"]; got != adaSHA {
+		t.Errorf("the tag should be recreated at the recorded commit, got %q", got)
+	}
+	// And the manifest still says the one thing it always said.
+	row := manifestRow(readCSV(t, filepath.Join(o.out, "collected.csv")), "hw1-ada")
+	if row == nil || row[3] != adaSHA {
+		t.Errorf("the manifest must keep recording the collected commit, got %v", row)
 	}
 }
 

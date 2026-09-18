@@ -136,6 +136,9 @@ type collectResult struct {
 	sha    string
 	ref    string // the default branch, or "(pinned)" in pinned mode
 	status string
+	// detail explains a status that needs more than its own word, and carries
+	// the fix. A refusal always has one.
+	detail string
 	forced bool
 	err    error
 }
@@ -146,6 +149,10 @@ const (
 	collectStatusUpToDate  = "up-to-date"
 	collectStatusDirty     = "skipped (local changes)"
 	collectStatusNoSHA     = "skipped (not in the snapshot)"
+	// collectStatusRefused is a repository collect will not touch because doing
+	// so would make something permanently wrong, as against one it merely could
+	// not finish. It exits non-zero: it points at a mistake to correct.
+	collectStatusRefused = "refused"
 )
 
 // collectLine renders one repo's outcome for the progress stream. These are the
@@ -159,6 +166,8 @@ func collectLine(r collectResult) (outcome, target string) {
 		return "FAILED", fmt.Sprintf("%s: %v", r.repo, r.err)
 	case r.status == collectStatusUpdated && r.forced:
 		return r.status, r.repo + " (warning: upstream history was rewritten since the last collect; the prior state keeps its tag)"
+	case r.detail != "":
+		return r.status, r.repo + ": " + r.detail
 	default:
 		return r.status, r.repo
 	}
@@ -265,9 +274,17 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		return fmt.Errorf("creating %s: %w", o.out, err)
 	}
 
+	// What this label already records, read once before any repository is
+	// touched. A deleted tag is refilled from it rather than from the current
+	// tip, and a tag that disagrees with it is refused.
+	recorded, err := readManifestSHAs(filepath.Join(o.out, "collected.csv"), label)
+	if err != nil {
+		return err
+	}
+
 	prog := newProgress(out, len(items), 0) // statuses carry their own reasons; see collectLine
 	results := runConcurrentProgress(ctx, o.g.concurrency, items, func(ctx context.Context, it repoItem) collectResult {
-		return o.collectOne(ctx, o.g.org, name, tag, pinned, it)
+		return o.collectOne(ctx, o.g.org, name, tag, label, pinned, recorded, it)
 	}, func(r collectResult) { prog.item(collectLine(r)) })
 
 	if err := o.writeManifest(label, results); err != nil {
@@ -315,7 +332,7 @@ func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[
 }
 
 // collectOne clones or updates one repository to its target commit and tags it.
-func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string, snapshot map[string]string, it repoItem) collectResult {
+func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag, label string, snapshot, recorded map[string]string, it repoItem) collectResult {
 	res := collectResult{key: it.key, repo: it.repo, ref: it.defaultBranch}
 	dir := filepath.Join(o.out, it.key)
 
@@ -331,18 +348,47 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string,
 		sha = s
 	}
 
+	// What this label already names for this repository, if anything: the
+	// snapshot's pin, or the commit the manifest recorded under this label. A
+	// label names one commit per repository, permanently, so whatever is found
+	// on disk below has to agree with it.
+	expected, expectedFrom := "", ""
+	if pinned {
+		expected, expectedFrom = sha, "the snapshot"
+	}
+	if row := recorded[it.repo]; row != "" {
+		if expected != "" && !strings.EqualFold(expected, row) {
+			res.status = collectStatusRefused
+			res.detail = fmt.Sprintf("the snapshot says %s, but collected.csv already recorded %s under label %s; collect it under a new label",
+				shortSHA(expected), shortSHA(row), label)
+			return res
+		}
+		if expected == "" {
+			expected, expectedFrom = row, "collected.csv"
+		}
+	}
+
+	// The commit to land on, or empty to take the default branch's tip. A
+	// recorded commit is used even unpinned: re-running a label whose tag or
+	// clone was deleted must recover what that label named, not whatever the
+	// student has pushed since.
+	target := sha
+	if target == "" {
+		target = expected
+	}
+
 	if !o.git.CloneExists(dir) {
 		if err := o.git.Clone(ctx, orgName, it.repo, dir); err != nil {
 			res.err = fmt.Errorf("cloning %s: %w", it.repo, err)
 			return res
 		}
-		if pinned {
-			if _, err := o.git.Fetch(ctx, dir, sha); err != nil {
-				res.err = fmt.Errorf("fetching %s in %s: %w", sha, it.repo, err)
+		if target != "" {
+			if _, err := o.git.Fetch(ctx, dir, target); err != nil {
+				res.err = fmt.Errorf("fetching %s in %s: %w", target, it.repo, err)
 				return res
 			}
-			if err := o.git.Checkout(ctx, dir, sha); err != nil {
-				res.err = fmt.Errorf("checking out %s in %s: %w", sha, it.repo, err)
+			if err := o.git.Checkout(ctx, dir, target); err != nil {
+				res.err = fmt.Errorf("checking out %s in %s: %w", target, it.repo, err)
 				return res
 			}
 		}
@@ -371,13 +417,23 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string,
 		// Read the tag rather than HEAD: this SHA goes into the manifest when the
 		// row is missing from it, and a grading checkout may have moved HEAD since
 		// the collection. The error is no longer discarded for the same reason.
-		sha, err := o.git.TagSHA(ctx, dir, tag)
+		tagged, err := o.git.TagSHA(ctx, dir, tag)
 		if err != nil {
 			res.err = fmt.Errorf("reading the %s tag on %s: %w", tag, it.repo, err)
 			return res
 		}
+		// The tag is what this label collected. Asking the same label for a
+		// different commit was reported as up to date, which left the instructor
+		// believing the new commit had been collected; collecting it instead
+		// would move what the label means. Neither is acceptable, so refuse.
+		if expected != "" && !strings.EqualFold(expected, tagged) {
+			res.status = collectStatusRefused
+			res.detail = fmt.Sprintf("label %s holds %s, but %s says %s; collect it under a new label",
+				label, shortSHA(tagged), expectedFrom, shortSHA(expected))
+			return res
+		}
 		res.status = collectStatusUpToDate
-		res.sha = sha
+		res.sha = tagged
 		return res
 	}
 	if clean, err := o.git.WorktreeClean(ctx, dir); err != nil {
@@ -388,8 +444,8 @@ func (o *collectOpts) collectOne(ctx context.Context, orgName, name, tag string,
 		return res
 	}
 
-	ref, checkoutRef := sha, sha
-	if !pinned {
+	ref, checkoutRef := target, target
+	if target == "" {
 		ref, checkoutRef = it.defaultBranch, "FETCH_HEAD"
 	}
 	forced, err := o.git.Fetch(ctx, dir, ref)
@@ -417,6 +473,15 @@ func originNames(origin, org, repo string) bool {
 	return strings.EqualFold(u, want) ||
 		strings.HasSuffix(strings.ToLower(u), strings.ToLower("/"+want)) ||
 		strings.HasSuffix(strings.ToLower(u), strings.ToLower(":"+want))
+}
+
+// shortSHA abbreviates a commit for a message, leaving anything too short to
+// abbreviate (a hand-edited manifest cell) exactly as it was written.
+func shortSHA(sha string) string {
+	if len(sha) >= 12 {
+		return sha[:12]
+	}
+	return sha
 }
 
 // tagHead reads HEAD, tags it with the collection tag, and records the status.
@@ -495,6 +560,39 @@ func (o *collectOpts) writeManifest(label string, results []collectResult) error
 	return nil
 }
 
+// readManifestSHAs returns the commit the manifest records for each repository
+// under one label. It is read once, before any repository is touched, and is
+// what makes a label mean one commit per repository however the clones have been
+// disturbed since: a deleted tag is refilled from it rather than from the
+// current tip, and a tag that disagrees with it is refused.
+func readManifestSHAs(path, label string) (map[string]string, error) {
+	f, err := os.Open(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("opening manifest %s: %w", path, err)
+	}
+	defer f.Close()
+
+	r := csv.NewReader(f)
+	r.FieldsPerRecord = -1
+	records, err := r.ReadAll()
+	if err != nil {
+		return nil, fmt.Errorf("parsing manifest %s: %w; fix or remove it, then re-run", path, err)
+	}
+	out := map[string]string{}
+	for _, rec := range records {
+		if len(rec) < 4 || rec[0] != label {
+			continue
+		}
+		if sha := strings.TrimSpace(rec[3]); sha != "" {
+			out[rec[2]] = sha
+		}
+	}
+	return out, nil
+}
+
 // manifestKey identifies one manifest row: a repository under one label. A
 // second collection of the same repo under a new label is a new row, which is
 // the point of labels.
@@ -553,7 +651,7 @@ func reportReconcile(out io.Writer, items []repoItem, missing []string) {
 // Each repo's own line is streamed as it finishes (see collectLine), so this
 // counts rather than re-lists them.
 func reportCollect(out io.Writer, results []collectResult, missing []string) error {
-	var collected, updated, upToDate, skipped, failed int
+	var collected, updated, upToDate, skipped, refused, failed int
 	for _, r := range results {
 		switch {
 		case r.err != nil:
@@ -564,17 +662,27 @@ func reportCollect(out io.Writer, results []collectResult, missing []string) err
 			updated++
 		case r.status == collectStatusUpToDate:
 			upToDate++
+		case r.status == collectStatusRefused:
+			refused++
 		default: // dirty / no-sha
 			skipped++
 		}
 	}
-	fmt.Fprintf(out, "\n%d collected, %d updated, %d up-to-date, %d skipped, %d failed\n",
-		collected, updated, upToDate, skipped, failed)
+	fmt.Fprintf(out, "\n%d collected, %d updated, %d up-to-date, %d skipped, %d refused, %d failed\n",
+		collected, updated, upToDate, skipped, refused, failed)
 	if len(missing) > 0 {
 		fmt.Fprintf(out, "note: %d student/group(s) have no repo (see above)\n", len(missing))
 	}
-	if failed > 0 {
+	// A refusal is not a failure to do the work; it is collect declining to make
+	// something permanently wrong. It still exits non-zero, because it names a
+	// mistake only the instructor can correct.
+	switch {
+	case failed > 0 && refused > 0:
+		return fmt.Errorf("%d repo(s) failed, %d refused", failed, refused)
+	case failed > 0:
 		return fmt.Errorf("%d repo(s) failed", failed)
+	case refused > 0:
+		return fmt.Errorf("%d repo(s) refused", refused)
 	}
 	return nil
 }
