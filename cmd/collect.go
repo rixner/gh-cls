@@ -107,6 +107,7 @@ type collectOpts struct {
 	snapshot  string
 	out       string
 	label     string
+	history   string
 	dryRun    bool
 	now       func() time.Time
 	newClient func(context.Context) (collectClient, error)
@@ -151,6 +152,7 @@ See COLLECT.md for the model and the git you need.`,
 	f.StringVarP(&o.groups, "groups", "g", "", "groups file (required for a group assignment)")
 	f.StringVarP(&o.snapshot, "snapshot", "s", "", "snapshot file of key->commit SHA, as written by gh cls activity --snapshot; collect exactly those commits")
 	f.StringVar(&o.label, "label", "", "name for this collection's tag (default: a timestamp)")
+	f.StringVar(&o.history, "history", "", "how much history to keep: snapshot (the collected commit) or full (every commit and branch); recorded for --out and used by later runs")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "resolve and reconcile without cloning anything")
 	_ = cmd.MarkFlagRequired("out")
 	return cmd
@@ -288,6 +290,13 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 			label, tag)
 	}
 
+	// Settle the history setting before any network call, so a bad value costs
+	// nothing.
+	history, historySource, historyChangedFrom, err := resolveHistory(o.out, o.history)
+	if err != nil {
+		return err
+	}
+
 	client, err := o.newClient(ctx)
 	if err != nil {
 		return err
@@ -331,6 +340,17 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	}
 
 	fmt.Fprintf(out, "Collecting %s into %s (tag %s)\n", name, o.out, tag)
+	fmt.Fprintf(out, "history: %s (%s)\n", history, historySource)
+	switch {
+	case historyChangedFrom == historySnapshot:
+		fmt.Fprintf(out, "  clones here are deepened to their whole history and get every branch.\n"+
+			"  History that is no longer on GitHub cannot come back, and is reported per repository.\n")
+	case historyChangedFrom == historyFull:
+		fmt.Fprintf(out, "  history already in these clones is kept, new collections have none,\n"+
+			"  and other branches stop being updated: their refs stay where the last full run left them.\n")
+	case history == historyFull:
+		fmt.Fprintf(out, "  other branches show GitHub's state as of this run, which can be later than the collected commits.\n")
+	}
 	reportReconcile(out, items, missing)
 	if len(unmatched) > 0 {
 		fmt.Fprintf(out, "note: %d snapshot key(s) match no repository, so nothing is pinned for them:\n  %s\n",
@@ -381,6 +401,16 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 			fmt.Fprintf(out, "warning: %v\n", rerr)
 		}
 	}()
+
+	// Record the setting for later runs, before any clone work, so a run that
+	// forgets the flag and a colleague's run that never had it both match the
+	// clones already here. Only a run that named a setting writes one: a flagless
+	// run must not stamp the default onto a directory an older version made.
+	if o.history != "" {
+		if err := saveHistoryMode(o.out, history); err != nil {
+			return err
+		}
+	}
 
 	// Clear anything a killed run left staged. This is collect's own directory,
 	// and the path is built from the resolved --out plus fixed segments, never

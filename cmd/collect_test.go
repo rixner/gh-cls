@@ -865,6 +865,93 @@ func TestCollectAccountsForEveryRepoAtTheEnd(t *testing.T) {
 	}
 }
 
+func TestCollectRefusesAnUnknownHistorySetting(t *testing.T) {
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	o.history = "everything"
+
+	var buf bytes.Buffer
+	err := o.run(context.Background(), &buf, "hw1")
+	if err == nil {
+		t.Fatalf("an unknown history setting should be refused:\n%s", buf.String())
+	}
+	t.Log("\n" + err.Error())
+	for _, want := range []string{"everything", "snapshot", "full"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("the refusal should mention %q, got: %v", want, err)
+		}
+	}
+	if len(git.cloned) != 0 {
+		t.Errorf("nothing should be cloned before the setting is checked, cloned %v", git.cloned)
+	}
+}
+
+func TestCollectRecordsTheHistorySettingForLaterRuns(t *testing.T) {
+	// Someone will forget the flag on a later run, or a colleague will run the
+	// default into the same directory. A recorded setting survives both, so the
+	// clones in one directory stay alike.
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	o.history = "full"
+
+	var first bytes.Buffer
+	if err := o.run(context.Background(), &first, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, first.String())
+	}
+	t.Log("\n" + first.String())
+	if !strings.Contains(first.String(), "history: full (set on this directory by this run)") {
+		t.Errorf("the header should state the setting and where it came from:\n%s", first.String())
+	}
+	if _, err := os.Stat(filepath.Join(o.out, gitCLSDir, historyFileName)); err != nil {
+		t.Errorf("the setting should be recorded for later runs: %v", err)
+	}
+
+	// A later run that forgets the flag inherits it.
+	o.history = ""
+	o.label = "second"
+	var second bytes.Buffer
+	if err := o.run(context.Background(), &second, "hw1"); err != nil {
+		t.Fatalf("second run: %v\n%s", err, second.String())
+	}
+	if !strings.Contains(second.String(), "history: full (recorded for this directory)") {
+		t.Errorf("a flagless run should inherit the directory's setting:\n%s", second.String())
+	}
+
+	// And switching back says what that means, since it is not obvious from the
+	// word alone: what is already there stays, new collections have none.
+	o.history = "snapshot"
+	o.label = "third"
+	var third bytes.Buffer
+	if err := o.run(context.Background(), &third, "hw1"); err != nil {
+		t.Fatalf("third run: %v\n%s", err, third.String())
+	}
+	t.Log("\n" + third.String())
+	if !strings.Contains(third.String(), "changed from full by this run") {
+		t.Errorf("a changed setting should say what it changed from:\n%s", third.String())
+	}
+	if !strings.Contains(third.String(), "is kept") || !strings.Contains(third.String(), "stop being updated") {
+		t.Errorf("switching back should say what it costs:\n%s", third.String())
+	}
+}
+
+func TestCollectDryRunRecordsNoHistorySetting(t *testing.T) {
+	git := newFakeGit()
+	o := newCollectOpts(t, git, hw1Repos(), assignRoster, "", "")
+	o.history = "full"
+	o.dryRun = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("dry run: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "history: full") {
+		t.Errorf("a dry run should still say what setting it would use:\n%s", buf.String())
+	}
+	if _, err := os.Stat(filepath.Join(o.out, gitCLSDir)); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a dry run must record nothing, the history setting included")
+	}
+}
+
 func TestCollectRefusesASecondRunInTheSameDirectory(t *testing.T) {
 	// P12: two runs into one --out race on the clones and the tags, and both
 	// read the manifest before appending, so rows can be duplicated.
