@@ -370,7 +370,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   under it; a new label advances the clones and tags the new state, leaving prior
   tags in place. It is roster-aware (`--roster` for individual,
   `--groups` for group), reporting any missing or unexpected repositories, and
-  refuses to disturb a clone with local changes so grading-script edits survive.
+  leaves a clone whose tracked files you have modified untouched, as it does a
+  commit you made there that no branch or tag holds, so grading edits survive;
+  untracked files of your own do not block a collection but are reported.
   Clones are shallow by default, which keeps disk small; `--history full` keeps
   every commit and branch instead, and is recorded for the `--out` directory so
   later runs match. A clone is a normal git repo, so `git restore .` and
