@@ -78,6 +78,14 @@ Every time you collect, the commit you took is **tagged** inside that clone, und
 is ever lost**: re-collecting later moves the working copy forward but leaves the
 earlier commit reachable through its tag.
 
+The only tags in a clone are the ones collect wrote. Students' own tags are never
+fetched, so a release tag a student pushed is not in the clone, and neither is a
+`gh-cls/collect/<label>` tag they might push themselves: one pointed at a commit
+of their choosing would otherwise be read back as what you collected under that
+label. If you want a student's tags, fetch them yourself in that clone
+(`git fetch origin --tags`), knowing they are the student's and not a record of
+any collection.
+
 The `--label` names the collection. Without it, collect uses a timestamp:
 
 ```sh
@@ -107,9 +115,9 @@ gh cls activity hw1 -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
 ```
 
 The file is just a mapping, so you can also write it by hand, or edit one to give
-a student a later commit. Every SHA must be a whole commit name, 40 characters;
-an abbreviation is refused rather than guessed at, since collect names the commit
-to GitHub when it fetches it.
+a student a later commit. Every SHA must be a whole commit name, 40 characters
+(64 in a SHA-256 repository); an abbreviation is refused rather than guessed at,
+since collect names the commit to GitHub when it fetches it.
 
 ```yaml
 # deadline.yml
@@ -294,6 +302,31 @@ tag, and never writes a row twice, so the manifest ends up complete whether or n
 a run finished. A row filled in by a later run carries that run's timestamp, since
 the moment of the original collection is not recoverable; the `sha` is the
 collected one either way.
+
+The record runs the other way too, which is the other half of a label naming one
+commit for good. Delete a clone's tag, or the whole directory, and re-run that
+label: collect takes the commit the manifest recorded rather than whatever the
+student has pushed since, fetching it again if it has to, and re-tags it. So the
+label still means what it meant, and a clone you deleted to save space comes back
+holding what you graded.
+
+## Submodules and Git LFS
+
+Two kinds of content do not behave like ordinary files in a collection, and
+neither is reported, so they are worth knowing before you grade a submission that
+comes out looking empty.
+
+**Submodules are not fetched.** One comes out as an empty directory. If an
+assignment uses submodules, run `git submodule update --init` in the clone
+yourself, and remember that the content comes from wherever the submodule points,
+which is not necessarily a repository you control or one whose state at the
+deadline you can pin.
+
+**LFS content is fetched outside collect's pacing.** If a repository uses LFS,
+the checkout downloads the objects at whatever rate git and GitHub agree on
+rather than the three-second spacing collect holds its clones to, so a class that
+uses LFS can take far longer than the run's own estimate. A download that fails
+part way through has not been tested.
 
 ## Pairing with `gh cls feedback`
 

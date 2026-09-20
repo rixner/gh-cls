@@ -91,6 +91,7 @@ assignments:
     type: group
     template: shared-org/proj-base
     branch_protection: true
+    public: false                 # the default; true makes assign create public repos
     feedback: pr
 ```
 
@@ -99,6 +100,13 @@ each student/group repo. A bare name (`hw1-template`) is taken to live in the
 configured `org`; qualify it with an owner (`other-org/base`) to clone a template
 from another org. Build one with `gh cls template` (below), or point at any
 existing GitHub *template repository*. `gh cls template` is not required.
+
+`public` and `branch_protection` are optional and default to false. They set for
+an assignment what `-p/--public` and `-b/--branch-protection` set for one run, so
+an assignment that is always public, or always protected, is better stated once in
+the config than remembered on every `assign`. A flag overrides the configured
+value for the run that carries it, in either direction: `--public=false` makes one
+run private even where the config says public.
 
 `feedback` is optional. Omit the key (or leave it empty) and no feedback artifact
 is created. Use that if you return grades outside GitHub. Only `issue` and `pr`
@@ -148,10 +156,12 @@ either alone is enough:
   depending on remote state. A template in another org is in no namespace here and
   needs neither check.
 
-`audit` consults neither, since it works from the repos the roster and groups say
-should exist. `assign` refuses outright to clone a repo that is not a template
-repository, so a cleared flag stops it with a message rather than silently, and
-`--mark-template` sets the flag again.
+`audit` lists the namespace too, but only to learn which expected repos exist, so
+it applies the second check and not the flag: it reports on the repos the roster
+and groups say should exist, and a template is not one of them. `assign` refuses
+outright to clone a repo that is not a template repository, so a cleared flag
+stops it with a message rather than silently, and `--mark-template` sets the flag
+again.
 
 One collision the exclusions cannot fix: **a student or group key can complete a
 template's name.** A group named `template` under `hw1` wants the repo
@@ -184,8 +194,11 @@ format as the roster, listing the staff team's GitHub usernames.
 ## Commands
 
 Every command reads the org and staff team from the config (`-c/--config` or
-`$GH_CLS_CONFIG`); neither is a command-line flag. Every mutating command
-requires you to be an organization **owner** and accepts `-n/--dry-run`.
+`$GH_CLS_CONFIG`); neither is a command-line flag. Every command that changes the
+organization requires you to be an organization **owner** and accepts
+`-n/--dry-run`. The three that do not change it are `status` and `activity`,
+which read only and so have no dry run either, and `collect`, which writes
+clones to your disk and nothing to GitHub: any of the three can be run by a TA.
 Persistent flags: `-c/--config`, `--log-requests`. The examples below assume
 `export GH_CLS_CONFIG=gh-cls.yml` (otherwise add `-c gh-cls.yml` to each).
 
@@ -539,22 +552,23 @@ longer), and it is there so a long run is a decision rather than a surprise.
 
 It also warns where a run would meet one of GitHub's hourly ceilings. The one a
 large class meets first is the primary limit of 5,000 requests an hour, which
-counts reads too. A repository costs six of them for an issue-feedback
-assignment and eleven for a pull-request one, so a class of about 250 in
+counts reads too. A repository costs ten of them for an issue-feedback
+assignment and nineteen for a pull-request one, so a class of about 250 in
 pull-request mode sits at the ceiling and a larger one exceeds it, pausing until
 the hour resets before finishing.
 
-Both figures used to be roughly double. A run's reads are mostly waits for
-GitHub to reflect its own writes, and they now wait the measured lag before
-looking rather than asking immediately and being told no.
+Both figures were higher before a run stopped spending reads on answers it
+already had. A run's reads are most of each figure and are mostly waits for
+GitHub to reflect its own writes; they now wait the measured lag before looking,
+rather than asking immediately and being told no.
 
 ## Before a real run
 
-Preview any command with `--dry-run` first. A dry run changes nothing, but it
-does run the command's preflight checks against the real organization and
-reports what each repository would get, so it also catches a missing staff team,
-an unsquashed or unmarked template, a roster username that does not exist, and
-repositories that already exist or are recorded frozen.
+Preview any command that changes something with `--dry-run` first. A dry run
+changes nothing, but it does run the command's preflight checks against the real
+organization and reports what each repository would get, so it also catches a
+missing staff team, an unsquashed or unmarked template, a roster username that
+does not exist, and repositories that already exist or are recorded frozen.
 
 The `--branch-protection` ruleset requires the organization to be on GitHub's
 Team plan or higher; confirm under **Billing & plans** that the org shows
