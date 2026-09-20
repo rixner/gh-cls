@@ -213,6 +213,7 @@ gh cls status hw1 --detail   # per-repo freeze/feedback scan, also writes a CSV
 gh cls activity hw1                       # per-repo summary
 gh cls activity hw1 --all                 # every change, by who made it
 gh cls activity hw1 -w                    # force pushes and branch deletions
+gh cls activity hw1 --all -k student-001  # one student's repo, not the class
 
 # 4. Anytime: reconcile who should be on each repo against who actually is.
 gh cls audit hw1 --roster roster.csv
@@ -303,8 +304,10 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   checks that GitHub's record has caught up with each branch's current tip and
   that every recorded commit is still retrievable, so it never hands back a snapshot
   file that cannot be collected. `--from`/`--to` bound the window (`--to` defaults
-  to now), `--branch` picks a branch, and `-o` writes the artifact to a file. Reads only,
-  so it needs no org-owner role.
+  to now), `--branch` picks a branch, `-k/--key` reports on a single student's or
+  group's repo instead of the whole assignment, which is how you read one repo's
+  history in detail without the rest of the class drowning it, and `-o` writes the
+  artifact to a file. Reads only, so it needs no org-owner role.
 - **audit** reconciles the students who should be on the `<name>-*` repos against
   the actual state, reporting each as *on repo*, *invited (pending)*, *invited
   (EXPIRED)*, *MISSING*, or *NO REPO*, and flagging access that is present but not

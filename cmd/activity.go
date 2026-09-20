@@ -28,6 +28,7 @@ type activityClient interface {
 type activityOpts struct {
 	g         *globalOpts
 	branch    string
+	key       string
 	from      string
 	to        string
 	snapshot  bool
@@ -67,8 +68,11 @@ over the duration of the freeze. Pair it with -w: a force push after the deadlin
 can orphan a recorded commit, so -s verifies every SHA it writes is still
 retrievable and refuses to write a file it knows is broken.
 
---from and --to bound the window; --to defaults to now. Modes combine on the
-terminal, but -o writes one artifact, so it takes a single mode.
+--from and --to bound the window; --to defaults to now. -k reports on a single
+student's or group's repository instead of the whole assignment, which is the
+way to read one repo's history in detail without the rest of the class drowning
+it. Modes combine on the terminal, but -o writes one artifact, so it takes a
+single mode.
 
 Timestamps are GitHub's own record of when each change happened, not commit
 dates (which the pusher controls) and not webhook receipt times (which lag).
@@ -78,7 +82,8 @@ Reads only, so it needs no org-owner role.`,
   gh cls activity hw1 --all
   gh cls activity hw1 -w
   gh cls activity project -s --to 2026-03-01T23:59:59-06:00 -o deadline.yml
-  gh cls activity hw1 -w --from 2026-02-01T00:00:00Z`,
+  gh cls activity hw1 -w --from 2026-02-01T00:00:00Z
+  gh cls activity hw1 --all -k student-001 --from 2026-02-01T00:00:00Z`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0])
@@ -86,6 +91,7 @@ Reads only, so it needs no org-owner role.`,
 	}
 	f := cmd.Flags()
 	f.StringVar(&o.branch, "branch", "", "branch to report on (default: each repo's default branch)")
+	f.StringVarP(&o.key, "key", "k", "", "report on only this student/group key's repo, not every <name>-*")
 	f.StringVarP(&o.from, "from", "f", "", "only activity at or after this RFC3339 time")
 	f.StringVarP(&o.to, "to", "t", "", "only activity at or before this RFC3339 time (default: now)")
 	f.BoolVarP(&o.snapshot, "snapshot", "s", false, "record each repo's commit as of --to, for collect --snapshot")
@@ -151,6 +157,11 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 	if len(wanted) == 0 {
 		return fmt.Errorf("no student repositories named %s-* found in %s; check the assignment name and your config's org", name, o.g.org)
 	}
+	if o.key != "" {
+		if wanted, err = onlyKey(wanted, o.g.org, name, o.key); err != nil {
+			return err
+		}
+	}
 
 	results := runConcurrent(ctx, o.g.concurrency, wanted, func(ctx context.Context, r gh.Repo) repoActivity {
 		return o.read(ctx, client, name, r, from, to)
@@ -164,7 +175,15 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 		}
 	}
 
-	fmt.Fprintf(out, "Activity for %s-* in %s (%s)\n", name, o.g.org, describeWindow(from, to))
+	// With -k the report covers one repository, so it is named in place of the
+	// namespace, here and in the empty-branch note below.
+	subject := name + "-*"
+	scope := "any " + subject + " repo"
+	if o.key != "" {
+		subject = wanted[0].Name
+		scope = subject
+	}
+	fmt.Fprintf(out, "Activity for %s in %s (%s)\n", subject, o.g.org, describeWindow(from, to))
 	switch {
 	case o.snapshot:
 		err = o.reportSnapshot(ctx, out, client, name, to, results)
@@ -188,7 +207,7 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 	// looks like a broken report rather than a typo. Say which branch found
 	// nothing, since that is nearly always the reason.
 	if o.branch != "" && totalEvents(results) == 0 && failed == 0 {
-		fmt.Fprintf(out, "\nno activity on branch %q in any %s-* repo; check the branch name\n", o.branch, name)
+		fmt.Fprintf(out, "\nno activity on branch %q in %s; check the branch name\n", o.branch, scope)
 	}
 	if err != nil {
 		return err
@@ -204,6 +223,27 @@ func (o *activityOpts) run(ctx context.Context, out io.Writer, name string) erro
 		return fmt.Errorf("%d repo(s) could not be read", failed)
 	}
 	return nil
+}
+
+// onlyKey narrows an assignment's repositories to the one --key names.
+//
+// It filters the listing the fan-out already built rather than fetching
+// <name>-<key> by name, so the exclusions that listing applies -- a configured
+// or GitHub-flagged template, a repo belonging to a longer assignment name --
+// hold for a named key too. A key that resolves to an excluded repo is reported
+// as not found rather than reported on, and the one extra listing call is
+// nothing beside the per-repo reads it saves.
+//
+// Repository names are matched case-insensitively, as GitHub treats them.
+func onlyKey(repos []gh.Repo, org, name, key string) ([]gh.Repo, error) {
+	want := name + "-" + key
+	for _, r := range repos {
+		if strings.EqualFold(r.Name, want) {
+			return []gh.Repo{r}, nil
+		}
+	}
+	return nil, fmt.Errorf("no repository %s/%s among the %d %s-* repositories in %s; -k takes the key, which is the part of the repository name after %q",
+		org, want, len(repos), name, org, name+"-")
 }
 
 // window resolves --from/--to, defaulting to to now. A zero from means no lower

@@ -45,6 +45,7 @@ type fakeActivityState struct {
 	gone map[string]bool
 
 	verified []string // SHAs passed to CommitExists
+	read     []string // repos passed to ListRepoActivity
 }
 
 func (s *fakeActivityState) fake() *ghtest.Fake {
@@ -61,6 +62,7 @@ func (s *fakeActivityState) fake() *ghtest.Fake {
 	fk.ListRepoActivityFunc = func(_ context.Context, _, repo, _ string) ([]gh.Activity, error) {
 		fk.Lock()
 		defer fk.Unlock()
+		s.read = append(s.read, repo)
 		return append([]gh.Activity(nil), s.events[repo]...), nil
 	}
 	fk.GetRefFunc = func(_ context.Context, _, repo, _ string) (string, error) {
@@ -725,5 +727,162 @@ func TestActivitySkipsATemplateRepository(t *testing.T) {
 	}
 	if !strings.Contains(out, "0 in 0 of 1 repo examined") {
 		t.Errorf("only the student repo should be examined:\n%s", out)
+	}
+}
+
+// classmates adds quiet repos beside hw1-ada, so a -k run has a class to be
+// narrowed out of.
+func classmates(fake *fakeActivityState, keys ...string) *fakeActivityState {
+	for _, k := range keys {
+		fake.repos = append(fake.repos, gh.Repo{Name: "hw1-" + k, DefaultBranch: "main"})
+		fake.tips["hw1-"+k] = "eee"
+		fake.events["hw1-"+k] = []gh.Activity{
+			act(gh.ActivityPush, "main", "ddd", "eee", k, at("2026-03-01T11:00:00Z")),
+		}
+	}
+	return fake
+}
+
+func TestActivityKeyReadsOnlyThatRepo(t *testing.T) {
+	// The point of -k is not just a shorter report: the per-repo reads are the
+	// expensive part, so the classmates must not be fetched at all.
+	fake := classmates(oneRepo(), "alan", "grace")
+	o := newActivityOpts(fake)
+	o.key = "ada"
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if len(fake.read) != 1 || fake.read[0] != "hw1-ada" {
+		t.Errorf("only the named repo should be read, got %v", fake.read)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Activity for hw1-ada in cs101-spring26") {
+		t.Errorf("the header should name the repo, not the namespace:\n%s", out)
+	}
+	for _, other := range []string{"alan", "grace"} {
+		if strings.Contains(out, other) {
+			t.Errorf("%s was not asked for and should not appear:\n%s", other, out)
+		}
+	}
+}
+
+func TestActivityKeyNarrowsEveryMode(t *testing.T) {
+	// -k selects which repos are reported on, not which report is printed, so it
+	// must compose with each mode rather than only the default summary.
+	for _, tc := range []struct {
+		name string
+		set  func(*activityOpts)
+	}{
+		{"summary", func(*activityOpts) {}},
+		{"all", func(o *activityOpts) { o.all = true }},
+		{"rewrites", func(o *activityOpts) { o.rewrites = true }},
+		{"snapshot", func(o *activityOpts) { o.snapshot = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := classmates(oneRepo(), "alan")
+			o := newActivityOpts(fake)
+			o.key = "ada"
+			tc.set(o)
+
+			var buf bytes.Buffer
+			if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+				t.Fatalf("run: %v\n%s", err, buf.String())
+			}
+			if len(fake.read) != 1 || fake.read[0] != "hw1-ada" {
+				t.Errorf("only the named repo should be read, got %v", fake.read)
+			}
+			if strings.Contains(buf.String(), "alan") {
+				t.Errorf("alan was not asked for and should not appear:\n%s", buf.String())
+			}
+		})
+	}
+}
+
+func TestActivityKeyThatHasNoRepo(t *testing.T) {
+	fake := classmates(oneRepo(), "alan")
+	o := newActivityOpts(fake)
+	o.key = "adah"
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil {
+		t.Fatal("a key with no repository should error")
+	}
+	// The error has to name what was looked for and what a key is: "adah" is a
+	// typo for a roster identifier, and a bare "not found" leaves the reader
+	// guessing whether the key, the assignment or the org is wrong.
+	for _, want := range []string{"cs101-spring26/hw1-adah", "hw1-"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error missing %q: %v", want, err)
+		}
+	}
+	if len(fake.read) != 0 {
+		t.Errorf("nothing should be read once the key fails to resolve, got %v", fake.read)
+	}
+}
+
+func TestActivityKeyCannotReachAnExcludedRepo(t *testing.T) {
+	// -k narrows the assignment's listing rather than fetching <name>-<key>
+	// directly, so the exclusions that listing applies hold for a named key too:
+	// hw1-template is the config's template for hw1, and naming it as a key must
+	// not report the instructor's history as a student's.
+	fake := oneRepo()
+	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-template", DefaultBranch: "main"})
+	fake.tips["hw1-template"] = "zzz"
+	fake.events["hw1-template"] = []gh.Activity{
+		act(gh.ActivityForcePush, "main", "yyy", "zzz", "rixner", at("2026-03-01T12:00:00Z")),
+	}
+	o := newActivityOpts(fake)
+	o.key = "template"
+
+	err := o.run(context.Background(), &bytes.Buffer{}, "hw1")
+	if err == nil || !strings.Contains(err.Error(), "hw1-template") {
+		t.Fatalf("a key resolving to the template should be reported as not found, got %v", err)
+	}
+	if len(fake.read) != 0 {
+		t.Errorf("the template's history must not be read, got %v", fake.read)
+	}
+}
+
+func TestActivityKeyMatchesTheRepoNameCaseInsensitively(t *testing.T) {
+	// GitHub treats repository names case-insensitively, and a roster identifier
+	// typed with different case is the same student.
+	fake := oneRepo()
+	o := newActivityOpts(fake)
+	o.key = "Ada"
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	if !strings.Contains(buf.String(), "Activity for hw1-ada in") {
+		t.Errorf("the repository's own name should be reported:\n%s", buf.String())
+	}
+}
+
+func TestActivityKeySnapshotRecordsOnlyThatRepo(t *testing.T) {
+	// A one-key snapshot is how a single student gets re-pinned after a fix, so
+	// the file must hold that key alone.
+	fake := classmates(oneRepo(), "alan")
+	o := newActivityOpts(fake)
+	o.key = "ada"
+	o.snapshot = true
+	o.to = "2026-03-01T23:59:59Z"
+	o.out = filepath.Join(t.TempDir(), "one.yml")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	body, err := os.ReadFile(o.out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "ada: ccc") {
+		t.Errorf("the snapshot should pin ada's pre-deadline commit:\n%s", body)
+	}
+	if strings.Contains(string(body), "alan") {
+		t.Errorf("the snapshot should hold only the named key:\n%s", body)
 	}
 }
