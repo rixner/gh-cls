@@ -113,3 +113,72 @@ func TestParseDuplicateUsernameError(t *testing.T) {
 		t.Errorf("error should name the username and the first line, got: %v", err)
 	}
 }
+
+// TestParseWithoutAccessColumn checks a roster that predates the access column
+// reads every student as enrolled.
+func TestParseWithoutAccessColumn(t *testing.T) {
+	r, err := Parse(strings.NewReader("identifier,username\ns1,ada\ns2,alan\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range r.IDs() {
+		if a := r.Access(id); a != AccessEnrolled {
+			t.Errorf("Access(%s) = %q, want enrolled", id, a)
+		}
+	}
+}
+
+// TestParseAccessOnlyOnMarkedRows checks the access column can be added to the
+// header and filled in only for the students who dropped, without a trailing
+// comma on every other row. encoding/csv rejects that by default, so this
+// guards the relaxation.
+func TestParseAccessOnlyOnMarkedRows(t *testing.T) {
+	in := "identifier,username,access\ns1,ada\ns2,alan,read\ns3,grace,NONE\ns4,katherine,own\ns5,margaret,\n"
+	r, err := Parse(strings.NewReader(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]Access{"s1": AccessEnrolled, "s2": AccessRead, "s3": AccessNone, "s4": AccessOwn, "s5": AccessEnrolled}
+	for id, w := range want {
+		if a := r.Access(id); a != w {
+			t.Errorf("Access(%s) = %q, want %q", id, a, w)
+		}
+	}
+	if r.Len() != 5 {
+		t.Errorf("Len() = %d, want 5", r.Len())
+	}
+}
+
+// TestParseAccessColumnNotLast checks the column may sit anywhere in the header,
+// though a row can then only omit it by leaving the position empty.
+func TestParseAccessColumnNotLast(t *testing.T) {
+	r, err := Parse(strings.NewReader("access,identifier,username\n,s1,ada\nown,s2,alan\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a := r.Access("s2"); a != AccessOwn {
+		t.Errorf("Access(s2) = %q, want own", a)
+	}
+	if a := r.Access("s1"); a != AccessEnrolled {
+		t.Errorf("Access(s1) = %q, want enrolled", a)
+	}
+}
+
+func TestParseAccessErrors(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"unknown value":      {"identifier,username,access\ns1,ada,gone\n", "line 2"},
+		"more fields":        {"identifier,username,access\ns1,ada,read,extra\n", "line 2"},
+		"extra without col":  {"identifier,username\ns1,ada,read\n", "line 2"},
+		"short row username": {"identifier,username,access\ns1,ada\ns2\n", "line 3"},
+	}
+	for name, c := range cases {
+		_, err := Parse(strings.NewReader(c.in))
+		if err == nil {
+			t.Errorf("%s: expected error, got nil", name)
+			continue
+		}
+		if !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: error should name %s, got: %v", name, c.want, err)
+		}
+	}
+}

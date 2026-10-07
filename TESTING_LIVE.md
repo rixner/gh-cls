@@ -212,14 +212,22 @@ Run each step **with `--dry-run` first**, then for real.
    remove `<STU>`'s access by hand in the web UI and re-run: the renew should
    restore **read**, not write, because the repo is recorded frozen.
 
-7c. **`gh cls activity hw1`**: a per-repo summary of what `<STU>` pushed. Repos
+7c. **Drop `<STU>`**: copy `roster.csv` to `roster-dropped.csv`, add `access`
+   to the header and `own` to `<STU>`'s row. `gh cls audit hw1 -r
+   roster-dropped.csv` should list them as *DROPPED (holds write, allowed read)*.
+   `--revoke -n` prints the plan and changes nothing; `--revoke` downgrades them to
+   *Read* (or their pending invitation to read), and a second audit reports them
+   as *dropped (read)*. Re-running `assign` with that roster skips their repo and
+   leaves them at read. Use the original `roster.csv` for the steps below.
+
+7d. **`gh cls activity hw1`**: a per-repo summary of what `<STU>` pushed. Repos
    with no activity are counted, not listed, so a quiet class shows one line
    rather than a wall of zeroes. Then `gh cls activity hw1 --all` for a per-actor
    breakdown, and `-w` for force pushes and branch deletions (both should be
    zero unless you made some; force-push to test, since a free org cannot block
    them on private repos).
 
-7d. **`gh cls activity hw1 -s --to <a time after your last push> -o snapshot.yml`**:
+7e. **`gh cls activity hw1 -s --to <a time after your last push> -o snapshot.yml`**:
    writes `key: sha` for each repo and prints the same mapping. Check the SHA
    matches `git rev-parse` on the student's branch. Then feed it forward:
    `gh cls collect hw1 -r roster.csv --out ./hw1-pinned --snapshot snapshot.yml`, and

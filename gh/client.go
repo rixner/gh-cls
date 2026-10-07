@@ -98,6 +98,8 @@ type Client interface {
 	ListOrgReposByPrefix(ctx context.Context, org, prefix string) ([]Repo, error)
 	// ListDirectCollaborators returns a repo's direct collaborators.
 	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]Collaborator, error)
+	// RemoveCollaborator removes a user's direct access to a repository.
+	RemoveCollaborator(ctx context.Context, owner, repo, username string) error
 	// ListRepoInvitations returns a repo's pending collaborator invitations.
 	ListRepoInvitations(ctx context.Context, owner, repo string) ([]Invitation, error)
 	// DeleteRepoInvitation cancels a repository invitation by ID.

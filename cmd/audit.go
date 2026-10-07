@@ -21,7 +21,9 @@ type auditClient interface {
 	ListDirectCollaborators(ctx context.Context, owner, repo string) ([]gh.Collaborator, error)
 	ListRepoInvitations(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
 	AddCollaborator(ctx context.Context, owner, repo, username, permission string) error
+	RemoveCollaborator(ctx context.Context, owner, repo, username string) error
 	DeleteRepoInvitation(ctx context.Context, owner, repo string, id int64) error
+	UpdateRepoInvitation(ctx context.Context, owner, repo string, id int64, permission string) (bool, error)
 	GetPropertyDefinition(ctx context.Context, org, name string) (*gh.PropertyDefinition, bool, error)
 	ListRepoPropertyValues(ctx context.Context, org string) (map[string]map[string]string, error)
 }
@@ -36,13 +38,16 @@ const (
 	statusExpired                     // invited, but the invitation has expired
 	statusMissing                     // repo exists but the student has no access or invitation
 	statusNoRepo                      // the expected repo does not exist
+	statusDropped                     // marked dropped in the roster, holding no more than the roster allows
+	statusExcess                      // marked dropped in the roster, but holding more than it allows
 )
 
 // settled reports whether the student needs no action: they are on their repo,
-// either writable or frozen. Both are correct end states, so neither is listed
-// by default nor picked up by --renew.
+// either writable or frozen, or they dropped and hold no more than the roster
+// allows. These are correct end states, so none is listed by default nor picked
+// up by --renew or --revoke.
 func (s memberStatus) settled() bool {
-	return s == statusOnRepo || s == statusFrozen
+	return s == statusOnRepo || s == statusFrozen || s == statusDropped
 }
 
 func (s memberStatus) label() string {
@@ -59,6 +64,10 @@ func (s memberStatus) label() string {
 		return "MISSING"
 	case statusNoRepo:
 		return "NO REPO"
+	case statusDropped:
+		return "dropped"
+	case statusExcess:
+		return "DROPPED"
 	}
 	return "?"
 }
@@ -70,6 +79,7 @@ type auditOpts struct {
 	groups    string
 	all       bool
 	renew     bool
+	revoke    bool
 	dryRun    bool
 	newClient func(context.Context) (auditClient, error)
 }
@@ -95,10 +105,24 @@ same inconsistencies assign refuses to create repos for without --force.
 
 Students are added as outside collaborators, so a grant becomes an invitation
 they must accept within seven days; --renew re-issues access for everyone whose
-invitation expired or who is missing entirely (it never removes access).`,
+invitation expired or who is missing entirely (it never removes access).
+
+A student who drops is marked in the roster's optional access column: read
+keeps read access everywhere, none removes them everywhere, and own keeps read
+on individual assignments and removes them from group ones. Audit reports a
+dropped student holding more than that as DROPPED on any repo they hold access
+to, whether or not the groups file still puts them there, and --renew never
+grants them anything. --revoke takes the excess away (it never grants access):
+it reads each repo of the assignment once for all the dropped students
+together, downgrades or removes their access and pending invitations, and
+re-reads each repo it changed to confirm.
+freeze --undo does not consult the roster and grants write to every collaborator
+it finds, so a dropped student kept at read regains write from it; audit flags
+that, and --revoke undoes it.`,
 		Example: `  gh cls audit hw1 --roster roster.csv
   gh cls audit project --roster roster.csv --groups groups.yml
-  gh cls audit hw1 --roster roster.csv --renew`,
+  gh cls audit hw1 --roster roster.csv --renew
+  gh cls audit hw1 --roster roster.csv --revoke -n`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return o.run(cmd.Context(), cmd.OutOrStdout(), args[0])
@@ -109,8 +133,10 @@ invitation expired or who is missing entirely (it never removes access).`,
 	f.StringVarP(&o.groups, "groups", "g", "", "path to the groups file (required for group, rejected for individual)")
 	f.BoolVar(&o.all, "all", false, "list every student, including those already on their repo")
 	f.BoolVar(&o.renew, "renew", false, "re-issue access for expired or missing students")
-	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "with --renew, show what would change without doing it")
+	f.BoolVar(&o.revoke, "revoke", false, "take away access dropped students hold beyond the roster's access column")
+	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "with --renew or --revoke, show what would change without doing it")
 	_ = cmd.MarkFlagRequired("roster")
+	cmd.MarkFlagsMutuallyExclusive("renew", "revoke")
 	return cmd
 }
 
@@ -128,6 +154,93 @@ type memberAudit struct {
 	login  string // GitHub username
 	status memberStatus
 	invID  int64 // the expired invitation's id, for --renew
+	// retain and held describe a dropped student: the most access the roster
+	// allows them on this repo, and what they actually hold there.
+	retain unit.Retain
+	held   string
+}
+
+// label renders the status, spelling out a dropped student's access, since
+// "dropped" alone does not say whether they were left read or removed.
+func (m memberAudit) label() string {
+	switch m.status {
+	case statusDropped:
+		return fmt.Sprintf("dropped (%s)", m.held)
+	case statusExcess:
+		return fmt.Sprintf("DROPPED (holds %s, allowed %s)", m.held, retainLabel(m.retain))
+	}
+	return m.status.label()
+}
+
+// retainLabel renders what a dropped student may keep.
+func retainLabel(r unit.Retain) string {
+	if r == unit.RetainRead {
+		return "read"
+	}
+	return "nothing"
+}
+
+// collabExceeds reports whether a collaborator holds more than a dropped student
+// may keep. Admin counts: a student should never hold it, and the excess is
+// reported even though --revoke refuses to change admin access.
+func collabExceeds(c gh.Collaborator, r unit.Retain) bool {
+	if r == unit.RetainRead {
+		return c.Permissions.Admin || c.AboveRead()
+	}
+	return c.Permissions.Admin || c.AboveRead() || c.Permissions.Pull
+}
+
+// invitationExceeds reports whether accepting an invitation would give a dropped
+// student more than they may keep. An expired invitation can no longer be
+// accepted, so it never exceeds.
+func invitationExceeds(inv gh.Invitation, r unit.Retain) bool {
+	if inv.Expired {
+		return false
+	}
+	return r == unit.RetainNothing || inv.Permissions != gh.InvitationRead
+}
+
+// droppedHeld classifies a dropped student's access on a repo from its
+// collaborators and invitations: whether it exceeds what they may keep, and a
+// description of what they hold.
+func droppedHeld(login string, r unit.Retain, collabs []gh.Collaborator, invs []gh.Invitation) (exceeds bool, held string) {
+	held = "no access"
+	for _, inv := range invs {
+		if !strings.EqualFold(inv.Invitee.Login, login) || inv.Expired {
+			continue
+		}
+		held = "an invitation (" + inv.Permissions + ")"
+		if invitationExceeds(inv, r) {
+			exceeds = true
+		}
+	}
+	for _, c := range collabs {
+		if !strings.EqualFold(c.Login, login) {
+			continue
+		}
+		held = collabPermission(c)
+		if collabExceeds(c, r) {
+			exceeds = true
+		}
+	}
+	return exceeds, held
+}
+
+// collabPermission names a collaborator's highest permission.
+func collabPermission(c gh.Collaborator) string {
+	switch {
+	case c.Permissions.Admin:
+		return "admin"
+	case c.Permissions.Maintain:
+		return "maintain"
+	case c.Permissions.Push:
+		return "write"
+	case c.Permissions.Triage:
+		return "triage"
+	case c.Permissions.Pull:
+		return "read"
+	}
+	return "no access"
 }
 
 // extraAccess is access present on a repo that the assignment did not expect.
@@ -150,6 +263,18 @@ func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
 	printUnitWarnings(out, report)
 	byUser := r.ByUsername()
 
+	// Every dropped student, from the roster alone. A unit lists only the dropped
+	// students its groups file still puts on it, and removing a dropped student
+	// from their group is the natural thing to do, so audit recognizes them on any
+	// repo they turn up on rather than only where the groups file says.
+	dropped := make(map[string]unit.DroppedMember)
+	for _, d := range unit.DroppedStudents(policy.Type, r) {
+		dropped[strings.ToLower(d.Login)] = d
+	}
+	if o.revoke && len(dropped) == 0 {
+		return fmt.Errorf("--revoke: no student in %s is marked as dropped; set their access column to read, none or own first", o.roster)
+	}
+
 	client, err := o.newClient(ctx)
 	if err != nil {
 		return err
@@ -170,10 +295,26 @@ func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
 		exists[rp.Name] = true
 	}
 
+	// --revoke reads every repo of the assignment once and checks it for all the
+	// dropped students together: two requests per repo however many dropped, and
+	// independent of what the groups file still says. A template is never a
+	// student's repo, so it is not read.
+	if o.revoke {
+		units = nil
+		for _, rp := range repos {
+			if !rp.IsTemplate {
+				units = append(units, unit.Unit{Key: strings.TrimPrefix(rp.Name, name+"-")})
+			}
+		}
+	}
+
 	results := runConcurrent(ctx, o.g.concurrency, units, func(ctx context.Context, u unit.Unit) repoAudit {
-		return o.auditUnit(ctx, client, org, name, u, byUser, exists)
+		return o.auditUnit(ctx, client, org, name, u, byUser, dropped, exists)
 	})
 
+	if o.revoke {
+		return o.runRevoke(ctx, out, client, org, results)
+	}
 	if o.renew {
 		return o.runRenew(ctx, out, client, org, name, results)
 	}
@@ -182,13 +323,18 @@ func (o *auditOpts) run(ctx context.Context, out io.Writer, name string) error {
 
 // auditUnit classifies one expected repo: each member's status, plus any access
 // present that the assignment did not expect.
-func (o *auditOpts) auditUnit(ctx context.Context, client auditClient, org, name string, u unit.Unit, byUser map[string]string, exists map[string]bool) repoAudit {
+func (o *auditOpts) auditUnit(ctx context.Context, client auditClient, org, name string, u unit.Unit, byUser map[string]string, dropped map[string]unit.DroppedMember, exists map[string]bool) repoAudit {
 	repo := name + "-" + u.Key
 	res := repoAudit{repo: repo}
 
 	if !exists[repo] {
 		for _, m := range u.Members {
 			res.members = append(res.members, memberAudit{id: byUser[strings.ToLower(m)], login: m, status: statusNoRepo})
+		}
+		// A dropped student with no repo holds nothing on it, which is within any
+		// access the roster allows, and assign will not create one for them.
+		for _, d := range u.Dropped {
+			res.members = append(res.members, memberAudit{id: byUser[strings.ToLower(d.Login)], login: d.Login, status: statusDropped, retain: d.Retain, held: "no repo"})
 		}
 		return res
 	}
@@ -252,6 +398,41 @@ func (o *auditOpts) auditUnit(ctx context.Context, client auditClient, org, name
 		}
 		res.members = append(res.members, ma)
 	}
+	// A dropped student is expected too, so their access is judged against what
+	// the roster allows them rather than listed again as unexpected.
+	for _, d := range u.Dropped {
+		l := strings.ToLower(d.Login)
+		expected[l] = true
+		exceeds, held := droppedHeld(d.Login, d.Retain, collabs, invs)
+		ma := memberAudit{id: byUser[l], login: d.Login, status: statusDropped, retain: d.Retain, held: held}
+		if exceeds {
+			ma.status = statusExcess
+		}
+		res.members = append(res.members, ma)
+	}
+	// A dropped student the unit does not list, typically one taken out of their
+	// group, is still judged against what the roster allows them wherever they
+	// hold access, rather than reported as a stranger.
+	other := func(login string) {
+		l := strings.ToLower(login)
+		d, ok := dropped[l]
+		if !ok || expected[l] {
+			return
+		}
+		expected[l] = true
+		exceeds, held := droppedHeld(d.Login, d.Retain, collabs, invs)
+		ma := memberAudit{id: byUser[l], login: d.Login, status: statusDropped, retain: d.Retain, held: held}
+		if exceeds {
+			ma.status = statusExcess
+		}
+		res.members = append(res.members, ma)
+	}
+	for _, c := range collabs {
+		other(c.Login)
+	}
+	for _, inv := range invs {
+		other(inv.Invitee.Login)
+	}
 
 	// Belt-and-suspenders: access present that this assignment did not expect.
 	// Admins (staff/instructor) are skipped; staff reach repos through their team,
@@ -303,34 +484,46 @@ func reportAudit(out io.Writer, org, name string, showAll bool, results []repoAu
 			if m.status.settled() && !showAll {
 				continue
 			}
-			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", r.repo, dash(m.id), m.login, m.status.label())
+			fmt.Fprintf(tw, "  %s\t%s\t%s\t%s\n", r.repo, dash(m.id), m.login, m.label())
 			shown++
 		}
 	}
 	if shown > 0 {
 		tw.Flush()
 	}
+	dropped := counts[statusDropped] + counts[statusExcess]
 	if shown == 0 {
 		note := ""
 		if counts[statusFrozen] > 0 {
 			note = fmt.Sprintf(" (%d frozen)", counts[statusFrozen])
 		}
-		fmt.Fprintf(out, "All %d student(s) are on their repos%s.\n", students, note)
+		fmt.Fprintf(out, "All %d student(s) are on their repos%s.\n", students-dropped, note)
+		if dropped > 0 {
+			fmt.Fprintf(out, "%d dropped student(s) hold no more access than the roster allows.\n", dropped)
+		}
 	}
 
-	// Frozen appears only when there is one, so an assignment that has never been
-	// frozen (the common case) reads exactly as before rather than carrying a
-	// permanent "0 frozen".
+	// Frozen and dropped appear only when there is one, so an assignment that has
+	// never been frozen and has lost no one (the common case) reads exactly as
+	// before rather than carrying a permanent "0 frozen".
 	frozen := ""
 	if counts[statusFrozen] > 0 {
 		frozen = fmt.Sprintf("%d frozen, ", counts[statusFrozen])
 	}
-	fmt.Fprintf(out, "\nSummary: %d on repo, %s%d pending, %d expired, %d missing, %d without a repo (across %d repo(s), %d student(s)).\n",
-		counts[statusOnRepo], frozen, counts[statusPending], counts[statusExpired], counts[statusMissing], counts[statusNoRepo], repos, students)
+	droppedNote := ""
+	if dropped > 0 {
+		droppedNote = fmt.Sprintf(", %d dropped", dropped)
+	}
+	fmt.Fprintf(out, "\nSummary: %d on repo, %s%d pending, %d expired, %d missing, %d without a repo%s (across %d repo(s), %d student(s)).\n",
+		counts[statusOnRepo], frozen, counts[statusPending], counts[statusExpired], counts[statusMissing], counts[statusNoRepo], droppedNote, repos, students)
 
 	if action := counts[statusExpired] + counts[statusMissing]; action > 0 {
 		fmt.Fprintf(out, "Action needed: %d expired + %d missing; re-issue with `gh cls audit %s --roster <file> --renew`.\n",
 			counts[statusExpired], counts[statusMissing], name)
+	}
+	if counts[statusExcess] > 0 {
+		fmt.Fprintf(out, "Action needed: %d dropped student(s) hold more access than the roster allows; remove it with `gh cls audit %s --roster <file> --revoke`.\n",
+			counts[statusExcess], name)
 	}
 	if counts[statusNoRepo] > 0 {
 		fmt.Fprintf(out, "Note: %d student(s) have no repo yet; run `gh cls assign %s` to create them.\n", counts[statusNoRepo], name)

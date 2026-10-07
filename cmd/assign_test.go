@@ -428,6 +428,94 @@ func TestAssignGroup(t *testing.T) {
 	}
 }
 
+// assignDroppedRoster marks alan as dropped (read) and grace as dropped (own).
+const assignDroppedRoster = `identifier,username,access
+student-001,ada
+student-002,alan,read
+student-003,grace,own
+`
+
+// TestAssignSkipsDroppedStudents checks a dropped student gets no repo and no
+// grant: re-running assign after a drop must not hand access back.
+func TestAssignSkipsDroppedStudents(t *testing.T) {
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignDroppedRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.generated, "hw1-ada") {
+		t.Errorf("enrolled student's repo not generated: %v", fake.generated)
+	}
+	for _, repo := range []string{"hw1-alan", "hw1-grace"} {
+		if contains(fake.generated, repo) {
+			t.Errorf("dropped student's repo %s was generated", repo)
+		}
+	}
+	for _, c := range fake.collabs {
+		if strings.HasSuffix(c, ":alan") || strings.HasSuffix(c, ":grace") {
+			t.Errorf("dropped student granted access: %s", c)
+		}
+	}
+	if !strings.Contains(buf.String(), "Skipping 2 repo(s) whose students have all dropped: hw1-alan, hw1-grace") {
+		t.Errorf("skip not reported:\n%s", buf.String())
+	}
+}
+
+// TestAssignSkipsDroppedStudentsOnExistingRepo checks an existing repo of a
+// dropped student is not touched, so its staff and student grants are not
+// re-asserted.
+func TestAssignSkipsDroppedStudentsOnExistingRepo(t *testing.T) {
+	fake := newFakeAssign("admin")
+	fake.exists["cs101-spring26/hw1-alan"] = true
+	o := newAssignOpts(t, fake, assignDroppedRoster, "")
+
+	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", config.Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if contains(fake.teamRepos, "hw1-alan") || contains(fake.collabs, "hw1-alan:alan") {
+		t.Errorf("dropped student's existing repo was re-asserted: team %v, collabs %v", fake.teamRepos, fake.collabs)
+	}
+}
+
+// TestAssignWithEveryStudentDropped checks a run with no enrolled student left
+// completes cleanly and creates nothing.
+func TestAssignWithEveryStudentDropped(t *testing.T) {
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, "identifier,username,access\nstudent-001,ada,none\n", "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1", config.Overrides{}); err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	if len(fake.generated) != 0 || len(fake.collabs) != 0 {
+		t.Errorf("nothing should be created or granted: generated %v, collabs %v", fake.generated, fake.collabs)
+	}
+}
+
+// TestAssignGroupGrantsOnlyEnrolledMembers checks a group with a dropped member
+// is still created for the rest, and the dropped member is granted nothing.
+func TestAssignGroupGrantsOnlyEnrolledMembers(t *testing.T) {
+	fake := newFakeAssign("admin")
+	o := newAssignOpts(t, fake, assignDroppedRoster, assignGroups)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "project", config.Overrides{}); err != nil {
+		t.Fatal(err)
+	}
+	if !contains(fake.collabs, "project-group-alpha:ada") {
+		t.Errorf("enrolled member not granted: %v", fake.collabs)
+	}
+	if contains(fake.collabs, "project-group-alpha:grace") {
+		t.Errorf("dropped member granted: %v", fake.collabs)
+	}
+	// group-beta's only member, alan, dropped.
+	if contains(fake.generated, "project-group-beta") {
+		t.Errorf("a group whose members all dropped was generated: %v", fake.generated)
+	}
+}
+
 func TestAssignGroupRequiresGroups(t *testing.T) {
 	fake := newFakeAssign("admin")
 	o := newAssignOpts(t, fake, assignRoster, "")

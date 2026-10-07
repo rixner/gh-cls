@@ -382,6 +382,66 @@ func TestLive(t *testing.T) {
 		t.Logf("GH_CLS_STUDENT2 is unset, so group %s has a single member and the "+
 			"multi-member grant path is not exercised; set GH_CLS_STUDENT2 to cover it.", grpRepo)
 	}
+
+	// 7. drop: mark student1 as dropped with own, which keeps read on the
+	// individual repo and removes them from the group one. An org owner holds
+	// admin, which --revoke refuses to touch, so assert the refusal instead.
+	if isEffectiveAdmin(t, ctx, client, org, repo, student1) {
+		t.Logf("student %q has admin on %s (likely an org owner), so --revoke refuses to change "+
+			"their access; asserting the refusal only. Use a non-owner account to exercise the drop.", student1, repo)
+		rosterOwner := filepath.Join(dir, "roster-dropped-owner.csv")
+		writeDroppedRoster(t, rosterOwner, student1, nil)
+		if _, err := runCLI(ctx, "audit", name, "-r", rosterOwner, "--revoke"); err == nil || !strings.Contains(err.Error(), "admin") {
+			t.Errorf("--revoke on an admin should refuse, got: %v", err)
+		}
+		return
+	}
+	rosterDropInd := filepath.Join(dir, "roster-dropped-individual.csv")
+	writeDroppedRoster(t, rosterDropInd, student1, nil)
+	out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd)
+	if !strings.Contains(out, "DROPPED (holds") {
+		t.Errorf("audit should flag the dropped student still holding write, got:\n%s", out)
+	}
+	// A dry run names the plan and changes nothing.
+	out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd, "--revoke", "-n")
+	if !strings.Contains(out, "would revoke "+repo) {
+		t.Errorf("--revoke -n should name the repo it would change, got:\n%s", out)
+	}
+	if studentIsCollaborator {
+		assertPushGranted(t, ctx, client, org, repo, student1)
+	} else {
+		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationWrite)
+	}
+	mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd, "--revoke")
+	if studentIsCollaborator {
+		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
+	} else {
+		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
+	}
+	out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd)
+	if strings.Contains(out, "DROPPED (holds") || !strings.Contains(out, "1 dropped") {
+		t.Errorf("after --revoke audit should report the drop as settled, got:\n%s", out)
+	}
+	// Re-running assign after the drop must not hand write back.
+	out = mustRunCLI(t, ctx, "assign", "-r", rosterDropInd, "-p", "--feedback", "issue", name)
+	if !strings.Contains(out, "Skipping 1 repo(s) whose students have all dropped") {
+		t.Errorf("assign should skip the dropped student's repo, got:\n%s", out)
+	}
+	if studentIsCollaborator {
+		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
+	} else {
+		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
+	}
+
+	// 7b. own on a group assignment removes the student, collaborator or
+	// invitation, and leaves the rest of the group as it was.
+	rosterDropGrp := filepath.Join(dir, "roster-dropped-group.csv")
+	writeDroppedRoster(t, rosterDropGrp, student1, members[1:])
+	mustRunCLI(t, ctx, "audit", grp, "-r", rosterDropGrp, "-g", groupsPath, "--revoke")
+	assertNoAccess(t, ctx, client, org, grpRepo, student1)
+	if student2 != "" {
+		assertPushGranted(t, ctx, client, org, grpRepo, student2)
+	}
 }
 
 // runCLI drives the root command in-process with the given args, capturing its
@@ -462,6 +522,40 @@ func writeRoster(t *testing.T, path string, logins ...string) {
 	}
 	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
 		t.Fatalf("writing roster %s: %v", path, err)
+	}
+}
+
+// writeDroppedRoster writes a roster whose first student is marked dropped with
+// own and whose others are enrolled, leaving their access field off entirely, as
+// an instructor marking one drop would.
+func writeDroppedRoster(t *testing.T, path, dropped string, enrolled []string) {
+	t.Helper()
+	var b strings.Builder
+	b.WriteString("identifier,username,access\n")
+	fmt.Fprintf(&b, "%s,%s,own\n", dropped, dropped)
+	for _, l := range enrolled {
+		fmt.Fprintf(&b, "%s,%s\n", l, l)
+	}
+	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+		t.Fatalf("writing roster %s: %v", path, err)
+	}
+}
+
+// assertNoAccess requires login to be neither a direct collaborator nor the
+// invitee of a live invitation on the repo.
+func assertNoAccess(t *testing.T, ctx context.Context, client gh.Client, org, repo, login string) {
+	t.Helper()
+	if _, ok := directCollaborator(t, ctx, client, org, repo, login); ok {
+		t.Errorf("%s should have been removed from %s/%s but is still a collaborator", login, org, repo)
+	}
+	invs, err := client.ListRepoInvitations(ctx, org, repo)
+	if err != nil {
+		t.Fatalf("listing invitations of %s/%s: %v", org, repo, err)
+	}
+	for _, inv := range invs {
+		if strings.EqualFold(inv.Invitee.Login, login) && !inv.Expired {
+			t.Errorf("%s should have no invitation on %s/%s but has one (%s)", login, org, repo, inv.Permissions)
+		}
 	}
 }
 

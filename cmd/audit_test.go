@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/cli/go-gh/v2/pkg/api"
 	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/gh"
 	"github.com/rixner/gh-cls/internal/ghtest"
@@ -37,6 +39,16 @@ type fakeAuditState struct {
 
 	added   []string // "repo:login:perm"
 	deleted []string // "repo:invID"
+	removed []string // "repo:login", from RemoveCollaborator
+	updated []string // "repo:invID:perm", from UpdateRepoInvitation
+	listed  []string // repos whose collaborators were listed, to assert what a run read
+	fk      *ghtest.Fake
+
+	// acceptOnDelete simulates a student accepting their invitation just before
+	// --revoke cancels it: the cancel 404s and they are a collaborator instead.
+	acceptOnDelete map[string]bool
+	// sticky lists logins whose removal or downgrade succeeds but does not take.
+	sticky map[string]bool
 }
 
 func newFakeAudit(role string) *fakeAuditState {
@@ -85,6 +97,7 @@ func (s *fakeAuditState) withProperties(fk *ghtest.Fake) {
 
 func (s *fakeAuditState) fake() *ghtest.Fake {
 	fk := &ghtest.Fake{}
+	s.fk = fk
 	fk.OrgRoleFunc = func(context.Context, string) (string, error) { return s.role, nil }
 	fk.ListOrgReposByPrefixFunc = func(_ context.Context, _, prefix string) ([]gh.Repo, error) {
 		fk.Lock()
@@ -100,6 +113,7 @@ func (s *fakeAuditState) fake() *ghtest.Fake {
 	fk.ListDirectCollaboratorsFunc = func(_ context.Context, _, repo string) ([]gh.Collaborator, error) {
 		fk.Lock()
 		defer fk.Unlock()
+		s.listed = append(s.listed, repo)
 		if s.listErr[repo] {
 			return nil, fmt.Errorf("listing failed for %s", repo)
 		}
@@ -120,15 +134,60 @@ func (s *fakeAuditState) fake() *ghtest.Fake {
 		if s.silent[login] {
 			return nil // records the call but leaves no access or invitation
 		}
+		// On an existing collaborator the grant changes their permission in place,
+		// as GitHub does, rather than issuing an invitation.
+		for i, c := range s.collabs[repo] {
+			if strings.EqualFold(c.Login, login) {
+				if !s.sticky[login] {
+					s.collabs[repo][i] = collabWith(c.Login, perm)
+				}
+				return nil
+			}
+		}
 		s.nextID++
 		inv := gh.Invitation{ID: s.nextID}
 		inv.Invitee.Login = login
 		s.invites[repo] = append(s.invites[repo], inv) // a fresh, non-expired invitation
 		return nil
 	}
+	fk.RemoveCollaboratorFunc = func(_ context.Context, _, repo, login string) error {
+		fk.Lock()
+		defer fk.Unlock()
+		s.removed = append(s.removed, repo+":"+login)
+		if s.sticky[login] {
+			return nil
+		}
+		var rest []gh.Collaborator
+		for _, c := range s.collabs[repo] {
+			if !strings.EqualFold(c.Login, login) {
+				rest = append(rest, c)
+			}
+		}
+		s.collabs[repo] = rest
+		return nil
+	}
+	fk.UpdateRepoInvitationFunc = func(_ context.Context, _, repo string, id int64, perm string) (bool, error) {
+		fk.Lock()
+		defer fk.Unlock()
+		s.updated = append(s.updated, fmt.Sprintf("%s:%d:%s", repo, id, perm))
+		for i, inv := range s.invites[repo] {
+			if inv.ID == id {
+				s.invites[repo][i].Permissions = perm
+				return true, nil
+			}
+		}
+		return false, nil
+	}
 	fk.DeleteRepoInvitationFunc = func(_ context.Context, _, repo string, id int64) error {
 		fk.Lock()
 		defer fk.Unlock()
+		for _, inv := range s.invites[repo] {
+			if inv.ID == id && s.acceptOnDelete[inv.Invitee.Login] {
+				s.collabs[repo] = append(s.collabs[repo], collabWith(inv.Invitee.Login, "push"))
+				s.invites[repo] = nil
+				return &api.HTTPError{StatusCode: http.StatusNotFound}
+			}
+		}
 		s.deleted = append(s.deleted, fmt.Sprintf("%s:%d", repo, id))
 		var rest []gh.Invitation
 		for _, inv := range s.invites[repo] {
@@ -146,6 +205,19 @@ func (s *fakeAuditState) fake() *ghtest.Fake {
 func pushCollab(login string) gh.Collaborator {
 	c := gh.Collaborator{Login: login}
 	c.Permissions.Push = true
+	return c
+}
+
+// collabWith builds a collaborator holding one collaborator-API permission.
+func collabWith(login, perm string) gh.Collaborator {
+	c := gh.Collaborator{Login: login}
+	switch perm {
+	case "admin":
+		c.Permissions.Admin = true
+	case "push":
+		c.Permissions.Push = true
+	}
+	c.Permissions.Pull = true
 	return c
 }
 
@@ -651,5 +723,136 @@ func TestAuditExcludesLongerOverlappingAssignmentRepos(t *testing.T) {
 	out := buf.String()
 	if !strings.Contains(out, "1 without a repo") {
 		t.Errorf("final-y should show as having no proj repo (proj-final-y belongs to proj-final):\n%s", out)
+	}
+}
+
+// auditDroppedRoster marks alan as dropped keeping read, and grace as dropped
+// keeping nothing.
+const auditDroppedRoster = `identifier,username,access
+student-001,ada
+student-002,alan,read
+student-003,grace,none
+`
+
+// TestAuditReportsDroppedStudents checks a dropped student holding more than the
+// roster allows is flagged with what they hold and how to fix it, one holding no
+// more is settled, and neither is reported again as unexpected access.
+func TestAuditReportsDroppedStudents(t *testing.T) {
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true, "hw1-grace": true}
+	fake.collabs["hw1-ada"] = []gh.Collaborator{pushCollab("ada")}
+	fake.collabs["hw1-alan"] = []gh.Collaborator{collabWith("alan", "push")}
+	o := newAuditOpts(t, fake, auditDroppedRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"DROPPED (holds write, allowed read)", "student-002",
+		"1 on repo, 0 pending, 0 expired, 0 missing, 0 without a repo, 2 dropped",
+		"Action needed: 1 dropped student(s) hold more access than the roster allows",
+		"--revoke",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "hw1-grace") {
+		t.Errorf("a dropped student within their access should not be listed without --all:\n%s", out)
+	}
+	if strings.Contains(out, "Unexpected access") {
+		t.Errorf("a dropped student is expected, not unexpected access:\n%s", out)
+	}
+}
+
+// TestAuditDroppedWithinAccessIsSettled checks a class whose only issues are
+// settled drops reads as clean, with the dropped students counted apart.
+func TestAuditDroppedWithinAccessIsSettled(t *testing.T) {
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true}
+	fake.collabs["hw1-ada"] = []gh.Collaborator{pushCollab("ada")}
+	fake.collabs["hw1-alan"] = []gh.Collaborator{collabWith("alan", "pull")}
+	o := newAuditOpts(t, fake, auditDroppedRoster, "")
+	o.all = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	// grace has no repo, which is fine for a dropped student: not NO REPO, and no
+	// suggestion to run assign.
+	for _, want := range []string{"dropped (read)", "dropped (no repo)", "2 dropped"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	for _, bad := range []string{"NO REPO", "Action needed", "gh cls assign"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("unexpected %q in:\n%s", bad, out)
+		}
+	}
+}
+
+// TestAuditFlagsDroppedPendingInvitation checks an invitation that would give a
+// dropped student more than they may keep counts as access they hold.
+func TestAuditFlagsDroppedPendingInvitation(t *testing.T) {
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true}
+	inv := pendingInvite(7, "alan")
+	inv.Permissions = gh.InvitationWrite
+	fake.invites["hw1-alan"] = []gh.Invitation{inv}
+	o := newAuditOpts(t, fake, auditDroppedRoster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(buf.String(), "DROPPED (holds an invitation (write), allowed read)") {
+		t.Errorf("pending write invitation not flagged:\n%s", buf.String())
+	}
+}
+
+// TestAuditRenewSkipsDroppedStudents checks --renew never grants a dropped
+// student anything, even one with no access at all.
+func TestAuditRenewSkipsDroppedStudents(t *testing.T) {
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"hw1-ada": true, "hw1-alan": true, "hw1-grace": true}
+	o := newAuditOpts(t, fake, auditDroppedRoster, "")
+	o.renew = true
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.added) != 1 || fake.added[0] != "hw1-ada:ada:push" {
+		t.Errorf("renew should re-issue only the enrolled student, got %v", fake.added)
+	}
+}
+
+// TestAuditReportsADroppedStudentOutOfTheirGroup checks a dropped student taken
+// out of their group is judged against the roster on the repo they still hold,
+// not listed as unexpected access.
+func TestAuditReportsADroppedStudentOutOfTheirGroup(t *testing.T) {
+	roster := "identifier,username,access\nstudent-001,ada\nstudent-002,alan\nstudent-003,grace,none\n"
+	groups := "group-alpha: [student-001]\ngroup-beta: [student-002]\n"
+	fake := newFakeAudit("admin")
+	fake.repos = map[string]bool{"project-group-alpha": true, "project-group-beta": true}
+	fake.collabs["project-group-alpha"] = []gh.Collaborator{pushCollab("ada"), collabWith("grace", "push")}
+	fake.collabs["project-group-beta"] = []gh.Collaborator{pushCollab("alan")}
+	o := newAuditOpts(t, fake, roster, groups)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "project"); err != nil {
+		t.Fatal(err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DROPPED (holds write, allowed nothing)") || !strings.Contains(out, "student-003") {
+		t.Errorf("grace should be reported as a dropped student holding write:\n%s", out)
+	}
+	if strings.Contains(out, "Unexpected access") {
+		t.Errorf("a dropped student is not unexpected access:\n%s", out)
 	}
 }

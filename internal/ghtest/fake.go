@@ -57,6 +57,7 @@ type Fake struct {
 	AddCommentFunc                    func(ctx context.Context, owner, repo string, number int, body string) (string, error)
 	ListOrgReposByPrefixFunc          func(ctx context.Context, org, prefix string) ([]gh.Repo, error)
 	ListDirectCollaboratorsFunc       func(ctx context.Context, owner, repo string) ([]gh.Collaborator, error)
+	RemoveCollaboratorFunc            func(ctx context.Context, owner, repo, username string) error
 	ListRepoInvitationsFunc           func(ctx context.Context, owner, repo string) ([]gh.Invitation, error)
 	DeleteRepoInvitationFunc          func(ctx context.Context, owner, repo string, id int64) error
 	UpdateRepoInvitationFunc          func(ctx context.Context, owner, repo string, id int64, permission string) (bool, error)
@@ -366,6 +367,14 @@ func (f *Fake) ListDirectCollaborators(ctx context.Context, owner, repo string) 
 		missing("ListDirectCollaborators")
 	}
 	return f.ListDirectCollaboratorsFunc(ctx, owner, repo)
+}
+
+func (f *Fake) RemoveCollaborator(ctx context.Context, owner, repo, username string) error {
+	f.record("RemoveCollaborator")
+	if f.RemoveCollaboratorFunc == nil {
+		missing("RemoveCollaborator")
+	}
+	return f.RemoveCollaboratorFunc(ctx, owner, repo, username)
 }
 
 func (f *Fake) ListRepoInvitations(ctx context.Context, owner, repo string) ([]gh.Invitation, error) {

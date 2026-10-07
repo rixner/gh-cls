@@ -164,6 +164,7 @@ func (o *assignOpts) run(ctx context.Context, out io.Writer, name string, ov con
 	if err := checkGroupConsistency(out, report, o.force); err != nil {
 		return err
 	}
+	units = enrolledUnits(out, name, units)
 
 	// The template repo to clone is named by the assignment; a bare name lives in
 	// the configured org, an owner/name may live in another org.
@@ -341,6 +342,28 @@ func checkGroupConsistency(out io.Writer, report unit.Report, force bool) error 
 	}
 	fmt.Fprintf(out, "warning: proceeding with --force despite roster/groups inconsistencies:\n%s\n", joined)
 	return nil
+}
+
+// enrolledUnits drops the units with no enrolled student left on them: an
+// individual student the roster marks as dropped, or a group whose members have
+// all dropped. assign creates no repo for them and re-asserts nothing on one that
+// exists. A dropped student on a group with enrolled members is already absent
+// from that unit's Members, so nothing is granted to them either way. Taking away
+// access a dropped student already holds is `audit --revoke`'s job, not assign's.
+func enrolledUnits(out io.Writer, name string, units []unit.Unit) []unit.Unit {
+	var kept []unit.Unit
+	var skipped []string
+	for _, u := range units {
+		if len(u.Members) == 0 && len(u.Dropped) > 0 {
+			skipped = append(skipped, name+"-"+u.Key)
+			continue
+		}
+		kept = append(kept, u)
+	}
+	if len(skipped) > 0 {
+		fmt.Fprintf(out, "Skipping %d repo(s) whose students have all dropped: %s\n", len(skipped), strings.Join(skipped, ", "))
+	}
+	return kept
 }
 
 // printPlan states what the run is about to provision, before the first

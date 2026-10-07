@@ -163,6 +163,16 @@ func TestAssignRequiresRoster(t *testing.T) {
 	}
 }
 
+func TestAuditRenewAndRevokeAreExclusive(t *testing.T) {
+	// --renew only grants and --revoke only takes away; one run doing both would
+	// make neither guarantee hold.
+	withConfig(t, "org: cs101-spring26\nstaff_team: staff\n")
+	_, err := execute("audit", "hw1", "-r", "roster.csv", "--renew", "--revoke")
+	if err == nil || !strings.Contains(err.Error(), "none of the others can be") {
+		t.Fatalf("--renew with --revoke should be rejected, got %v", err)
+	}
+}
+
 func TestAssignFeedbackEnum(t *testing.T) {
 	// Invalid value is rejected in PreRunE, before any work.
 	withConfig(t, "org: cs101-spring26\nstaff_team: staff\n")

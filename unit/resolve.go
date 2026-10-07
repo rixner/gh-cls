@@ -4,16 +4,22 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/rixner/gh-cls/config"
 	"github.com/rixner/gh-cls/groups"
 	"github.com/rixner/gh-cls/roster"
 )
 
-// resolveIndividual yields one unit per enrolled student, in roster order, each
-// keyed by and granting push to that student's username.
+// resolveIndividual yields one unit per student, in roster order, each keyed by
+// and granting push to that student's username. A dropped student's unit grants
+// nothing and lists them as Dropped instead.
 func resolveIndividual(r *roster.Roster) []Unit {
 	units := make([]Unit, 0, r.Len())
 	for _, id := range r.IDs() {
 		username, _ := r.Lookup(id) // present by construction of the roster
+		if a := r.Access(id); a != roster.AccessEnrolled {
+			units = append(units, Unit{Key: username, Dropped: []DroppedMember{{username, retainFor(a, config.TypeIndividual)}}})
+			continue
+		}
 		units = append(units, Unit{Key: username, Members: []string{username}})
 	}
 	return units
@@ -43,6 +49,7 @@ func resolveGroup(r *roster.Roster, g *groups.Groups) ([]Unit, Report, error) {
 	for _, name := range g.Names() {
 		ids := g.Members(name)
 		members := make([]string, 0, len(ids))
+		var dropped []DroppedMember
 		for _, id := range ids {
 			groupsByID[id] = append(groupsByID[id], name)
 			username, ok := r.Lookup(id)
@@ -54,9 +61,13 @@ func resolveGroup(r *roster.Roster, g *groups.Groups) ([]Unit, Report, error) {
 				missing = append(missing, entry)
 				continue
 			}
+			if a := r.Access(id); a != roster.AccessEnrolled {
+				dropped = append(dropped, DroppedMember{username, retainFor(a, config.TypeGroup)})
+				continue
+			}
 			members = append(members, username)
 		}
-		units = append(units, Unit{Key: name, Members: members})
+		units = append(units, Unit{Key: name, Members: members, Dropped: dropped})
 	}
 
 	if len(missing) > 0 {
@@ -68,6 +79,9 @@ func resolveGroup(r *roster.Roster, g *groups.Groups) ([]Unit, Report, error) {
 	var multi []MultiGroupMembership
 	for _, id := range r.IDs() {
 		switch on := groupsByID[id]; {
+		case len(on) == 0 && r.Access(id) != roster.AccessEnrolled:
+			// A dropped student is expected to be in no group: taking them out of the
+			// groups file is a normal part of dropping, not a mistake to warn about.
 		case len(on) == 0:
 			unassigned = append(unassigned, id)
 		case len(on) > 1:

@@ -133,6 +133,19 @@ func TestListRepoInvitations(t *testing.T) {
 	}
 }
 
+func TestRemoveCollaborator(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(``)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+
+	if err := c.RemoveCollaborator(context.Background(), "org", "hw1-ada", "ada"); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "DELETE" || f.paths[0] != "repos/org/hw1-ada/collaborators/ada" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+}
+
 func TestDeleteRepoInvitation(t *testing.T) {
 	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
 	var waits int

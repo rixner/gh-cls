@@ -158,3 +158,98 @@ func TestResolveUnknownType(t *testing.T) {
 		t.Fatal("unknown assignment type should error")
 	}
 }
+
+const droppedRoster = `identifier,username,access
+student-001,ada
+student-002,alan,read
+student-003,grace,none
+student-004,katherine,own
+student-005,margaret
+`
+
+func mustDroppedRoster(t *testing.T) *roster.Roster {
+	t.Helper()
+	r, err := roster.Parse(strings.NewReader(droppedRoster))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+// TestResolveIndividualDropped checks dropped students get no push grant and
+// keep read under read and own, nothing under none.
+func TestResolveIndividualDropped(t *testing.T) {
+	units, _, err := unit.Resolve(config.TypeIndividual, mustDroppedRoster(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []unit.Unit{
+		{Key: "ada", Members: []string{"ada"}},
+		{Key: "alan", Dropped: []unit.DroppedMember{{Login: "alan", Retain: unit.RetainRead}}},
+		{Key: "grace", Dropped: []unit.DroppedMember{{Login: "grace", Retain: unit.RetainNothing}}},
+		{Key: "katherine", Dropped: []unit.DroppedMember{{Login: "katherine", Retain: unit.RetainRead}}},
+		{Key: "margaret", Members: []string{"margaret"}},
+	}
+	if !reflect.DeepEqual(units, want) {
+		t.Errorf("units = %+v\nwant %+v", units, want)
+	}
+}
+
+// TestResolveGroupDropped checks own removes a student from a group repo, read
+// keeps read there, and the remaining members keep their grant.
+func TestResolveGroupDropped(t *testing.T) {
+	src := "group-alpha: [student-001, student-002]\ngroup-beta: [student-003, student-004, student-005]\n"
+	units, rep, err := unit.Resolve(config.TypeGroup, mustDroppedRoster(t), mustGroups(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []unit.Unit{
+		{Key: "group-alpha", Members: []string{"ada"}, Dropped: []unit.DroppedMember{{Login: "alan", Retain: unit.RetainRead}}},
+		{Key: "group-beta", Members: []string{"margaret"}, Dropped: []unit.DroppedMember{
+			{Login: "grace", Retain: unit.RetainNothing},
+			{Login: "katherine", Retain: unit.RetainNothing},
+		}},
+	}
+	if !reflect.DeepEqual(units, want) {
+		t.Errorf("units = %+v\nwant %+v", units, want)
+	}
+	if len(rep.UnassignedIDs) > 0 {
+		t.Errorf("no unassigned expected, got %v", rep.UnassignedIDs)
+	}
+}
+
+// TestResolveGroupDroppedNotUnassigned checks a dropped student taken out of the
+// groups file is not reported as in no group, which would make assign abort.
+func TestResolveGroupDroppedNotUnassigned(t *testing.T) {
+	src := "group-alpha: [student-001, student-005]\ngroup-beta: [student-002]\n"
+	_, rep, err := unit.Resolve(config.TypeGroup, mustDroppedRoster(t), mustGroups(t, src))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.UnassignedIDs) > 0 {
+		t.Errorf("dropped students should not be unassigned, got %v", rep.UnassignedIDs)
+	}
+}
+
+// TestDroppedStudents checks every marked student is listed from the roster
+// alone, with what they keep on each assignment type.
+func TestDroppedStudents(t *testing.T) {
+	r := mustDroppedRoster(t)
+	ind := unit.DroppedStudents(config.TypeIndividual, r)
+	want := []unit.DroppedMember{
+		{Login: "alan", Retain: unit.RetainRead},
+		{Login: "grace", Retain: unit.RetainNothing},
+		{Login: "katherine", Retain: unit.RetainRead},
+	}
+	if !reflect.DeepEqual(ind, want) {
+		t.Errorf("individual = %+v\nwant %+v", ind, want)
+	}
+	grp := unit.DroppedStudents(config.TypeGroup, r)
+	want[2].Retain = unit.RetainNothing // own removes them from a group repo
+	if !reflect.DeepEqual(grp, want) {
+		t.Errorf("group = %+v\nwant %+v", grp, want)
+	}
+	if got := unit.DroppedStudents(config.TypeIndividual, mustRoster(t)); len(got) != 0 {
+		t.Errorf("a roster with no access column has no dropped students, got %+v", got)
+	}
+}

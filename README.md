@@ -181,6 +181,33 @@ student-001,ada-lovelace
 student-002,alan-turing
 ```
 
+When a student drops, add an `access` column and fill it in for that student
+only. Nobody else's row needs the field, not even an empty one, as long as
+`access` is the last column; a roster without the column means everyone is
+enrolled.
+
+```csv
+identifier,username,access
+student-001,ada-lovelace
+student-002,alan-turing,own
+student-003,grace-hopper,none
+```
+
+| `access` | individual repos | group repos |
+|---|---|---|
+| *(empty)* | normal | normal |
+| `read` | read | read |
+| `none` | removed | removed |
+| `own` | read | removed |
+
+`own` keeps a student's own work readable without letting them watch a former
+group's. It goes by the assignment's `type`, so a student alone in a group on a
+group assignment is still removed. A dropped student can stay in the groups file
+or be taken out of it; neither is reported as a problem. Once marked, `assign`
+creates nothing for them and grants them nothing, `audit` checks their access
+against the mark and `--renew` never grants them anything, and `audit --revoke`
+takes away what they hold beyond it (see **audit** below).
+
 A **groups** file (group assignments) maps group name → student identifiers:
 
 ```yaml
@@ -232,6 +259,7 @@ gh cls activity hw1 --all -k student-001  # one student's repo, not the class
 gh cls audit hw1 --roster roster.csv
 gh cls audit project --roster roster.csv --groups groups.yml   # group: --groups too
 gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
+gh cls audit hw1 --roster roster.csv --revoke  # remove what dropped students hold
 
 # 5. At the deadline: downgrade students from write to read (reverse with -u).
 gh cls freeze hw1
@@ -337,6 +365,19 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `--all` lists everyone, not just those needing attention. It also
   warns (never aborts) when the groups file leaves a student in no group or in more
   than one, the same inconsistencies assign refuses to create repos for.
+  A student the roster marks as dropped (its `access` column) is checked against
+  that mark instead: *dropped* when they hold no more than it allows, *DROPPED*
+  (with what they hold) when they hold more. That holds on any repo they turn up
+  on, so taking a dropped student out of their group in the groups file loses
+  nothing. `--revoke` takes the excess away and never grants: it downgrades a
+  collaborator to read or removes them, and downgrades or cancels a pending
+  invitation, then re-reads each repo it changed to confirm. It reads each repo of
+  the assignment once for all the dropped students together, two requests per repo
+  however many dropped. It prints the plan first (and with
+  `-n` only the plan), refuses to start if a repo cannot be read, and refuses to
+  touch a student holding admin. `--renew` and `--revoke` cannot be combined.
+  `freeze --undo` never consults the roster, so it gives write back to a dropped
+  student left at read; audit reports that as *DROPPED* and `--revoke` undoes it.
 - **freeze** operates purely on each repo's current direct collaborators and
   pending invitations, never the roster, so a drifted roster cannot let anyone
   escape the freeze. **Pending invitations are downgraded too**: a student who has

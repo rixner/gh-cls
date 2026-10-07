@@ -113,6 +113,15 @@ func (c *restClient) ListDirectCollaborators(ctx context.Context, owner, repo st
 	})
 }
 
+// RemoveCollaborator removes a user as a direct collaborator on a repository. It
+// does not touch a pending invitation, which is a separate grant cancelled with
+// DeleteRepoInvitation.
+func (c *restClient) RemoveCollaborator(ctx context.Context, owner, repo, username string) error {
+	path := fmt.Sprintf("repos/%s/%s/collaborators/%s", url.PathEscape(owner), url.PathEscape(repo), url.PathEscape(username))
+	_, err := c.doAccess(ctx, "DELETE", path, nil, nil)
+	return err
+}
+
 // DeleteRepoInvitation cancels a repository invitation by its ID. Renewing an
 // expired invitation is done by cancelling it and re-adding the collaborator,
 // which issues a fresh one.

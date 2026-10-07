@@ -6,14 +6,50 @@
 // from it. Callers must likewise keep this data out of every repository.
 package roster
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Roster is an in-memory view of the enrollment file: identifier -> GitHub
 // username, with identifiers retained in file order for stable iteration.
 type Roster struct {
 	byID map[string]string
 	ids  []string
+	// access holds the students whose access column is set; everyone else is
+	// AccessEnrolled.
+	access map[string]Access
 }
+
+// Access is a student's access column: empty for an enrolled student, or the
+// access a student who has dropped keeps on the repositories they were on.
+type Access string
+
+const (
+	// AccessEnrolled is a student with normal access to their repositories.
+	AccessEnrolled Access = ""
+	// AccessRead keeps read access on every repository the student was on.
+	AccessRead Access = "read"
+	// AccessNone removes the student from every repository they were on.
+	AccessNone Access = "none"
+	// AccessOwn keeps read access on the student's individual-assignment
+	// repositories and removes them from group-assignment ones, so they keep their
+	// own work without watching a former group's.
+	AccessOwn Access = "own"
+)
+
+// parseAccess validates an access column value, matched case-insensitively.
+func parseAccess(s string) (Access, error) {
+	switch a := Access(strings.ToLower(s)); a {
+	case AccessEnrolled, AccessRead, AccessNone, AccessOwn:
+		return a, nil
+	}
+	return "", fmt.Errorf("access %q is not one of read, none, own (or empty for an enrolled student)", s)
+}
+
+// Access returns the access column for an identifier: AccessEnrolled unless the
+// student has been marked as dropped.
+func (r *Roster) Access(id string) Access { return r.access[id] }
 
 // Lookup returns the GitHub username for an identifier and whether it was found.
 func (r *Roster) Lookup(id string) (string, bool) {

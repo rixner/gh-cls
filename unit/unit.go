@@ -18,9 +18,63 @@ import (
 // Unit is one repository to create: Key is the repo-name suffix (a GitHub
 // username for individual assignments, a group name for group assignments) and
 // Members are the GitHub usernames that get push access.
+//
+// Students the roster marks as dropped are not Members, so nothing that grants
+// access ever reaches them. They are listed in Dropped instead, with what they
+// may keep on this repository, which is what audit checks and --revoke enforces.
+// An individual dropped student's unit has no Members at all.
 type Unit struct {
 	Key     string
 	Members []string
+	Dropped []DroppedMember
+}
+
+// DroppedMember is a student the roster marks as dropped, with the most access
+// they may keep on one repository.
+type DroppedMember struct {
+	Login  string
+	Retain Retain
+}
+
+// Retain is the most access a dropped student may keep on one repository.
+type Retain int
+
+const (
+	// RetainRead allows read access and nothing above it.
+	RetainRead Retain = iota
+	// RetainNothing allows no access and no invitation.
+	RetainNothing
+)
+
+// DroppedStudents lists every student the roster marks as dropped, in roster
+// order, with what they may keep on an assignment of the given type. It reads no
+// groups file on purpose: a dropped student is often taken out of their group,
+// and audit still has to recognize them on whatever repo they hold access to.
+func DroppedStudents(typ config.AssignmentType, r *roster.Roster) []DroppedMember {
+	var out []DroppedMember
+	for _, id := range r.IDs() {
+		if a := r.Access(id); a != roster.AccessEnrolled {
+			login, _ := r.Lookup(id) // present by construction of the roster
+			out = append(out, DroppedMember{Login: login, Retain: retainFor(a, typ)})
+		}
+	}
+	return out
+}
+
+// retainFor turns a roster access value into what a dropped student keeps on an
+// assignment of the given type. It decides by the assignment's type, not by how
+// many students a repo holds, so what "own" does is readable from the config
+// alone and a later change to a groups file cannot flip it.
+func retainFor(a roster.Access, typ config.AssignmentType) Retain {
+	switch a {
+	case roster.AccessRead:
+		return RetainRead
+	case roster.AccessOwn:
+		if typ == config.TypeIndividual {
+			return RetainRead
+		}
+	}
+	return RetainNothing
 }
 
 // Resolve builds the unit list for an assignment.
