@@ -538,7 +538,7 @@ func TestStatusDetailFlagsAThawedRepoThatIsStillFrozen(t *testing.T) {
 		t.Fatalf("run: %v", err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "DRIFT hw1-ada") || !strings.Contains(out, "--undo") {
+	if !strings.Contains(out, "DRIFT hw1-ada") || !strings.Contains(out, "gh cls thaw hw1 ada --roster <file>") {
 		t.Errorf("a repo recorded thawed but still frozen should be flagged with the fix:\n%s", out)
 	}
 }

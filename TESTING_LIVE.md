@@ -87,8 +87,8 @@ is the only measurement of that latency the suite produces, so it is worth
 reading even on a pass.
 
 It runs the full arc in-process against the real API: seed a source template →
-`setup` → `template` → `assign` (individual) → `freeze` → `--undo` → a group
-`assign`, asserting each step via the API and re-running each command to check
+`setup` → `template` → `assign` (individual) → `freeze` → `thaw` → a group
+`assign` → a drop and `audit --revoke`, asserting each step via the API and re-running each command to check
 idempotency. It needs no config file on disk: it writes a throwaway one into a
 temp directory and points `GH_CLS_CONFIG` at it, so your real config is never
 touched. It uses unique per-run repo names and deletes everything it creates in
@@ -111,7 +111,7 @@ would **fail**.
 For the *collaborator* freeze assertions to run, `GH_CLS_STUDENT1` must also be an
 *accepted* org member. If it is set but only a pending invite, the run instead
 asserts the **invitation** downgrade (freeze drops the pending invitation from
-write to read and `--undo` restores it), which is the same deadline lock along
+write to read and `thaw` restores it), which is the same deadline lock along
 the path that student is actually on. Either way one of the two transitions is
 checked; enrolling an accepted member exercises both.
 
@@ -203,9 +203,11 @@ Run each step **with `--dry-run` first**, then for real.
    fallback: reports `0` changed because you are admin-skipped, but the repo is
    still recorded.)
 
-7. **`gh cls freeze hw1 --undo`**: push restored, any pending invitation goes
-   back to *Write*, and `gh-cls-frozen` becomes `false` rather than being cleared.
-   Re-run → `0` changes.
+7. **`gh cls thaw hw1 -r roster.csv`**: push restored, any pending invitation
+   goes back to *Write*, and `gh-cls-frozen` becomes `false` rather than being
+   cleared. Re-run → `0` changes. To see thaw go by the roster, add a second
+   collaborator to `hw1-<STU>` by hand at *Read* before thawing: it stays at
+   *Read*.
 
 7b. **`gh cls audit hw1 -r roster.csv --renew` while frozen**: reports nothing to
    re-issue, since a student on a frozen repo is a settled state. Re-freeze, then

@@ -263,11 +263,12 @@ gh cls audit project --roster roster.csv --groups groups.yml   # group: --groups
 gh cls audit hw1 --roster roster.csv --renew   # re-issue expired/missing access
 gh cls audit hw1 --roster roster.csv --revoke  # remove what dropped students hold
 
-# 5. At the deadline: downgrade students from write to read (reverse with -u).
+# 5. At the deadline: downgrade students from write to read; thaw gives write
+#    back, to the students the roster puts on each repo.
 gh cls freeze hw1
-gh cls freeze hw1 --undo
-gh cls freeze hw1 alice --undo   # extension: unfreeze just one student/group repo
-gh cls freeze hw1 alice          # re-freeze it when the extension expires
+gh cls thaw hw1 --roster roster.csv
+gh cls thaw hw1 alice --roster roster.csv   # extension: thaw just one student/group repo
+gh cls freeze hw1 alice                     # re-freeze it when the extension expires
 
 # 6. Collect submissions locally to grade by hand (one clone per student, shallow
 #    unless --history full; tagged each collect; see COLLECT.md for the model).
@@ -378,8 +379,6 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   however many dropped. It prints the plan first (and with
   `-n` only the plan), refuses to start if a repo cannot be read, and refuses to
   touch a student holding admin. `--renew` and `--revoke` cannot be combined.
-  `freeze --undo` never consults the roster, so it gives write back to a dropped
-  student left at read; audit reports that as *DROPPED* and `--revoke` undoes it.
 - **freeze** operates purely on each repo's current direct collaborators and
   pending invitations, never the roster, so a drifted roster cannot let anyone
   escape the freeze. **Pending invitations are downgraded too**: a student who has
@@ -395,11 +394,21 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   `setup` to have run and refuses to start otherwise. It skips
   template repositories, so a `<name>-template` that matches the `<name>-*` prefix
   is never frozen. Naming one or more student/group keys (`freeze hw1 alice`)
-  scopes it to just those `<name>-<key>` repos, for granting or ending an
-  individual extension; an unknown key aborts the run before any change.
-  `--undo` grants push to every non-admin direct collaborator, restores every live
-  invitation to write, and records the repo as thawed, including any collaborator
-  who was deliberately read-only before the freeze.
+  scopes it to just those `<name>-<key>` repos, which is how an individual
+  extension ends; an unknown key aborts the run before any change.
+- **thaw** gives write back after a freeze. Because it grants, it goes by the
+  roster as `assign` does, unlike `freeze`: `--roster` is required, and a group
+  assignment also needs `--groups`. An enrolled student holding read, or a pending
+  read invitation, is raised to write, and the repo is recorded thawed. No one else
+  changes: a collaborator the roster does not name, a student it marks as dropped,
+  and admins all keep what they have. A student with no access at all is not
+  invited; the run counts them and points at `audit --renew`, which grants write
+  on a thawed repo. A repo whose key is in neither file, or whose students have all
+  dropped, stays frozen and is listed. Naming keys (`thaw hw1 alice`) thaws just
+  those repos, which is how an individual extension is granted; a key with no repo
+  or no enrolled student aborts the run before any change. Invitations are handled
+  before collaborators for the same reason as in `freeze`, and each repo is
+  re-read afterwards to confirm the grant took.
 - **feedback** posts one feedback file per student (or group) as a comment on that
   repo's feedback issue or PR: whichever artifact the repository actually carries,
   found by looking rather than by trusting the assignment's `feedback` policy, so
@@ -465,9 +474,9 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 ## The freeze record
 
 `freeze` records each repository's deadline state in a `gh-cls-frozen`
-organization custom property (`true` when frozen, `false` after an `--undo`,
-absent if never frozen). `setup` declares the property, and `assign`, `freeze`
-and `audit --renew` all refuse to run until it exists.
+organization custom property (`true` when frozen, `false` after a `thaw`,
+absent if never frozen). `setup` declares the property, and `assign`, `freeze`,
+`thaw` and `audit --renew` all refuse to run until it exists.
 
 Every command that grants student access consults it, which is the point: a
 freeze that only `freeze` knows about is one that `assign` or `audit --renew`
@@ -477,7 +486,7 @@ The record exists because freeze state cannot be reliably inferred from
 permissions. `audit --renew` restores access to students who have **none**, so
 their own repository holds no permission to read the state from, and on an
 individual assignment that student is the repo's only collaborator. Widening the
-question to the whole assignment does not help either: `freeze hw1 alice --undo`
+question to the whole assignment does not help either: `thaw hw1 alice`
 grants one extension, so a partly-frozen assignment is a normal state rather than
 an anomaly. Without a per-repository record, a renew after the deadline hands
 push back.

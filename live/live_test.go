@@ -23,7 +23,7 @@
 //     the freeze downgrade assertions to run, this account must be a *member* of
 //     the org (accept the org invite once); an unaccepted outside collaborator
 //     does not appear in the repo's direct-collaborator list, in which case the
-//     freeze assertions are skipped (but freeze/undo still run).
+//     freeze assertions are skipped (but freeze/thaw still run).
 //   - GH_CLS_STUDENT2  (optional) a second member login, added to the group
 //     group for extra coverage.
 package live
@@ -281,7 +281,7 @@ func TestLive(t *testing.T) {
 		}
 	}
 
-	// 4 & 5. freeze + undo. The write->read downgrade is only observable when the
+	// 4 & 5. freeze + thaw. The write->read downgrade is only observable when the
 	// student is a real direct collaborator (an accepted org member) who does not
 	// also hold standing admin: an org owner keeps push on every repo regardless
 	// of the collaborator grant, so freeze downgrades the grant but the effective
@@ -292,33 +292,33 @@ func TestLive(t *testing.T) {
 		mustRunCLI(t, ctx, "freeze", name)
 		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
 		assertFrozenRecord(t, ctx, client, org, repo, "true")
-		mustRunCLI(t, ctx, "freeze", "-u", name)
+		mustRunCLI(t, ctx, "thaw", name, "-r", rosterInd)
 		assertPushGranted(t, ctx, client, org, repo, student1)
 		// Recorded thawed, not cleared: an extension must stay distinguishable from
 		// a repo that was never frozen.
 		assertFrozenRecord(t, ctx, client, org, repo, "false")
-		out = mustRunCLI(t, ctx, "freeze", "-u", name)
+		out = mustRunCLI(t, ctx, "thaw", name, "-r", rosterInd)
 		if !strings.Contains(out, "0 collaborator grant(s)") {
-			t.Errorf("a second --undo should change nothing, got:\n%s", out)
+			t.Errorf("a second thaw should change nothing, got:\n%s", out)
 		}
-		// Per-repo extension: scope freeze/undo to a single student's repo by key.
+		// Per-repo extension: scope freeze/thaw to a single student's repo by key.
 		// With one individual repo the key selects that same repo, exercising the
 		// key-matching path (case-insensitive, via an upper-cased key) end to end:
-		// re-freeze just this repo, then --undo just it (the extension).
+		// re-freeze just this repo, then thaw just it (the extension).
 		mustRunCLI(t, ctx, "freeze", name, strings.ToUpper(student1))
 		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
-		mustRunCLI(t, ctx, "freeze", "-u", name, student1)
+		mustRunCLI(t, ctx, "thaw", name, student1, "-r", rosterInd)
 		assertPushGranted(t, ctx, client, org, repo, student1)
 	case studentIsCollaborator:
 		t.Logf("student %q has admin on %s (likely an org owner), so freeze cannot downgrade "+
 			"an owner's inherited push, so the effective push->pull and pull->push reads are "+
 			"unobservable and are skipped. Use a non-owner member account to exercise them. "+
-			"The grant operations and undo idempotency are still checked.", student1, repo)
+			"The grant operations and thaw idempotency are still checked.", student1, repo)
 		mustRunCLI(t, ctx, "freeze", name)
-		mustRunCLI(t, ctx, "freeze", "-u", name)
-		out = mustRunCLI(t, ctx, "freeze", "-u", name)
+		mustRunCLI(t, ctx, "thaw", name, "-r", rosterInd)
+		out = mustRunCLI(t, ctx, "thaw", name, "-r", rosterInd)
 		if !strings.Contains(out, "0 collaborator grant(s)") {
-			t.Errorf("a second --undo should change nothing, got:\n%s", out)
+			t.Errorf("a second thaw should change nothing, got:\n%s", out)
 		}
 	default:
 		// A pending invite is not a collaborator, so the push->pull read above is
@@ -331,7 +331,7 @@ func TestLive(t *testing.T) {
 		mustRunCLI(t, ctx, "freeze", name)
 		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
 		assertFrozenRecord(t, ctx, client, org, repo, "true")
-		mustRunCLI(t, ctx, "freeze", "-u", name)
+		mustRunCLI(t, ctx, "thaw", name, "-r", rosterInd)
 		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationWrite)
 		assertFrozenRecord(t, ctx, client, org, repo, "false")
 	}
@@ -340,8 +340,8 @@ func TestLive(t *testing.T) {
 	// pre-condition check independent of the student's membership, so it runs in
 	// every branch above.
 	bogus := student1 + "zzz"
-	if _, err := runCLI(ctx, "freeze", "-u", name, bogus); err == nil {
-		t.Errorf("freeze with unknown key %q should error, not silently no-op", bogus)
+	if _, err := runCLI(ctx, "thaw", name, bogus, "-r", rosterInd); err == nil {
+		t.Errorf("thaw with unknown key %q should error, not silently no-op", bogus)
 	} else if !strings.Contains(err.Error(), name+"-"+bogus) {
 		t.Errorf("unknown-key error should name the missing repo %s-%s, got: %v", name, bogus, err)
 	}

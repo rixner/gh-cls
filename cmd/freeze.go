@@ -26,7 +26,6 @@ type freezeClient interface {
 // freezeOpts carries the resolved flags and dependencies for `gh cls freeze`.
 type freezeOpts struct {
 	g         *globalOpts
-	undo      bool
 	dryRun    bool
 	newClient func(context.Context) (freezeClient, error)
 }
@@ -38,31 +37,28 @@ func newFreezeCmd(g *globalOpts) *cobra.Command {
 	}
 	cmd := &cobra.Command{
 		Use:   "freeze <name> [key...]",
-		Short: "Freeze (or unfreeze) an assignment's repositories",
+		Short: "Freeze an assignment's repositories at the deadline",
 		Long: `Downgrade every non-admin direct collaborator on the <name>-* repos from
-write to read, a hard repo-wide deadline freeze. --undo restores push. The
-operation reads each repo's current collaborators and never consults the
-roster, so a drifted roster cannot let a student escape the freeze.
+write to read, a hard repo-wide deadline freeze. The operation reads each repo's
+current collaborators and never consults the roster, so a drifted roster cannot
+let a student escape the freeze.
 
 Pending invitations are downgraded too. A student who has not yet accepted is
 not a collaborator, but their invitation carries the write access it was issued
 with; leaving it alone would let them accept after the deadline and push.
---undo restores those to write. Expired invitations are left alone, since they
-can no longer be accepted (use ` + "`gh cls audit --renew`" + ` to re-issue one).
+Expired invitations are left alone, since they can no longer be accepted (use
+` + "`gh cls audit --renew`" + ` to re-issue one).
 
 Naming one or more student/group keys restricts the operation to just those
-repos (<name>-<key>), for granting or ending an individual extension: freeze
-the whole assignment at the deadline, then --undo one student's repo for an
-extension and re-freeze it when the extension expires. Keys match repo names
-case-insensitively; if any named key has no repo the run aborts before touching
-anything.
+repos (<name>-<key>), which is how an individual extension ends: ` + "`gh cls thaw`" + `
+one student's repo for an extension, and freeze it again when the extension
+expires. Keys match repo names case-insensitively; if any named key has no repo
+the run aborts before touching anything.
 
---undo is not a true inverse: freeze stores no prior state, so it grants push
-to every non-admin direct collaborator, including any who were deliberately
-read-only before the freeze.`,
+Freeze takes access away, so it ignores the roster. Giving write back is
+` + "`gh cls thaw`" + `'s job, which grants only to the students the roster and groups
+put on each repo.`,
 		Example: `  gh cls freeze hw1
-  gh cls freeze hw1 --undo
-  gh cls freeze hw1 alice --undo
   gh cls freeze hw1 alice`,
 		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -70,7 +66,6 @@ read-only before the freeze.`,
 		},
 	}
 	f := cmd.Flags()
-	f.BoolVarP(&o.undo, "undo", "u", false, "reverse a freeze: restore push to non-admin direct collaborators")
 	f.BoolVarP(&o.dryRun, "dry-run", "n", false, "show what would change without doing it")
 	return cmd
 }
@@ -174,26 +169,17 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys [
 		return fmt.Errorf("the %q organization property does not exist on %s, so this freeze could not be recorded and `gh cls audit --renew` would later re-grant write; run `gh cls setup` first", frozenProperty, org)
 	}
 
-	verb := "Freezing"
-	if o.undo {
-		verb = "Unfreezing"
-	}
 	prefix := ""
 	if o.dryRun {
 		prefix = "[dry-run] "
 	}
-	fmt.Fprintf(out, "%s%s %d repo(s) in %s\n", prefix, verb, len(repos), org)
+	fmt.Fprintf(out, "%sFreezing %d repo(s) in %s\n", prefix, len(repos), org)
 
 	// The per-repo word tracks the run's own mode, so a dry run never reports a
 	// repo as frozen when nothing was touched.
 	acted := "frozen"
-	switch {
-	case o.dryRun && o.undo:
-		acted = "would thaw"
-	case o.dryRun:
+	if o.dryRun {
 		acted = "would freeze"
-	case o.undo:
-		acted = "thawed"
 	}
 	prog := newProgress(out, len(repos), 12) // "would freeze"
 	results := runConcurrentProgress(ctx, o.g.concurrency, repos, func(ctx context.Context, r gh.Repo) freezeResult {
@@ -205,21 +191,21 @@ func (o *freezeOpts) run(ctx context.Context, out io.Writer, name string, keys [
 		}
 		prog.item(failedOr(r.err, outcome), r.repo)
 	})
-	return reportFreeze(out, o.dryRun, o.undo, results)
+	return reportFreeze(out, o.dryRun, results)
 }
 
-// processRepo downgrades (or restores) one repo's non-admin direct collaborators
-// and its pending invitations. Admins are always left untouched.
+// processRepo downgrades one repo's non-admin direct collaborators and its
+// pending invitations. Admins are always left untouched.
 func (o *freezeOpts) processRepo(ctx context.Context, client freezeClient, org, repo string) freezeResult {
 	res := freezeResult{repo: repo}
 
-	// The record is written before a freeze takes access away, and after an undo
-	// gives it back. Both orderings leave the same safe intermediate state if the
-	// run dies midway: recorded frozen while still writable. That way a later
-	// `audit --renew` withholds write from a repo whose lock is incomplete, rather
-	// than handing out write on a repo that is already locked.
-	if !o.dryRun && !o.undo {
-		if err := o.record(ctx, client, org, repo, freezeFrozen); err != nil {
+	// The record is written before a freeze takes access away (and, in thaw, after
+	// access is given back). Both orderings leave the same safe intermediate state
+	// if the run dies midway: recorded frozen while still writable. That way a
+	// later `audit --renew` withholds write from a repo whose lock is incomplete,
+	// rather than handing out write on a repo that is already locked.
+	if !o.dryRun {
+		if err := recordFreezeState(ctx, client, org, repo, freezeFrozen); err != nil {
 			res.err = err
 			return res
 		}
@@ -284,13 +270,6 @@ func (o *freezeOpts) processRepo(ctx context.Context, client freezeClient, org, 
 		}
 	}
 
-	if !o.dryRun && o.undo {
-		if err := o.record(ctx, client, org, repo, freezeThawed); err != nil {
-			res.err = err
-			return res
-		}
-	}
-
 	// Post-condition: re-read and confirm the gate actually moved. The freeze is
 	// the deadline lock, so it is never reported done on the strength of the write
 	// call alone: a 200 is not proof the permission changed.
@@ -304,9 +283,7 @@ func (o *freezeOpts) processRepo(ctx context.Context, client freezeClient, org, 
 }
 
 // verifyResult re-reads a repo's direct collaborators and pending invitations and
-// confirms the end state the operation intended: after a freeze neither a
-// non-admin nor an acceptable invitation retains write; after an undo every
-// non-admin holds push and every live invitation confers write again.
+// confirms that neither a non-admin nor an acceptable invitation retains write.
 func (o *freezeOpts) verifyResult(ctx context.Context, client freezeClient, org, repo string) error {
 	collaborators, err := client.ListDirectCollaborators(ctx, org, repo)
 	if err != nil {
@@ -316,11 +293,7 @@ func (o *freezeOpts) verifyResult(ctx context.Context, client freezeClient, org,
 		if c.Permissions.Admin {
 			continue
 		}
-		if o.undo {
-			if !c.Permissions.Push {
-				return fmt.Errorf("unfreeze of %s did not take: %s still lacks push", repo, c.Login)
-			}
-		} else if c.AboveRead() {
+		if c.AboveRead() {
 			return fmt.Errorf("freeze of %s did not take: %s still has write access", repo, c.Login)
 		}
 	}
@@ -333,11 +306,7 @@ func (o *freezeOpts) verifyResult(ctx context.Context, client freezeClient, org,
 		if inv.Expired {
 			continue // cannot be accepted, so it grants nothing either way
 		}
-		if o.undo {
-			if !inv.ConfersPush() {
-				return fmt.Errorf("unfreeze of %s did not take: %s's pending invitation still lacks write", repo, inv.Invitee.Login)
-			}
-		} else if inv.AboveRead() {
+		if inv.AboveRead() {
 			return fmt.Errorf("freeze of %s did not take: %s's pending invitation still confers write, so accepting it after the deadline would grant push", repo, inv.Invitee.Login)
 		}
 	}
@@ -345,26 +314,26 @@ func (o *freezeOpts) verifyResult(ctx context.Context, client freezeClient, org,
 }
 
 // target returns the permission to set for a non-admin collaborator, or "" to
-// leave them unchanged. Freeze downgrades write access to read; undo restores
-// push to anyone not already holding it.
+// leave them unchanged: freeze downgrades anything above read to read.
 func (o *freezeOpts) target(c gh.Collaborator) string {
-	if o.undo {
-		if c.Permissions.Push {
-			return "" // already restored
-		}
-		return "push"
-	}
 	if c.AboveRead() {
 		return "pull"
 	}
 	return ""
 }
 
-// record writes a repo's freeze state to the organization custom property and
-// confirms it read back. The record is what audit --renew consults to decide
-// whether to restore read or write, so a write that silently did not take would
-// reopen the assignment for exactly the students renew touches.
-func (o *freezeOpts) record(ctx context.Context, client freezeClient, org, repo string, want freezeState) error {
+// freezeRecorder is the narrow set of operations writing the freeze record needs,
+// shared by freeze and thaw.
+type freezeRecorder interface {
+	GetRepoPropertyValues(ctx context.Context, org, repo string) (map[string]string, error)
+	SetRepoPropertyValue(ctx context.Context, org, repo, name, value string) error
+}
+
+// recordFreezeState writes a repo's freeze state to the organization custom
+// property and confirms it read back. The record is what audit --renew consults
+// to decide whether to restore read or write, so a write that silently did not
+// take would reopen the assignment for exactly the students renew touches.
+func recordFreezeState(ctx context.Context, client freezeRecorder, org, repo string, want freezeState) error {
 	if err := client.SetRepoPropertyValue(ctx, org, repo, frozenProperty, string(want)); err != nil {
 		return fmt.Errorf("recording %s as %s on %s: %w", repo, want.describe(), frozenProperty, err)
 	}
@@ -381,16 +350,10 @@ func (o *freezeOpts) record(ctx context.Context, client freezeClient, org, repo 
 // inviteTarget returns the permission to set on a pending invitation, or "" to
 // leave it unchanged. It mirrors target over the invitation vocabulary. An
 // expired invitation is always left alone: it can no longer be accepted, so it
-// is not a way past a freeze and there is nothing for undo to restore.
+// is not a way past a freeze.
 func (o *freezeOpts) inviteTarget(i gh.Invitation) string {
 	if i.Expired {
 		return ""
-	}
-	if o.undo {
-		if i.ConfersPush() {
-			return "" // already restored
-		}
-		return gh.InvitationWrite
 	}
 	if i.AboveRead() {
 		return gh.InvitationRead
@@ -399,7 +362,7 @@ func (o *freezeOpts) inviteTarget(i gh.Invitation) string {
 }
 
 // reportFreeze summarizes the run and returns an error if any repo failed.
-func reportFreeze(out io.Writer, dryRun, undo bool, results []freezeResult) error {
+func reportFreeze(out io.Writer, dryRun bool, results []freezeResult) error {
 	var changed, invites, failed int
 	for _, r := range results {
 		if r.err != nil {
@@ -417,11 +380,7 @@ func reportFreeze(out io.Writer, dryRun, undo bool, results []freezeResult) erro
 	// Called out separately: these students hold no access yet, so the line reports
 	// what they will get when they accept, not a change they can already see.
 	if invites > 0 {
-		state := "downgraded to read, so accepting after the deadline cannot push"
-		if undo {
-			state = "restored to write"
-		}
-		fmt.Fprintf(out, "  plus %d pending invitation(s) %s\n", invites, state)
+		fmt.Fprintf(out, "  plus %d pending invitation(s) downgraded to read, so accepting after the deadline cannot push\n", invites)
 	}
 	if failed > 0 {
 		for _, r := range results {

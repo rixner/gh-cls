@@ -178,17 +178,16 @@ func (s *fakeFreezeState) fake() *ghtest.Fake {
 	return fk
 }
 
-func newFreezeOpts(t *testing.T, fake *fakeFreezeState, undo, dryRun bool) *freezeOpts {
+func newFreezeOpts(t *testing.T, fake *fakeFreezeState, dryRun bool) *freezeOpts {
 	t.Helper()
-	return newFreezeOptsG(t, assignGlobals(), fake, undo, dryRun)
+	return newFreezeOptsG(t, assignGlobals(), fake, dryRun)
 }
 
-func newFreezeOptsG(t *testing.T, g *globalOpts, fake *fakeFreezeState, undo, dryRun bool) *freezeOpts {
+func newFreezeOptsG(t *testing.T, g *globalOpts, fake *fakeFreezeState, dryRun bool) *freezeOpts {
 	t.Helper()
 	fk := fake.fake()
 	return &freezeOpts{
 		g:         g,
-		undo:      undo,
 		dryRun:    dryRun,
 		newClient: func(context.Context) (freezeClient, error) { return fk, nil },
 	}
@@ -209,7 +208,7 @@ func freezeFake(role string) *fakeFreezeState {
 
 func TestFreezeDowngradesNonAdmins(t *testing.T) {
 	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
@@ -230,27 +229,6 @@ func TestFreezeDowngradesNonAdmins(t *testing.T) {
 	}
 }
 
-func TestFreezeUndoRestoresPush(t *testing.T) {
-	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, true, false)
-
-	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
-		t.Fatal(err)
-	}
-	// alan was pull (frozen); undo restores push. ada already has push: untouched.
-	if !contains(fake.changes, "hw1-alan:alan=push") {
-		t.Errorf("undo should restore push to frozen collaborators: %v", fake.changes)
-	}
-	for _, c := range fake.changes {
-		if strings.Contains(c, "ada") {
-			t.Error("a collaborator who already has push should not be changed by undo")
-		}
-		if strings.Contains(c, "prof") {
-			t.Error("admins must be left untouched by undo")
-		}
-	}
-}
-
 func TestFreezeDowngradesPendingInvitations(t *testing.T) {
 	// The loophole: a student who has not accepted yet is not a collaborator, so
 	// walking collaborators alone leaves their invitation carrying write. They
@@ -258,7 +236,7 @@ func TestFreezeDowngradesPendingInvitations(t *testing.T) {
 	// itself.
 	fake := freezeFake("admin")
 	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationWrite)}
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
@@ -272,25 +250,6 @@ func TestFreezeDowngradesPendingInvitations(t *testing.T) {
 	}
 }
 
-func TestFreezeUndoRestoresPendingInvitations(t *testing.T) {
-	// The reverse: an extension for a student who still has not accepted must put
-	// their invitation back to write, or the extension grants them nothing.
-	fake := freezeFake("admin")
-	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationRead)}
-	o := newFreezeOpts(t, fake, true, false)
-
-	var buf bytes.Buffer
-	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
-		t.Fatalf("run: %v\n%s", err, buf.String())
-	}
-	if !contains(fake.changes, "hw1-alan:alan=invite:write") {
-		t.Errorf("undo should restore a frozen invitation to write: %v", fake.changes)
-	}
-	if !strings.Contains(buf.String(), "1 pending invitation(s) restored to write") {
-		t.Errorf("the summary should report the invitation:\n%s", buf.String())
-	}
-}
-
 func TestFreezeLeavesSettledInvitationsAlone(t *testing.T) {
 	// An expired invitation cannot be accepted, so it is not a way past the freeze
 	// and there is nothing to change; one already at read is already frozen. Both
@@ -300,7 +259,7 @@ func TestFreezeLeavesSettledInvitationsAlone(t *testing.T) {
 	expired := invite(8, "grace", gh.InvitationWrite)
 	expired.Expired = true
 	fake.invites["hw1-ada"] = []gh.Invitation{expired, invite(9, "bob", gh.InvitationRead)}
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
@@ -319,7 +278,7 @@ func TestFreezeVerifiesInvitationDowngradeTookEffect(t *testing.T) {
 	fake := freezeFake("admin")
 	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationWrite)}
 	fake.dontApply = true
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	var buf bytes.Buffer
 	err := o.run(context.Background(), &buf, "hw1", nil)
@@ -334,7 +293,7 @@ func TestFreezeVerifiesInvitationDowngradeTookEffect(t *testing.T) {
 func TestFreezeDryRunLeavesInvitationsAlone(t *testing.T) {
 	fake := freezeFake("admin")
 	fake.invites["hw1-alan"] = []gh.Invitation{invite(7, "alan", gh.InvitationWrite)}
-	o := newFreezeOpts(t, fake, false, true)
+	o := newFreezeOpts(t, fake, true)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
@@ -350,7 +309,7 @@ func TestFreezeDryRunLeavesInvitationsAlone(t *testing.T) {
 
 func TestFreezeRecordsTheFreezeState(t *testing.T) {
 	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
@@ -364,26 +323,6 @@ func TestFreezeRecordsTheFreezeState(t *testing.T) {
 		if strings.HasPrefix(r, "project-x") {
 			t.Errorf("only this assignment's repos should be recorded: %v", fake.recorded)
 		}
-	}
-}
-
-func TestFreezeUndoRecordsThawedNotUnset(t *testing.T) {
-	// An extension records false rather than clearing the value. "Never frozen" and
-	// "deliberately thawed" must stay distinguishable, or a later reader cannot
-	// tell an extension from a repo that predates the record.
-	fake := freezeFake("admin")
-	fake.frozen["hw1-ada"] = freezeFrozen
-	fake.frozen["hw1-alan"] = freezeFrozen
-	o := newFreezeOpts(t, fake, true, false)
-
-	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ada"}); err != nil {
-		t.Fatal(err)
-	}
-	if !contains(fake.recorded, "hw1-ada=false") {
-		t.Errorf("undo should record the repo as thawed: %v", fake.recorded)
-	}
-	if fake.frozen["hw1-alan"] != freezeFrozen {
-		t.Errorf("an unnamed repo's record must not change: %v", fake.frozen)
 	}
 }
 
@@ -428,7 +367,7 @@ func TestFreezeVerifiesTheRecordTookEffect(t *testing.T) {
 	// renew would restore write on a frozen repo, so freeze must fail loudly.
 	fake := freezeFake("admin")
 	fake.dontRecord = true
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	var buf bytes.Buffer
 	err := o.run(context.Background(), &buf, "hw1", nil)
@@ -446,7 +385,7 @@ func TestFreezeAbortsWithoutTheFreezeProperty(t *testing.T) {
 	// before touching anything.
 	fake := freezeFake("admin")
 	fake.noProperty = true
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil)
 	if err == nil || !strings.Contains(err.Error(), "gh cls setup") {
@@ -500,7 +439,7 @@ func TestFreezeClosesTheAcceptanceRace(t *testing.T) {
 	fake := freezeFake("admin")
 	fake.invites["hw1-ada"] = []gh.Invitation{invite(7, "bob", gh.InvitationWrite)}
 	fake.acceptOnUpdate = map[int64]string{7: "bob"}
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
@@ -516,33 +455,13 @@ func TestFreezeClosesTheAcceptanceRace(t *testing.T) {
 	}
 }
 
-func TestFreezeUndoClosesTheAcceptanceRace(t *testing.T) {
-	// The same race on the way back: bob accepts a read invitation as --undo runs.
-	// The collaborator pass afterwards must grant him push, or his extension gives
-	// him nothing.
-	fake := freezeFake("admin")
-	fake.invites["hw1-ada"] = []gh.Invitation{invite(7, "bob", gh.InvitationRead)}
-	fake.acceptOnUpdate = map[int64]string{7: "bob"}
-	// He lands as a read collaborator, which is what accepting a frozen invite gives.
-	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull"), collab("prof", "admin")}
-	o := newFreezeOpts(t, fake, true, false)
-
-	var buf bytes.Buffer
-	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
-		t.Fatalf("the race must not fail the undo: %v\n%s", err, buf.String())
-	}
-	if !contains(fake.changes, "hw1-ada:bob=push") {
-		t.Errorf("a student who accepted mid-undo must still get push: %v", fake.changes)
-	}
-}
-
 func TestFreezeVerifiesDowngradeTookEffect(t *testing.T) {
 	// The API accepts the downgrade but it does not actually take effect. The
 	// freeze must re-read, detect the still-open gate, and fail loudly rather than
 	// report a deadline lock that never happened.
 	fake := freezeFake("admin")
 	fake.dontApply = true
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil)
 	if err == nil || !strings.Contains(err.Error(), "failed") {
@@ -552,7 +471,7 @@ func TestFreezeVerifiesDowngradeTookEffect(t *testing.T) {
 
 func TestFreezeDryRunMakesNoChanges(t *testing.T) {
 	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, false, true)
+	o := newFreezeOpts(t, fake, true)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
@@ -569,7 +488,7 @@ func TestFreezeDryRunMakesNoChanges(t *testing.T) {
 
 func TestFreezeOwnerGuard(t *testing.T) {
 	fake := freezeFake("member")
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil)
 	if err == nil || !strings.Contains(err.Error(), "owner") {
 		t.Fatalf("non-owner should be rejected, got %v", err)
@@ -581,7 +500,7 @@ func TestFreezeUnknownAssignmentIsRejected(t *testing.T) {
 	// the zero-matches fallback below, which a prefix collision (#1) or a stale
 	// assignment could defeat by still matching repos.
 	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 	err := o.run(context.Background(), &bytes.Buffer{}, "nosuch", nil)
 	if err == nil || !strings.Contains(err.Error(), `assignment "nosuch" not found in config`) {
 		t.Fatalf("unknown assignment should be rejected, got %v", err)
@@ -599,7 +518,7 @@ func TestFreezeNoMatchingReposIsAnError(t *testing.T) {
 	fake := freezeFake("admin")
 	g := assignGlobals()
 	g.cfg.Assignments["midterm"] = config.Assignment{Type: config.TypeIndividual}
-	o := newFreezeOptsG(t, g, fake, false, false)
+	o := newFreezeOptsG(t, g, fake, false)
 	err := o.run(context.Background(), &bytes.Buffer{}, "midterm", nil)
 	if err == nil || !strings.Contains(err.Error(), "no student repositories named midterm-*") {
 		t.Fatalf("zero matches should be an error, got %v", err)
@@ -610,18 +529,18 @@ func TestFreezeNoMatchingReposIsAnError(t *testing.T) {
 }
 
 func TestFreezeKeyRestrictsToNamedRepo(t *testing.T) {
-	// An extension: unfreeze only ada's repo, leaving alan's frozen. Naming a key
-	// must scope the operation to that one repo.
+	// An extension ends: freeze only ada's repo, leaving alan's writable. Naming a
+	// key must scope the operation to that one repo.
 	fake := freezeFake("admin")
-	fake.collabs["hw1-ada"] = []gh.Collaborator{collab("ada", "pull")} // frozen
-	o := newFreezeOpts(t, fake, true, false)                           // undo
+	fake.collabs["hw1-alan"] = []gh.Collaborator{collab("alan", "push")} // on an extension
+	o := newFreezeOpts(t, fake, false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1", []string{"ada"}); err != nil {
 		t.Fatal(err)
 	}
-	if !contains(fake.changes, "hw1-ada:ada=push") {
-		t.Errorf("named repo should be unfrozen: %v", fake.changes)
+	if !contains(fake.changes, "hw1-ada:ada=pull") {
+		t.Errorf("named repo should be frozen: %v", fake.changes)
 	}
 	for _, c := range fake.changes {
 		if strings.Contains(c, "alan") {
@@ -635,7 +554,7 @@ func TestFreezeKeyRestrictsToNamedRepo(t *testing.T) {
 
 func TestFreezeKeyMatchesCaseInsensitively(t *testing.T) {
 	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ADA"}); err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +567,7 @@ func TestFreezeUnknownKeyAbortsWithoutChanges(t *testing.T) {
 	// A mistyped extension key must fail loudly before any mutation, so it never
 	// silently freezes (or spares) nothing.
 	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, true, false)
+	o := newFreezeOpts(t, fake, false)
 	err := o.run(context.Background(), &bytes.Buffer{}, "hw1", []string{"ada", "adaa"})
 	if err == nil || !strings.Contains(err.Error(), "hw1-adaa") {
 		t.Fatalf("unknown key should be an error naming the missing repo, got %v", err)
@@ -664,7 +583,7 @@ func TestFreezeSkipsTemplateRepo(t *testing.T) {
 	fake := freezeFake("admin")
 	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-template", IsTemplate: true})
 	fake.collabs["hw1-template"] = []gh.Collaborator{collab("ada", "push")}
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
@@ -697,7 +616,7 @@ func TestFreezeExcludesLongerOverlappingAssignmentRepos(t *testing.T) {
 			"proj-final-y": {collab("y", "push")},
 		},
 	}
-	o := newFreezeOptsG(t, g, fake, false, false)
+	o := newFreezeOptsG(t, g, fake, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}, "proj", nil); err != nil {
 		t.Fatal(err)
@@ -731,7 +650,7 @@ func TestFreezeSkipsAConfiguredTemplateWhoseFlagWasCleared(t *testing.T) {
 	fake := freezeFake("admin")
 	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-template"}) // IsTemplate cleared
 	fake.collabs["hw1-template"] = []gh.Collaborator{collab("ada", "push")}
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	if err := o.run(context.Background(), &bytes.Buffer{}, "hw1", nil); err != nil {
 		t.Fatal(err)
@@ -748,7 +667,7 @@ func TestFreezeStreamsEachRepoAsItIsProcessed(t *testing.T) {
 	// nothing to downgrade is called out as such rather than reported as frozen.
 	fake := freezeFake("admin")
 	fake.repos = append(fake.repos, gh.Repo{Name: "hw1-kath"}) // no collaborators
-	o := newFreezeOpts(t, fake, false, false)
+	o := newFreezeOpts(t, fake, false)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {
@@ -767,7 +686,7 @@ func TestFreezeDryRunNeverClaimsARepoWasFrozen(t *testing.T) {
 	// The whole point of --dry-run is that nothing changed, so the per-repo word
 	// has to stay conditional even though the run does the same per-repo reads.
 	fake := freezeFake("admin")
-	o := newFreezeOpts(t, fake, false, true /*dryRun*/)
+	o := newFreezeOpts(t, fake, true /*dryRun*/)
 
 	var buf bytes.Buffer
 	if err := o.run(context.Background(), &buf, "hw1", nil); err != nil {

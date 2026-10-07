@@ -17,7 +17,7 @@ import (
 // read the state from, and an individual assignment's repo has exactly one such
 // student, so inference goes blind precisely where audit --renew must decide
 // what access to restore. Scoping the question to the whole assignment does not
-// help either: `freeze <name> <key> --undo` grants an extension on one repo, so a
+// help either: `thaw <name> <key>` grants an extension on one repo, so a
 // mixed assignment is a normal state, not an anomaly.
 //
 // A custom property is the right home for it. It is not a git ref, so no push
@@ -39,7 +39,7 @@ const (
 	// record existed, or never frozen. It is deliberately distinct from
 	// freezeThawed so "never frozen" is never mistaken for "extension granted".
 	freezeUnset freezeState = ""
-	// freezeThawed is a repository deliberately made writable again, by --undo.
+	// freezeThawed is a repository deliberately made writable again, by thaw.
 	freezeThawed freezeState = "false"
 	// freezeFrozen is a repository frozen at its deadline.
 	freezeFrozen freezeState = "true"

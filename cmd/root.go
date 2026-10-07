@@ -227,6 +227,7 @@ The org and staff team come from a user-authored config file, located with
 		newTemplateCmd(g),
 		newAssignCmd(g),
 		newFreezeCmd(g),
+		newThawCmd(g),
 		newAuditCmd(g),
 		newFeedbackCmd(g),
 		newStatusCmd(g),

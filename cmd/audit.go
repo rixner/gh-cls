@@ -115,10 +115,7 @@ to, whether or not the groups file still puts them there, and --renew never
 grants them anything. --revoke takes the excess away (it never grants access):
 it reads each repo of the assignment once for all the dropped students
 together, downgrades or removes their access and pending invitations, and
-re-reads each repo it changed to confirm.
-freeze --undo does not consult the roster and grants write to every collaborator
-it finds, so a dropped student kept at read regains write from it; audit flags
-that, and --revoke undoes it.`,
+re-reads each repo it changed to confirm.`,
 		Example: `  gh cls audit hw1 --roster roster.csv
   gh cls audit project --roster roster.csv --groups groups.yml
   gh cls audit hw1 --roster roster.csv --renew

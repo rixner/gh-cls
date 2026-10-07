@@ -538,20 +538,25 @@ func printDetailSummary(out io.Writer, cfg *config.Config, names []string, detai
 		printArtifactKindNote(out, ds, a.Feedback)
 		for _, d := range ds {
 			if d.err == nil && d.driftsFromRecord() {
-				fmt.Fprintf(out, "  DRIFT %s: recorded %s but access is %s; re-run `gh cls freeze %s%s`\n",
-					d.repo, d.recorded.describe(), d.frozen, n, undoSuffix(d.recorded))
+				fmt.Fprintf(out, "  DRIFT %s: recorded %s but access is %s; re-run `%s`\n",
+					d.repo, d.recorded.describe(), d.frozen, driftFix(n, a.Type, d))
 			}
 		}
 	}
 }
 
-// undoSuffix names the flag that would bring a drifted repo back in line with
-// what freeze recorded for it.
-func undoSuffix(recorded freezeState) string {
-	if recorded == freezeThawed {
-		return " --undo"
+// driftFix names the command that would bring a drifted repo back in line with
+// what was recorded for it: freeze for a repo recorded frozen, and thaw, which
+// goes by the roster, for one recorded thawed.
+func driftFix(name string, typ config.AssignmentType, d repoDetail) string {
+	if d.recorded != freezeThawed {
+		return "gh cls freeze " + name
 	}
-	return ""
+	key := strings.TrimPrefix(d.repo, name+"-")
+	if typ == config.TypeGroup {
+		return fmt.Sprintf("gh cls thaw %s %s --roster <file> --groups <file>", name, key)
+	}
+	return fmt.Sprintf("gh cls thaw %s %s --roster <file>", name, key)
 }
 
 // frozenSummary renders the repo count and a breakdown of freeze states, listing
