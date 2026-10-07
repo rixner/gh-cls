@@ -283,6 +283,10 @@ gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml
 #    repo's feedback issue or PR. Files are named <username>.md / <group>.md,
 #    or after the repo (hw1-<username>.md).
 gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
+
+# 8. End of semester: archive every student repo (read-only for everyone).
+gh cls archive --all -n                     # preview
+gh cls archive --all
 ```
 
 - **setup** sets base permission to none, disables member repo/Pages creation,
@@ -470,6 +474,18 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   freeze record; the default summary costs neither. status reads only, so it needs
   no org-owner role, and it still works on an org that has not run `setup`,
   reporting every repo as *not recorded*.
+- **archive** archives the student repos of the named assignments, or of every
+  assignment in the config with `--all`; one or the other is required, so the
+  whole course is never archived by default. An archived repo is read-only for
+  everyone, staff and admins included, and everyone who could read it still can,
+  so students keep their work. Every assignment's repos are listed before the
+  first is archived, so a failed listing, an unknown assignment, or a named
+  assignment with no repos stops the run before it changes anything (under
+  `--all`, an assignment with no repos is just noted). Templates are skipped, a
+  repo already archived is left alone so a partial run is finished by re-running,
+  and each repo is re-read afterwards to confirm it took. It is undone per repo in
+  its settings on GitHub. While a repo is archived nothing can be pushed to it and
+  no issue, pull request or comment can be added, so `feedback` cannot post to it.
 
 ## The freeze record
 

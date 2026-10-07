@@ -22,6 +22,18 @@ func TestGetRepo(t *testing.T) {
 			t.Errorf("request = %s %s", f.methods[0], f.paths[0])
 		}
 	})
+	t.Run("decodes archived", func(t *testing.T) {
+		f := &fakeRequester{steps: []step{{resp: okResp(`{"name":"hw1-ada","archived":true}`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		repo, _, err := c.GetRepo(context.Background(), "org", "hw1-ada")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !repo.Archived {
+			t.Errorf("archived not decoded: %+v", repo)
+		}
+	})
 	t.Run("absent on 404", func(t *testing.T) {
 		f := &fakeRequester{steps: []step{{err: httpErr(404, nil)}}}
 		var waits int
@@ -83,6 +95,21 @@ func TestGenerateFromTemplate(t *testing.T) {
 		if !strings.Contains(f.bodies[0], want) {
 			t.Errorf("body %s missing %s", f.bodies[0], want)
 		}
+	}
+}
+
+func TestArchiveRepo(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	if err := c.ArchiveRepo(context.Background(), "org", "hw1-ada"); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "PATCH" || f.paths[0] != "repos/org/hw1-ada" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	if !strings.Contains(f.bodies[0], `"archived":true`) {
+		t.Errorf("body %s should set archived", f.bodies[0])
 	}
 }
 

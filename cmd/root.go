@@ -233,6 +233,7 @@ The org and staff team come from a user-authored config file, located with
 		newStatusCmd(g),
 		newCollectCmd(g),
 		newActivityCmd(g),
+		newArchiveCmd(g),
 	)
 	return root
 }

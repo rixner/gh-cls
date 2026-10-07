@@ -26,6 +26,8 @@ type Client interface {
 	SetRepoTemplate(ctx context.Context, owner, name string) error
 	// DeleteRepo deletes a repository.
 	DeleteRepo(ctx context.Context, org, name string) error
+	// ArchiveRepo archives a repository, making it read-only for everyone.
+	ArchiveRepo(ctx context.Context, owner, name string) error
 
 	// GetOrg reads current organization settings.
 	GetOrg(ctx context.Context, org string) (*OrgSettings, error)
@@ -142,6 +144,7 @@ type Repo struct {
 	DefaultBranch string `json:"default_branch"`
 	IsTemplate    bool   `json:"is_template"`
 	HasIssues     bool   `json:"has_issues"`
+	Archived      bool   `json:"archived"`
 }
 
 // restClient must satisfy Client.

@@ -88,6 +88,7 @@ func TestLocalFlagMatrix(t *testing.T) {
 		"assign":   {"r": "roster", "g": "groups", "p": "public", "b": "branch-protection", "a": "all-branches", "U": "allow-unsquashed", "n": "dry-run"},
 		"freeze":   {"n": "dry-run"},
 		"thaw":     {"r": "roster", "g": "groups", "n": "dry-run"},
+		"archive":  {"n": "dry-run"},
 		"audit":    {"r": "roster", "g": "groups", "n": "dry-run"},
 		"feedback": {"d": "dir", "r": "roster", "g": "groups", "F": "force", "n": "dry-run"},
 		"status":   {"o": "out"},

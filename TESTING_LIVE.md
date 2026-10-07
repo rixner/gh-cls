@@ -88,7 +88,7 @@ reading even on a pass.
 
 It runs the full arc in-process against the real API: seed a source template →
 `setup` → `template` → `assign` (individual) → `freeze` → `thaw` → a group
-`assign` → a drop and `audit --revoke`, asserting each step via the API and re-running each command to check
+`assign` → a drop and `audit --revoke` → `archive`, asserting each step via the API and re-running each command to check
 idempotency. It needs no config file on disk: it writes a throwaway one into a
 temp directory and points `GH_CLS_CONFIG` at it, so your real config is never
 touched. It uses unique per-run repo names and deletes everything it creates in
@@ -249,5 +249,9 @@ Run each step **with `--dry-run` first**, then for real.
    `gh cls assign proj -r roster.csv --groups groups.yml --public`. Verify
    `proj-alpha` is created with the group's members granted push.
 
-9. **Cleanup**: delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
-   repos. (Leaving the `staff` team is fine.)
+9. **`gh cls archive --all -n`**, then **`gh cls archive --all`**: every `hw1-*`
+   (and `proj-*`) student repo shows *archived* on GitHub, the templates do not,
+   and a re-run reports nothing to archive. `gh cls archive` alone is refused.
+
+10. **Cleanup**: delete `hw1-template`, every `hw1-*`, `hw1-src`, and any group
+   repos. (Leaving the `staff` team is fine. Archived repos can be deleted.)

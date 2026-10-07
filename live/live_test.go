@@ -394,53 +394,71 @@ func TestLive(t *testing.T) {
 		if _, err := runCLI(ctx, "audit", name, "-r", rosterOwner, "--revoke"); err == nil || !strings.Contains(err.Error(), "admin") {
 			t.Errorf("--revoke on an admin should refuse, got: %v", err)
 		}
-		return
-	}
-	rosterDropInd := filepath.Join(dir, "roster-dropped-individual.csv")
-	writeDroppedRoster(t, rosterDropInd, student1, nil)
-	out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd)
-	if !strings.Contains(out, "DROPPED (holds") {
-		t.Errorf("audit should flag the dropped student still holding write, got:\n%s", out)
-	}
-	// A dry run names the plan and changes nothing.
-	out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd, "--revoke", "-n")
-	if !strings.Contains(out, "would revoke "+repo) {
-		t.Errorf("--revoke -n should name the repo it would change, got:\n%s", out)
-	}
-	if studentIsCollaborator {
-		assertPushGranted(t, ctx, client, org, repo, student1)
 	} else {
-		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationWrite)
-	}
-	mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd, "--revoke")
-	if studentIsCollaborator {
-		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
-	} else {
-		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
-	}
-	out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd)
-	if strings.Contains(out, "DROPPED (holds") || !strings.Contains(out, "1 dropped") {
-		t.Errorf("after --revoke audit should report the drop as settled, got:\n%s", out)
-	}
-	// Re-running assign after the drop must not hand write back.
-	out = mustRunCLI(t, ctx, "assign", "-r", rosterDropInd, "-p", "--feedback", "issue", name)
-	if !strings.Contains(out, "Skipping 1 repo(s) whose students have all dropped") {
-		t.Errorf("assign should skip the dropped student's repo, got:\n%s", out)
-	}
-	if studentIsCollaborator {
-		assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
-	} else {
-		assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
+		rosterDropInd := filepath.Join(dir, "roster-dropped-individual.csv")
+		writeDroppedRoster(t, rosterDropInd, student1, nil)
+		out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd)
+		if !strings.Contains(out, "DROPPED (holds") {
+			t.Errorf("audit should flag the dropped student still holding write, got:\n%s", out)
+		}
+		// A dry run names the plan and changes nothing.
+		out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd, "--revoke", "-n")
+		if !strings.Contains(out, "would revoke "+repo) {
+			t.Errorf("--revoke -n should name the repo it would change, got:\n%s", out)
+		}
+		if studentIsCollaborator {
+			assertPushGranted(t, ctx, client, org, repo, student1)
+		} else {
+			assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationWrite)
+		}
+		mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd, "--revoke")
+		if studentIsCollaborator {
+			assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
+		} else {
+			assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
+		}
+		out = mustRunCLI(t, ctx, "audit", name, "-r", rosterDropInd)
+		if strings.Contains(out, "DROPPED (holds") || !strings.Contains(out, "1 dropped") {
+			t.Errorf("after --revoke audit should report the drop as settled, got:\n%s", out)
+		}
+		// Re-running assign after the drop must not hand write back.
+		out = mustRunCLI(t, ctx, "assign", "-r", rosterDropInd, "-p", "--feedback", "issue", name)
+		if !strings.Contains(out, "Skipping 1 repo(s) whose students have all dropped") {
+			t.Errorf("assign should skip the dropped student's repo, got:\n%s", out)
+		}
+		if studentIsCollaborator {
+			assertPermission(t, ctx, client, org, repo, student1, false /*push*/, true /*pull*/)
+		} else {
+			assertInvitationPermission(t, ctx, client, org, repo, student1, gh.InvitationRead)
+		}
+
+		// 7b. own on a group assignment removes the student, collaborator or
+		// invitation, and leaves the rest of the group as it was.
+		rosterDropGrp := filepath.Join(dir, "roster-dropped-group.csv")
+		writeDroppedRoster(t, rosterDropGrp, student1, members[1:])
+		mustRunCLI(t, ctx, "audit", grp, "-r", rosterDropGrp, "-g", groupsPath, "--revoke")
+		assertNoAccess(t, ctx, client, org, grpRepo, student1)
+		if student2 != "" {
+			assertPushGranted(t, ctx, client, org, grpRepo, student2)
+		}
 	}
 
-	// 7b. own on a group assignment removes the student, collaborator or
-	// invitation, and leaves the rest of the group as it was.
-	rosterDropGrp := filepath.Join(dir, "roster-dropped-group.csv")
-	writeDroppedRoster(t, rosterDropGrp, student1, members[1:])
-	mustRunCLI(t, ctx, "audit", grp, "-r", rosterDropGrp, "-g", groupsPath, "--revoke")
-	assertNoAccess(t, ctx, client, org, grpRepo, student1)
-	if student2 != "" {
-		assertPushGranted(t, ctx, client, org, grpRepo, student2)
+	// 8. archive: the end of the semester. Every repo of both assignments is
+	// archived (the templates are skipped), and a re-run finds nothing left to do.
+	mustRunCLI(t, ctx, "archive", name, grp)
+	for _, r := range []string{repo, grpRepo} {
+		if info := assertRepoExists(t, ctx, client, org, r); !info.Archived {
+			t.Errorf("%s/%s should be archived", org, r)
+		}
+	}
+	for _, tmpl := range []string{name + "-template", grp + "-template"} {
+		if info := assertRepoExists(t, ctx, client, org, tmpl); info.Archived {
+			t.Errorf("template %s/%s must not be archived", org, tmpl)
+		}
+	}
+	out = mustRunCLI(t, ctx, "archive", name, grp)
+	if !strings.Contains(out, "nothing to archive") {
+		t.Errorf("a second archive should find nothing to do, got:\n%s", out)
 	}
 }
 

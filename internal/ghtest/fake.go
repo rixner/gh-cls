@@ -27,6 +27,7 @@ type Fake struct {
 	GetRepoFunc                       func(ctx context.Context, owner, name string) (*gh.Repo, bool, error)
 	SetRepoTemplateFunc               func(ctx context.Context, owner, name string) error
 	DeleteRepoFunc                    func(ctx context.Context, org, name string) error
+	ArchiveRepoFunc                   func(ctx context.Context, owner, name string) error
 	GetOrgFunc                        func(ctx context.Context, org string) (*gh.OrgSettings, error)
 	PatchOrgFunc                      func(ctx context.Context, org string, fields map[string]any) error
 	GetActionsPermissionsFunc         func(ctx context.Context, org string) (*gh.ActionsPermissions, error)
@@ -127,6 +128,14 @@ func (f *Fake) DeleteRepo(ctx context.Context, org, name string) error {
 		missing("DeleteRepo")
 	}
 	return f.DeleteRepoFunc(ctx, org, name)
+}
+
+func (f *Fake) ArchiveRepo(ctx context.Context, owner, name string) error {
+	f.record("ArchiveRepo")
+	if f.ArchiveRepoFunc == nil {
+		missing("ArchiveRepo")
+	}
+	return f.ArchiveRepoFunc(ctx, owner, name)
 }
 
 func (f *Fake) GetOrg(ctx context.Context, org string) (*gh.OrgSettings, error) {

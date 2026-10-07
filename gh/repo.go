@@ -48,6 +48,14 @@ func (c *restClient) SetRepoTemplate(ctx context.Context, owner, name string) er
 	return err
 }
 
+// ArchiveRepo archives a repository. An archived repository is read-only for
+// everyone, admins included, until it is unarchived in its settings.
+func (c *restClient) ArchiveRepo(ctx context.Context, owner, name string) error {
+	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(name))
+	_, err := c.do(ctx, "PATCH", path, map[string]any{"archived": true}, nil)
+	return err
+}
+
 // DeleteRepo deletes a repository.
 func (c *restClient) DeleteRepo(ctx context.Context, org, name string) error {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(org), url.PathEscape(name))
