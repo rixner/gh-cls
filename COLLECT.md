@@ -258,6 +258,10 @@ groups file) to tell you whether that set matches the class:
   nothing to clone.
 - **unexpected:** a repository that matches no roster or groups entry, perhaps a
   typo or a dropped student. It is still collected, but reported so you notice.
+- **dropped:** on an individual assignment, a repository of a student the roster
+  marks as dropped (its `access` column). It is not collected, and a clone already
+  in `--out` is left as it is. A group assignment takes no roster, so a group repo
+  is collected even if one of its members dropped.
 
 ## What a run reports
 

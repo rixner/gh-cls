@@ -799,6 +799,38 @@ func TestCollectReconcile(t *testing.T) {
 	}
 }
 
+// TestCollectSkipsDroppedStudents checks a dropped student's repo is reported
+// and not cloned, not listed as unexpected, and a dropped student with no repo is
+// not listed as missing.
+func TestCollectSkipsDroppedStudents(t *testing.T) {
+	git := newFakeGit()
+	roster := "identifier,username,access\nstudent-001,ada\nstudent-002,alan,own\nstudent-003,grace,none\n"
+	repos := []gh.Repo{
+		{Name: "hw1-ada", DefaultBranch: "main"},
+		{Name: "hw1-alan", DefaultBranch: "main"},
+	}
+	o := newCollectOpts(t, git, repos, roster, "", "")
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("run: %v\n%s", err, buf.String())
+	}
+	out := buf.String()
+	if _, ok := git.clones[filepath.Join(o.out, "alan")]; ok {
+		t.Error("a dropped student's repo should not be cloned")
+	}
+	if !strings.Contains(out, "skipping 1 repo(s) of dropped students:\n  hw1-alan") {
+		t.Errorf("the skip should be reported:\n%s", out)
+	}
+	for _, bad := range []string{"unexpected", "missing"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("dropped students should not be reported %s:\n%s", bad, out)
+		}
+	}
+	if !strings.Contains(out, "1 collected") {
+		t.Errorf("only ada should be collected:\n%s", out)
+	}
+}
+
 func TestCollectGroupNeedsGroups(t *testing.T) {
 	git := newFakeGit()
 	o := newCollectOpts(t, git, nil, "", "group-alpha: [student-001]\n", "")

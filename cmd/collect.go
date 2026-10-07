@@ -156,6 +156,8 @@ later runs match it even without the flag.
 
 Roster-aware: it collects every <name>-* repo and reports any that are missing
 (a student with no repo) or unexpected (a repo matching no roster/groups entry).
+On an individual assignment it skips the repo of a student the roster's access
+column marks as dropped.
 A clone whose tracked files you have modified is left untouched, and so is a
 commit you made in it that no branch or tag holds, so grading edits survive;
 untracked files of your own do not block a collection but are reported.
@@ -284,7 +286,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		return err
 	}
 
-	expected, err := o.expectedKeys(policy.Type, name)
+	expected, dropped, err := o.expectedKeys(policy.Type, name)
 	if err != nil {
 		return err
 	}
@@ -332,6 +334,7 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 	all = filterAssignmentRepos(o.g.cfg, name, all)
 
 	var items []repoItem
+	var skipped []string
 	present := make(map[string]bool)
 	for _, r := range all {
 		if r.IsTemplate {
@@ -340,6 +343,13 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		key := strings.TrimPrefix(r.Name, name+"-")
 		lkey := strings.ToLower(key)
 		present[lkey] = true
+		// A dropped student's repo is not collected: there is nothing to grade. It
+		// still counts as present, so a snapshot that names it is not mistaken for
+		// another assignment's, and a clone already on disk is left as it is.
+		if _, ok := dropped[lkey]; ok {
+			skipped = append(skipped, r.Name)
+			continue
+		}
 		_, ok := expected[lkey]
 		items = append(items, repoItem{key: key, lkey: lkey, repo: r.Name, defaultBranch: r.DefaultBranch, unexpected: !ok})
 	}
@@ -376,6 +386,10 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 		fmt.Fprintf(out, "  other branches show GitHub's state as of this run, which can be later than the collected commits.\n")
 	}
 	reportReconcile(out, items, missing)
+	if len(skipped) > 0 {
+		sort.Strings(skipped)
+		fmt.Fprintf(out, "skipping %d repo(s) of dropped students:\n  %s\n", len(skipped), strings.Join(skipped, "\n  "))
+	}
 	if len(unmatched) > 0 {
 		fmt.Fprintf(out, "note: %d snapshot key(s) match no repository, so nothing is pinned for them:\n  %s\n",
 			len(unmatched), strings.Join(unmatched, "\n  "))
@@ -456,39 +470,52 @@ func (o *collectOpts) run(ctx context.Context, out io.Writer, name string) error
 
 // expectedKeys returns the lower-cased->display key set the assignment's type
 // defines (usernames from the roster for individual, group names from the groups
-// file for group), validating that the right file was given.
-func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (map[string]string, error) {
+// file for group), validating that the right file was given. For an individual
+// assignment it also returns the students the roster marks as dropped, whose
+// repos are not collected; they are not in the expected set either, so a missing
+// repo of theirs is not reported.
+func (o *collectOpts) expectedKeys(typ config.AssignmentType, name string) (expected, dropped map[string]string, err error) {
 	switch typ {
 	case config.TypeIndividual:
 		if o.roster == "" {
-			return nil, fmt.Errorf("assignment %q is individual: --roster is required", name)
+			return nil, nil, fmt.Errorf("assignment %q is individual: --roster is required", name)
 		}
 		if o.groups != "" {
-			return nil, fmt.Errorf("assignment %q is individual: --groups is not allowed", name)
+			return nil, nil, fmt.Errorf("assignment %q is individual: --groups is not allowed", name)
 		}
 		r, err := roster.ParseFile(o.roster)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		return r.UsersByLowercase(), nil
+		expected = make(map[string]string, r.Len())
+		dropped = make(map[string]string)
+		for _, id := range r.IDs() {
+			u, _ := r.Lookup(id) // present by construction of the roster
+			if r.Access(id) != roster.AccessEnrolled {
+				dropped[strings.ToLower(u)] = u
+				continue
+			}
+			expected[strings.ToLower(u)] = u
+		}
+		return expected, dropped, nil
 	case config.TypeGroup:
 		if o.groups == "" {
-			return nil, fmt.Errorf("assignment %q is a group assignment: --groups is required", name)
+			return nil, nil, fmt.Errorf("assignment %q is a group assignment: --groups is required", name)
 		}
 		if o.roster != "" {
-			return nil, fmt.Errorf("assignment %q is a group assignment: --roster is not allowed (group names are the keys)", name)
+			return nil, nil, fmt.Errorf("assignment %q is a group assignment: --roster is not allowed (group names are the keys)", name)
 		}
 		g, err := groups.ParseFile(o.groups)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		keys := make(map[string]string, g.Len())
 		for _, n := range g.Names() {
 			keys[strings.ToLower(n)] = n
 		}
-		return keys, nil
+		return keys, nil, nil
 	default:
-		return nil, fmt.Errorf("assignment %q has an unknown type %q", name, typ)
+		return nil, nil, fmt.Errorf("assignment %q has an unknown type %q", name, typ)
 	}
 }
 

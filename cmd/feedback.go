@@ -69,7 +69,9 @@ named after the <name>-<key> repository itself (<name>-<key>.md).
 
 The directory must hold exactly one file per student/group. A missing file
 (forgotten feedback) or a file matching no student (a typo) is reported by name
-and aborts, unless --force posts the matching subset and skips the rest. Posting
+and aborts, unless --force posts the matching subset and skips the rest. A repo
+whose students the roster's access column marks as all dropped needs no file,
+and one written for it is named but not posted. Posting
 is idempotent: a re-run only posts feedback not already present, so a partial
 run or a --force subset can be completed by re-running. Editing a file posts a
 new comment; existing comments are never changed.`,
@@ -144,6 +146,7 @@ func (o *feedbackOpts) run(ctx context.Context, out io.Writer, name string) erro
 	if err != nil {
 		return err
 	}
+	matched, missing = skipDropped(out, name, units, matched, missing)
 
 	// The coverage report is printed before anything is posted (the "is there
 	// feedback for everyone?" message), naming every gap explicitly.
@@ -272,6 +275,45 @@ func matchFiles(name string, units []unit.Unit, files map[string]feedbackFile) (
 	}
 	sort.Strings(unmatched)
 	return matched, missing, unmatched, nil
+}
+
+// skipDropped takes the units whose students have all dropped out of the run: a
+// dropped student needs no feedback, so their missing file is not a gap and a file
+// written for them anyway is not posted. Matching ran over every unit first, so a
+// file name that could mean a dropped student and an enrolled one is still caught
+// as ambiguous rather than quietly resolved to the enrolled one.
+func skipDropped(out io.Writer, name string, units []unit.Unit, matched []matchedUnit, missing []string) ([]matchedUnit, []string) {
+	dropped := make(map[string]bool)
+	var skipped []string
+	for _, u := range units {
+		if len(u.Members) == 0 && len(u.Dropped) > 0 {
+			dropped[u.Key] = true
+			skipped = append(skipped, name+"-"+u.Key)
+		}
+	}
+	if len(dropped) == 0 {
+		return matched, missing
+	}
+	var keptMatched []matchedUnit
+	var notPosted []string
+	for _, m := range matched {
+		if dropped[m.unit.Key] {
+			notPosted = append(notPosted, m.file.name)
+			continue
+		}
+		keptMatched = append(keptMatched, m)
+	}
+	var keptMissing []string
+	for _, k := range missing {
+		if !dropped[k] {
+			keptMissing = append(keptMissing, k)
+		}
+	}
+	fmt.Fprintf(out, "Skipping %d repo(s) whose students have all dropped: %s\n", len(skipped), strings.Join(skipped, ", "))
+	if len(notPosted) > 0 {
+		fmt.Fprintf(out, "  not posting their file(s): %s\n", strings.Join(notPosted, ", "))
+	}
+	return keptMatched, keptMissing
 }
 
 // printCoverage prints the match/missing/unmatched breakdown, naming every gap.

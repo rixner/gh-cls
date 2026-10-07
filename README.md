@@ -206,7 +206,9 @@ group assignment is still removed. A dropped student can stay in the groups file
 or be taken out of it; neither is reported as a problem. Once marked, `assign`
 creates nothing for them and grants them nothing, `audit` checks their access
 against the mark and `--renew` never grants them anything, and `audit --revoke`
-takes away what they hold beyond it (see **audit** below).
+takes away what they hold beyond it (see **audit** below). `feedback` expects no
+file for a repo whose students have all dropped and does not post one, and
+`collect` skips a dropped student's individual repo.
 
 A **groups** file (group assignments) maps group name → student identifiers:
 
@@ -411,6 +413,8 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   whose name could mean two of them, is an error. The directory must hold exactly one
   file per student/group. A missing file or a file matching no one is named and
   aborts, unless `--force` posts the matching subset and reports the rest.
+  A repo whose students have all dropped (see the roster's `access` column) needs
+  no file, and a file written for it anyway is named but not posted.
   Idempotent: a re-run only posts feedback not already present (so a partial or
   `--force` run is finished by re-running), and editing a file posts a new comment
   rather than changing the old one.
@@ -423,7 +427,8 @@ gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
   (default: a timestamp). Re-running a label tops up only repos not yet collected
   under it; a new label advances the clones and tags the new state, leaving prior
   tags in place. It is roster-aware (`--roster` for individual,
-  `--groups` for group), reporting any missing or unexpected repositories, and
+  `--groups` for group), reporting any missing or unexpected repositories and
+  skipping the individual repos of students the roster marks as dropped, and
   leaves a clone whose tracked files you have modified untouched, as it does a
   commit you made there that no branch or tag holds, so grading edits survive;
   untracked files of your own do not block a collection but are reported.

@@ -600,3 +600,47 @@ func TestFeedbackRejectsFileNamingTwoUnits(t *testing.T) {
 		}
 	}
 }
+
+// TestFeedbackSkipsDroppedStudents checks a dropped student needs no feedback
+// file, and one written for them is reported but not posted.
+func TestFeedbackSkipsDroppedStudents(t *testing.T) {
+	roster := "identifier,username,access\nstudent-001,ada\nstudent-002,alan,read\nstudent-003,grace,none\n"
+	fake := newFakeFeedback("admin", "hw1-ada", "hw1-alan", "hw1-grace")
+	// alan has a file anyway; grace has none. Neither is a gap.
+	o, _ := newFeedbackOpts(t, fake, map[string]string{"ada.md": "x", "alan.md": "y"}, roster, "")
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "hw1"); err != nil {
+		t.Fatalf("dropped students should not make coverage incomplete: %v\n%s", err, buf.String())
+	}
+	if len(fake.posts) != 1 || fake.posts[0] != "hw1-ada" {
+		t.Errorf("only ada should be posted, got %v", fake.posts)
+	}
+	out := buf.String()
+	for _, want := range []string{
+		"Skipping 2 repo(s) whose students have all dropped: hw1-alan, hw1-grace",
+		"not posting their file(s): alan.md",
+		"1 matched, 0 missing, 0 unmatched",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}
+
+// TestFeedbackGroupWithDroppedMemberStillPosts checks a group that lost one
+// member still gets its feedback.
+func TestFeedbackGroupWithDroppedMemberStillPosts(t *testing.T) {
+	roster := "identifier,username,access\nstudent-001,ada\nstudent-002,alan\nstudent-003,grace,own\n"
+	fake := newFakeFeedback("admin", "proj-group-alpha", "proj-group-beta")
+	files := map[string]string{"group-alpha.md": "a", "group-beta.md": "b"}
+	o, _ := newFeedbackOpts(t, fake, files, roster, assignGroups)
+
+	var buf bytes.Buffer
+	if err := o.run(context.Background(), &buf, "proj"); err != nil {
+		t.Fatalf("%v\n%s", err, buf.String())
+	}
+	if len(fake.posts) != 2 {
+		t.Errorf("both groups should be posted, got %v", fake.posts)
+	}
+}
