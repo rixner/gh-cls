@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strings"
 )
 
 // ValidRepoNameChars reports whether every character of s is one GitHub keeps
@@ -31,23 +30,18 @@ func ValidRepoNameChars(s string) bool {
 // GetRepo fetches a repository, reporting existence via the bool so callers can
 // branch on it without inspecting error strings.
 //
-// A name a repository was renamed away from does not exist either. GitHub
-// answers it with a redirect to the renamed repository, which the HTTP client
-// follows, so the response names a different repository than the one asked
-// for. Reporting that as the repository would let assign skip creating a repo
-// at a name retract freed and grant students access to the backup instead.
-// Repository names are case-insensitive, so only a different name counts.
+// A name a repository was renamed away from does not exist either: GitHub
+// answers it with a redirect to the renamed repository. Reporting that as the
+// repository would let assign skip creating a repo at a name retract freed and
+// grant students access to the backup instead.
 func (c *restClient) GetRepo(ctx context.Context, owner, name string) (*Repo, bool, error) {
 	var repo Repo
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(name))
 	if _, err := c.do(ctx, "GET", path, nil, &repo); err != nil {
-		if notFound(err) {
+		if notFound(err) || redirected(err) {
 			return nil, false, nil
 		}
 		return nil, false, err
-	}
-	if !strings.EqualFold(repo.Name, name) {
-		return nil, false, nil
 	}
 	return &repo, true, nil
 }

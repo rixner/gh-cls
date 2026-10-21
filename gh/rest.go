@@ -168,9 +168,65 @@ func (c *restClient) send(ctx context.Context, kind writeKind, method, path stri
 			retriedAfterAmbiguous = retriedAfterAmbiguous || ambiguousFailure(err)
 			continue
 		}
+		if err := checkNotRedirected(resp, method, path); err != nil {
+			return nil, err
+		}
 		return resp.Header, decode(resp, out, method, path)
 	}
 	return nil, lastErr
+}
+
+// redirectError is a request GitHub answered with a redirect.
+type redirectError struct {
+	method, path string
+	status       int
+	to           string
+	// applied is set for a write the client repeated at the new location.
+	applied bool
+}
+
+func (e *redirectError) Error() string {
+	msg := fmt.Sprintf("%s %s was redirected (HTTP %d) to %s: the repository or organization it names was probably renamed or transferred, so that name no longer refers to it.", e.method, e.path, e.status, e.to)
+	if mutating(e.method) {
+		if e.applied {
+			msg += fmt.Sprintf(" The %s was applied at the new location; check that repository and undo the change if it was not meant for it.", e.method)
+		} else {
+			msg += fmt.Sprintf(" The %s was not applied.", e.method)
+		}
+	}
+	return msg + " Correct the name in the config, roster or groups file, or rename the repository back on GitHub"
+}
+
+// redirected reports whether err is a request GitHub answered with a redirect.
+func redirected(err error) bool {
+	var re *redirectError
+	return errors.As(err, &re)
+}
+
+// checkNotRedirected fails a request that reached its answer through a redirect,
+// closing the response. GitHub redirects a renamed or transferred repository's
+// old name to the repository, and the HTTP client follows it, so a request naming
+// one repository silently acts on another. Every name the tool sends is one it
+// means exactly, so a redirect is always an error.
+//
+// It is caught after the fact: go-gh's public API offers no way to stop the
+// client following. A GET is harmless, since its answer is discarded here. A
+// write is not: on a 307 or 308 the client repeats it at the new location, so the
+// change was applied there, while on a 301, 302 or 303 it becomes a GET and was
+// not. The error says which, so the instructor can check and undo it.
+func checkNotRedirected(resp *http.Response, method, path string) error {
+	if resp.Request == nil || resp.Request.Response == nil {
+		return nil
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return &redirectError{
+		method:  method,
+		path:    path,
+		status:  resp.Request.Response.StatusCode,
+		to:      resp.Request.URL.String(),
+		applied: resp.Request.Method == method,
+	}
 }
 
 // issue sends one request, holding one of the run's in-flight slots for as long

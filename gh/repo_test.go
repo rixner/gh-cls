@@ -2,6 +2,7 @@ package gh
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -34,19 +35,11 @@ func TestGetRepo(t *testing.T) {
 			t.Errorf("archived not decoded: %+v", repo)
 		}
 	})
-	t.Run("a name differing only in case is the same repo", func(t *testing.T) {
-		f := &fakeRequester{steps: []step{{resp: okResp(`{"name":"HW1-Ada"}`)}}}
-		var waits int
-		c := newTestClient(f, &waits)
-		if _, exists, err := c.GetRepo(context.Background(), "org", "hw1-ada"); err != nil || !exists {
-			t.Fatalf("want exists, got exists=%v err=%v", exists, err)
-		}
-	})
 	t.Run("absent when the name only redirects to a renamed repo", func(t *testing.T) {
-		// GitHub redirects a renamed repo's old name and the client follows it, so
-		// the body is the renamed repo. The old name is free: assign must create a
-		// repo there, not mistake the retract backup for the student's repo.
-		f := &fakeRequester{steps: []step{{resp: okResp(`{"name":"hw1_20261021-ada"}`)}}}
+		// GitHub redirects a renamed repo's old name and the client follows it. The
+		// old name is free: assign must create a repo there, not mistake the
+		// retract backup for the student's repo.
+		f := &fakeRequester{steps: []step{{resp: redirectedResp(http.StatusMovedPermanently, "GET", `{"name":"hw1_20261021-ada"}`)}}}
 		var waits int
 		c := newTestClient(f, &waits)
 		repo, exists, err := c.GetRepo(context.Background(), "org", "hw1-ada")

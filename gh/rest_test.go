@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"runtime"
 	"strings"
 	"sync"
@@ -65,6 +67,111 @@ func newTestClient(f *fakeRequester, waits *int) *restClient {
 			wait:        func(_ context.Context, d time.Duration) error { *waits++; now = now.Add(d); return nil },
 			now:         func() time.Time { return now },
 		},
+	}
+}
+
+// redirectedResp is a successful response the HTTP client reached by following
+// a redirect: its request is the one sent to the new location, issued with
+// finalMethod, and records the redirect response that caused it.
+func redirectedResp(status int, finalMethod, body string) *http.Response {
+	resp := okResp(body)
+	resp.Request = &http.Request{
+		Method:   finalMethod,
+		URL:      &url.URL{Scheme: "https", Host: "api.github.com", Path: "/repositories/42"},
+		Response: &http.Response{StatusCode: status},
+	}
+	return resp
+}
+
+// TestDoRefusesARedirect checks a request answered through a redirect fails
+// rather than acting on whatever the redirect led to, and that a write says
+// whether it was applied at the new location.
+func TestDoRefusesARedirect(t *testing.T) {
+	for name, tc := range map[string]struct {
+		method      string
+		status      int
+		finalMethod string
+		want        string
+		notWant     string
+	}{
+		"read": {"GET", http.StatusMovedPermanently, "GET",
+			"GET repos/org/hw1-ada was redirected (HTTP 301) to https://api.github.com/repositories/42: the repository or organization it names was probably renamed or transferred, so that name no longer refers to it. Correct the name in the config, roster or groups file, or rename the repository back on GitHub",
+			"applied"},
+		"write repeated at the new location": {"PATCH", http.StatusTemporaryRedirect, "PATCH",
+			"The PATCH was applied at the new location; check that repository and undo the change if it was not meant for it", ""},
+		"write turned into a read": {"PATCH", http.StatusMovedPermanently, "GET",
+			"The PATCH was not applied", ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &fakeRequester{steps: []step{{resp: redirectedResp(tc.status, tc.finalMethod, `{"name":"hw1_20261021-ada"}`)}}}
+			var waits int
+			c := newTestClient(f, &waits)
+			var out struct{ Name string }
+			_, err := c.do(context.Background(), tc.method, "repos/org/hw1-ada", nil, &out)
+			if !redirected(err) {
+				t.Fatalf("want a redirect error, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q should contain %q", err, tc.want)
+			}
+			if tc.notWant != "" && strings.Contains(err.Error(), tc.notWant) {
+				t.Errorf("error %q should not mention %q", err, tc.notWant)
+			}
+			if out.Name != "" {
+				t.Errorf("the redirected answer must not be decoded, got %+v", out)
+			}
+			if f.calls != 1 {
+				t.Errorf("a redirect must not be retried, got %d attempts", f.calls)
+			}
+		})
+	}
+}
+
+// TestDoRefusesARedirectFollowedByARealClient checks the detection against
+// net/http itself rather than a hand-built response: the standard client really
+// does follow these redirects, really does repeat a write on a 307, and leaves the
+// trace checkNotRedirected reads.
+func TestDoRefusesARedirectFollowedByARealClient(t *testing.T) {
+	var applied []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/repos/org/hw1-ada":
+			status := http.StatusMovedPermanently
+			if r.Method != http.MethodGet {
+				status = http.StatusTemporaryRedirect
+			}
+			http.Redirect(w, r, "/repositories/42", status)
+		case "/repositories/42":
+			if r.Method != http.MethodGet {
+				applied = append(applied, r.Method)
+			}
+			_, _ = io.WriteString(w, `{"name":"hw1_20261021-ada"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	request := func(ctx context.Context, method, path string, body io.Reader) (*http.Response, error) {
+		req, err := http.NewRequestWithContext(ctx, method, srv.URL+"/"+path, body)
+		if err != nil {
+			return nil, err
+		}
+		return srv.Client().Do(req)
+	}
+	var waits int
+	c := newTestClient(&fakeRequester{}, &waits)
+	c.request = request
+
+	if _, err := c.do(context.Background(), "GET", "repos/org/hw1-ada", nil, nil); !redirected(err) {
+		t.Errorf("a redirected GET should fail, got %v", err)
+	}
+	_, err := c.do(context.Background(), "PATCH", "repos/org/hw1-ada", map[string]any{"name": "x"}, nil)
+	if !redirected(err) || !strings.Contains(err.Error(), "PATCH was applied") {
+		t.Errorf("a redirected PATCH should fail and say it was applied, got %v", err)
+	}
+	if len(applied) != 1 {
+		t.Errorf("the client should have repeated the PATCH at the new location once (the case the error warns of), got %v", applied)
 	}
 }
 
