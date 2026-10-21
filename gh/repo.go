@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // ValidRepoNameChars reports whether every character of s is one GitHub keeps
@@ -29,6 +30,13 @@ func ValidRepoNameChars(s string) bool {
 
 // GetRepo fetches a repository, reporting existence via the bool so callers can
 // branch on it without inspecting error strings.
+//
+// A name a repository was renamed away from does not exist either. GitHub
+// answers it with a redirect to the renamed repository, which the HTTP client
+// follows, so the response names a different repository than the one asked
+// for. Reporting that as the repository would let assign skip creating a repo
+// at a name retract freed and grant students access to the backup instead.
+// Repository names are case-insensitive, so only a different name counts.
 func (c *restClient) GetRepo(ctx context.Context, owner, name string) (*Repo, bool, error) {
 	var repo Repo
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(name))
@@ -37,6 +45,9 @@ func (c *restClient) GetRepo(ctx context.Context, owner, name string) (*Repo, bo
 			return nil, false, nil
 		}
 		return nil, false, err
+	}
+	if !strings.EqualFold(repo.Name, name) {
+		return nil, false, nil
 	}
 	return &repo, true, nil
 }
@@ -53,6 +64,14 @@ func (c *restClient) SetRepoTemplate(ctx context.Context, owner, name string) er
 func (c *restClient) ArchiveRepo(ctx context.Context, owner, name string) error {
 	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(name))
 	_, err := c.do(ctx, "PATCH", path, map[string]any{"archived": true}, nil)
+	return err
+}
+
+// RenameRepo renames a repository. GitHub redirects the old name to the new one
+// until a repository is created at the old name.
+func (c *restClient) RenameRepo(ctx context.Context, owner, name, newName string) error {
+	path := fmt.Sprintf("repos/%s/%s", url.PathEscape(owner), url.PathEscape(name))
+	_, err := c.do(ctx, "PATCH", path, map[string]any{"name": newName}, nil)
 	return err
 }
 

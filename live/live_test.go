@@ -80,7 +80,8 @@ func TestLive(t *testing.T) {
 	// is created so partial runs still clean up. Best-effort: log, never fail.
 	t.Cleanup(func() {
 		cctx := context.Background()
-		for _, prefix := range []string{name + "-", grp + "-"} {
+		// name+"_" holds the backups retract renames the individual repo to.
+		for _, prefix := range []string{name + "-", name + "_", grp + "-"} {
 			repos, err := client.ListOrgReposByPrefix(cctx, org, prefix)
 			if err != nil {
 				t.Logf("cleanup: listing %s* in %s: %v", prefix, org, err)
@@ -442,6 +443,31 @@ func TestLive(t *testing.T) {
 			assertPushGranted(t, ctx, client, org, grpRepo, student2)
 		}
 	}
+
+	// 7c. retract: the individual assignment was handed out wrong. The student
+	// loses access, the repo moves to its dated backup name, the old name reads
+	// as free (GitHub redirects it, which must not count as the repo), and assign
+	// then creates a fresh repo there.
+	out = mustRunCLI(t, ctx, "retract", name)
+	if !strings.Contains(out, "retracted 1 repo(s), 0 failed") {
+		t.Errorf("retract should retract the one student repo, got:\n%s", out)
+	}
+	backup := name + "_" + time.Now().Format("20060102") + "-" + student1
+	assertRepoExists(t, ctx, client, org, backup)
+	if !isEffectiveAdmin(t, ctx, client, org, backup, student1) {
+		assertNoAccess(t, ctx, client, org, backup, student1)
+	}
+	if _, ok, err := client.GetRepo(ctx, org, repo); err != nil {
+		t.Fatalf("checking %s/%s after retract: %v", org, repo, err)
+	} else if ok {
+		t.Errorf("%s/%s should read as free after retract, but a repository answers to it", org, repo)
+	}
+	out = mustRunCLI(t, ctx, "assign", "-r", rosterInd, "-p", "--feedback", "issue", name)
+	if !strings.Contains(out, "1 created") {
+		t.Errorf("assign after retract should create a fresh repo (want '1 created'), got:\n%s", out)
+	}
+	assertRepoExists(t, ctx, client, org, repo)
+	assertPushGranted(t, ctx, client, org, repo, student1)
 
 	// 8. archive: the end of the semester. Every repo of both assignments is
 	// archived (the templates are skipped), and a re-run finds nothing left to do.

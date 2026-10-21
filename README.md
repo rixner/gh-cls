@@ -284,6 +284,11 @@ gh cls collect hw1 --roster roster.csv --out ./hw1-final --snapshot deadline.yml
 #    or after the repo (hw1-<username>.md).
 gh cls feedback hw1 --dir ./hw1-feedback --roster roster.csv
 
+# Anytime: take back an assignment handed out wrong (e.g. the wrong template)
+# so it can be assigned again. Student repos become hw1_<date>-<key> backups.
+gh cls retract hw1 -n                       # preview, with who has pushed
+gh cls retract hw1
+
 # 8. End of semester: archive every student repo (read-only for everyone).
 gh cls archive --all -n                     # preview
 gh cls archive --all
@@ -486,6 +491,22 @@ gh cls archive --all
   and each repo is re-read afterwards to confirm it took. It is undone per repo in
   its settings on GitHub. While a repo is archived nothing can be pushed to it and
   no issue, pull request or comment can be added, so `feedback` cannot post to it.
+- **retract** withdraws an assignment that was handed out wrong so `assign` can
+  create it again. Every `<name>-*` student repo loses its student access (every
+  non-admin direct collaborator is removed and every pending invitation
+  cancelled) and is then renamed to `<name>_<date>-<key>`, keeping it as a backup
+  of whatever the students did. The staff team and admins keep access. Every repo
+  is read before the first change, and the plan lists, per repo, whose access
+  goes and how many times those students pushed, so you know which backups hold
+  work and whom to tell. A backup name that is taken, too long, or inside a
+  configured assignment's namespace, an archived repo, or an unreadable repo stops
+  the run before it changes anything. A repo is renamed only once its access is
+  confirmed gone, and each rename is re-read to confirm the backup exists and the
+  old name is free; a run that stops partway is finished by re-running it. Do not
+  run `assign` until retract has finished. Backups are not archived, so a retract
+  is undone by deleting the new repo and renaming the backup back. Students must
+  clone again: their old clones point at the old name, and pushes from them to
+  the new repo are rejected as unrelated history.
 
 ## The freeze record
 

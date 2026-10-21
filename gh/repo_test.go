@@ -34,6 +34,26 @@ func TestGetRepo(t *testing.T) {
 			t.Errorf("archived not decoded: %+v", repo)
 		}
 	})
+	t.Run("a name differing only in case is the same repo", func(t *testing.T) {
+		f := &fakeRequester{steps: []step{{resp: okResp(`{"name":"HW1-Ada"}`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		if _, exists, err := c.GetRepo(context.Background(), "org", "hw1-ada"); err != nil || !exists {
+			t.Fatalf("want exists, got exists=%v err=%v", exists, err)
+		}
+	})
+	t.Run("absent when the name only redirects to a renamed repo", func(t *testing.T) {
+		// GitHub redirects a renamed repo's old name and the client follows it, so
+		// the body is the renamed repo. The old name is free: assign must create a
+		// repo there, not mistake the retract backup for the student's repo.
+		f := &fakeRequester{steps: []step{{resp: okResp(`{"name":"hw1_20261021-ada"}`)}}}
+		var waits int
+		c := newTestClient(f, &waits)
+		repo, exists, err := c.GetRepo(context.Background(), "org", "hw1-ada")
+		if err != nil || exists || repo != nil {
+			t.Fatalf("a redirected name should be absent, got repo=%v exists=%v err=%v", repo, exists, err)
+		}
+	})
 	t.Run("absent on 404", func(t *testing.T) {
 		f := &fakeRequester{steps: []step{{err: httpErr(404, nil)}}}
 		var waits int
@@ -110,6 +130,21 @@ func TestArchiveRepo(t *testing.T) {
 	}
 	if !strings.Contains(f.bodies[0], `"archived":true`) {
 		t.Errorf("body %s should set archived", f.bodies[0])
+	}
+}
+
+func TestRenameRepo(t *testing.T) {
+	f := &fakeRequester{steps: []step{{resp: okResp(`{}`)}}}
+	var waits int
+	c := newTestClient(f, &waits)
+	if err := c.RenameRepo(context.Background(), "org", "hw1-ada", "hw1_20261021-ada"); err != nil {
+		t.Fatal(err)
+	}
+	if f.methods[0] != "PATCH" || f.paths[0] != "repos/org/hw1-ada" {
+		t.Errorf("request = %s %s", f.methods[0], f.paths[0])
+	}
+	if !strings.Contains(f.bodies[0], `"name":"hw1_20261021-ada"`) {
+		t.Errorf("body %s should carry the new name", f.bodies[0])
 	}
 }
 

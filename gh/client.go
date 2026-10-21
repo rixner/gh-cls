@@ -28,6 +28,8 @@ type Client interface {
 	DeleteRepo(ctx context.Context, org, name string) error
 	// ArchiveRepo archives a repository, making it read-only for everyone.
 	ArchiveRepo(ctx context.Context, owner, name string) error
+	// RenameRepo renames a repository.
+	RenameRepo(ctx context.Context, owner, name, newName string) error
 
 	// GetOrg reads current organization settings.
 	GetOrg(ctx context.Context, org string) (*OrgSettings, error)
